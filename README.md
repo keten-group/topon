@@ -1,5 +1,7 @@
 # Topon: Topological Polymer Network Generator
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19672939.svg)](https://doi.org/10.5281/zenodo.19672939)
+
 **Topon** is a modular Python package for generating complex polymer network structures for Molecular Dynamics (MD) simulations. It bridges the gap between graph-theoretical topology and physical chemical structures, supporting both Coarse-Grained (KG) and Atomistic (All-Atom) models.
 
 ![Topon pipeline overview](docs/algorithm.png)
