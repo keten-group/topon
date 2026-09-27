@@ -33,7 +33,7 @@ def set_npj_style(column_type='single'):
     mpl.rcParams['axes.titlesize'] = 8      # Increased to 8
     mpl.rcParams['xtick.labelsize'] = 7     # Increased to 7
     mpl.rcParams['ytick.labelsize'] = 7     # Increased to 7
-    mpl.rcParams['legend.fontsize'] = 6     # Decreased to 6 per user request
+    mpl.rcParams['legend.fontsize'] = 6     # Decreased to 6
     mpl.rcParams['figure.titlesize'] = 9    # Increased to 9
 
     # 3. Lines and Markers

@@ -4,7 +4,7 @@ Graph analysis for Topon.
 Analyzes the graph to report:
 - Node/edge counts
 - Degree distribution
-- Max possible defects (primary/secondary loops)
+- Max possible defects (triangle-closing edges, parallel strands)
 - Max possible entanglements
 """
 
@@ -60,10 +60,13 @@ def analyze_graph(
             edge_types[et] = edge_types.get(et, 0) + 1
     analysis["edge_types"] = edge_types
     
-    # Max possible primary loops (edges where endpoints share another edge)
-    analysis["max_primary_loops"] = count_primary_loop_candidates(G)
-    
-    # Max possible secondary loops (parallel edges)
+    # Edges that close a triangle (endpoints already share a neighbour)
+    analysis["max_triangles"] = count_triangle_candidates(G)
+    # There is deliberately no "max_primary_loops" key: before V53 that name
+    # meant this triangle count, and AssignmentManager.analyze() now fills
+    # it with the self-loop capacity, which is a different quantity.
+
+    # Existing parallel strands (secondary loops)
     analysis["max_secondary_loops"] = count_secondary_loop_candidates(G)
     
     # Max possible entanglements (disjoint parallel edge pairs)
@@ -75,12 +78,14 @@ def analyze_graph(
     return analysis
 
 
-def count_primary_loop_candidates(G: nx.MultiGraph) -> int:
+def count_triangle_candidates(G: nx.MultiGraph) -> int:
     """
-    Count edges that could become primary loops.
-    
-    A primary loop is when an edge's endpoints share another edge,
-    creating a triangle-like defect.
+    Count edges whose two endpoints already share a neighbour, i.e. edges
+    that sit on a triangle.
+
+    Before V53 this was called the primary-loop count; a primary loop is a
+    strand returning to its own junction (a self-loop), which is counted by
+    :func:`topon.assignment.defects.count_self_loops`.
     """
     count = 0
     processed = set()
@@ -114,6 +119,8 @@ def count_secondary_loop_candidates(G: nx.MultiGraph) -> int:
     processed = set()
     
     for u, v in G.edges():
+        if u == v:                      # a self-loop is a primary loop
+            continue
         pair = (min(u, v), max(u, v))
         if pair in processed:
             continue
@@ -182,7 +189,21 @@ def print_analysis(analysis: dict) -> None:
             print(f"  {t}: {count}")
         print()
     print("Defect/Entanglement Potential:")
-    print(f"  Max primary loops: {analysis['max_primary_loops']}")
-    print(f"  Max secondary loops: {analysis['max_secondary_loops']}")
+    print(f"  Edges closing a triangle: {analysis['max_triangles']}")
+    print(f"  Parallel strands (secondary loops): {analysis['max_secondary_loops']}")
     print(f"  Max entanglement pairs: {analysis['max_entanglements']}")
     print("=" * 50)
+
+
+def count_primary_loop_candidates(G: nx.MultiGraph) -> int:
+    """Deprecated alias of :func:`count_triangle_candidates` (its old
+    name; a primary loop is a self-loop as of V53)."""
+    import warnings
+
+    warnings.warn(
+        "count_primary_loop_candidates counts triangle-closing edges; it is "
+        "renamed count_triangle_candidates. This alias will be removed in a later release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return count_triangle_candidates(G)

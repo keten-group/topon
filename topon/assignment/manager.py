@@ -33,7 +33,8 @@ class AssignmentManager:
     7. Copolymers (per edge type)
     """
     
-    def __init__(self, G: nx.MultiGraph, dims: Optional[np.ndarray], config: AssignmentConfig):
+    def __init__(self, G: nx.MultiGraph, dims: Optional[np.ndarray],
+                 config: AssignmentConfig, max_functionality: Optional[int] = None):
         """
         Initialize the assignment manager.
         
@@ -41,10 +42,16 @@ class AssignmentManager:
             G: NetworkX MultiGraph with node positions.
             dims: Box dimensions for periodic boundary calculations.
             config: Assignment configuration.
+            max_functionality: Chemical valence ceiling for a junction, from
+                ``topology.generator.max_functionality``. Defect placement
+                needs it to know how much valence is spare. Defaults to the
+                highest degree the graph already carries (at least 4).
         """
         self.G = G
         self.dims = dims
         self.config = config
+        self.max_functionality = max_functionality
+        self.defect_report: dict = {}
         
         # Analysis results (populated by analyze())
         self.analysis = {}
@@ -64,16 +71,20 @@ class AssignmentManager:
         for d in range(max(degrees) + 1):
             degree_counts[d] = degrees.count(d)
         
-        # Calculate max possible primary loops
+        # Defect capacity, per class
         from topon.assignment import defects
-        defect_analysis = defects.analyze_primary_loop_potential(self.G)
-        
+        defect_analysis = defects.analyze_defect_potential(
+            self.G, max_f=self._max_f()
+        )
+
         self.analysis = {
             "num_nodes": self.G.number_of_nodes(),
             "num_edges": self.G.number_of_edges(),
             "degree_distribution": degree_counts,
             "max_primary_loops": defect_analysis["max_possible_primary_loops"],
             "existing_primary_loops": defect_analysis["existing_primary_loops"],
+            "max_secondary_loops": defect_analysis["max_possible_secondary_loops"],
+            "existing_secondary_loops": defect_analysis["existing_secondary_loops"],
             "max_entanglements": None,  # spatial estimate not yet implemented; falls back to len(candidates)
         }
         
@@ -108,7 +119,7 @@ class AssignmentManager:
         self._assign_dp()
         
         # 4. Apply defects (if enabled)
-        if self.config.defects.primary_loops.enabled or self.config.defects.secondary_loops.enabled:
+        if self._defects_requested():
             self._apply_defects()
         
         # 5. Select entanglements (if enabled)
@@ -140,16 +151,55 @@ class AssignmentManager:
         print("  Assigning DP values...")
         dp_distribution.assign_dp(self.G, self.config.dp_distribution)
     
+    def _max_f(self) -> int:
+        """The chemical valence ceiling defect placement works against."""
+        if self.max_functionality:
+            return int(self.max_functionality)
+        degrees = [int(d) for _, d in self.G.degree()]
+        return max(4, max(degrees) if degrees else 4)
+
+    def _defects_requested(self) -> bool:
+        cfg = self.config.defects
+        return any(
+            getattr(cfg, name).enabled
+            for name in ("primary_loops", "secondary_loops", "triangles",
+                         "four_cycles", "sol_chains")
+        )
+
     def _apply_defects(self) -> None:
-        """Apply defect modifications."""
+        """Run the post-sculpt defects stage.
+
+        Primary loops (self-loops), secondary loops (parallel strands),
+        triangles, four-cycles and sol, with the requested-vs-achieved
+        record left on the graph as ``G.graph["defects"]`` for the manifest
+        and ``topon inspect``.
+        """
         print("  Applying defects...")
         from topon.assignment import defects
-        
-        if self.config.defects.primary_loops.enabled:
-            target = self.config.defects.primary_loops.target
-            target_type = self.config.defects.primary_loops.target_type
-            defects.inject_primary_loops(self.G, target, target_type)
-    
+
+        self.defect_report = defects.apply_defects(
+            self.G,
+            self.config.defects,
+            dp_default=int(self.config.dp_distribution.default.mean),
+            # The ceiling every defect placement works against. Pipeline
+            # passes the junction's valence ceiling, which on the atomistic
+            # route is the crosslinker's four bonds rather than the
+            # topology's max_functionality.
+            max_f=self._max_f(),
+        )
+        for name in ("primary_loops", "secondary_loops", "triangles",
+                     "four_cycles", "sol_chains"):
+            record = self.defect_report.get(name)
+            if not record:
+                continue
+            achieved = record.get("achieved", 0)
+            requested = record.get("requested", achieved)
+            print(f"    {name}: {achieved} of {requested} requested")
+        print(f"    effective P(f): {self.defect_report['effective_degree']}")
+        print(f"    chemical  P(f): {self.defect_report['chemical_degree']}")
+        print(f"    beads (incl. loops and sol): "
+              f"{self.defect_report['bead_budget']['total_beads']}")
+
     def _select_entanglements(self) -> None:
         """Select entanglement pairs."""
         print("  Selecting entanglements...")

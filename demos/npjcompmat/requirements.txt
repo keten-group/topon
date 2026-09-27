@@ -1,0 +1,19 @@
+# Environment in which both notebooks were executed and verified (Windows 11, Python 3.12.10, 25 Sep 2026).
+# Python 3.12
+numpy==2.5.2
+scipy==1.15.2
+pandas==2.2.3
+matplotlib==3.10.1
+seaborn==0.13.2
+# to execute the notebooks from the command line
+nbconvert==7.17.0
+nbformat==5.10.4
+ipykernel==6.29.5
+# optional, not used by the notebooks: loading data/mechanics/*/*.gpickle
+# networkx==3.4.2
+#
+# Note: scipy 1.15.2 declares numpy<2.5, so pip's resolver rejects this exact pair. The verified set was installed with
+#   pip install -r requirements.txt --no-deps   (after installing the packages' other dependencies), or equivalently
+#   install everything else first and then `pip install --no-deps numpy==2.5.2`. scipy prints a UserWarning about the numpy
+#   version at import; it does not affect the results. Any numpy 2.x accepted by scipy 1.15.2 should work but was not tested.
+# The figures use the Arial font (Windows/macOS); without it matplotlib falls back to DejaVu Sans and the images differ.

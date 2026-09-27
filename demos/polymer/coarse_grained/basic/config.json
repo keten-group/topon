@@ -1,0 +1,36 @@
+{
+    "study": {
+        "name": "cg_polynet",
+        "output_dir": "output_cg"
+    },
+    "topology": {
+        "source": "generate",
+        "generator": {
+            "lattice_size": "5x5x5",
+            "lattice_type": "SC",
+            "max_functionality": 4,
+            "degree_distribution": "0:0,1:25"
+        }
+    },
+    "chemistry": {
+        "model_type": "coarse_grained",
+        "bead_density": 0.85,
+        "degree_of_polymerization": 20
+    },
+    "conformation": {
+        "overlap_cutoff": 0.01,
+        "overlap_max_iters": 10
+    },
+    "simulation": {
+        "include_angles": true,
+        "remove_cg_angles": true,
+        "pair_style": "attractive"
+    },
+    "__comment_pair_style__": "Options: 'repulsive' (cutoff=1.12246, 2^(1/6)) or 'attractive' (cutoff=2.5, includes LJ attraction). Default: attractive",
+    "__comment_angles__": "remove_cg_angles: If true, angles used for stabilization (Stage 2/3A) then removed for FENE (Stage 3B). Ignored if include_angles is false.",
+    "execution": {
+        "auto_run": false,
+        "executable": "lmp",
+        "n_procs": 1
+    }
+}

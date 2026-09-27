@@ -1,0 +1,22 @@
+networks: 327
+frac_loops == 0 in all networks: True (max 0.0)
+2-core cascade removes more than the f=1 sites in 203 of 327 networks; extra nodes 0-9
+f=2 sites present in 325 networks; f=2 count 0-62
+networks with no f=1 sites: 8
+beads = junction beads + 30 x strands: True  (beads 11241-11846)
+Vacancies, $f=0$ (\texttt{cnt\_d0})                          min 10.0000 mean 12.2263 max 15.0000
+Sites with $f=1$ (dangling ends)                             min 0.0000 mean 21.3914 max 48.0000
+Sites with $f=2$ (chain extenders)                           min 0.0000 mean 26.1376 max 62.0000
+Sites with $f=3$                                             min 2.0000 mean 43.2263 max 106.0000
+Sites with $f=4$                                             min 8.0000 mean 45.2875 max 143.0000
+Sites with $f=5$                                             min 8.0000 mean 37.2661 max 97.0000
+Sites with $f=6$                                             min 1.0000 mean 30.4648 max 66.0000
+Active sites, $N_\mathrm{active}$ ($f\geq1$)                 min 201.0000 mean 203.7737 max 206.0000
+Strands (graph edges), $E$                                   min 368.0000 mean 376.8073 max 388.0000
+2-core nodes                                                 min 153.0000 mean 180.8563 max 206.0000
+2-core edges                                                 min 321.0000 mean 353.8899 max 384.0000
+Extra nodes removed by the 2-core cascade                    min 0.0000 mean 1.5260 max 9.0000
+Cycle rank, $E-N_\mathrm{active}+1$                          min 163.0000 mean 174.0336 max 188.0000
+Mean degree over active sites, $2E/N_\mathrm{active}$        min 3.5728 mean 3.6985 max 3.8607
+Dangling-end fraction ($f=1$ sites / 216)                    min 0.0000 mean 0.0990 max 0.2222
+Beads (junction beads $+\,30E$)                              min 11241.0000 mean 11507.9939 max 11846.0000

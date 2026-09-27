@@ -1,0 +1,52 @@
+{
+    "study": {
+        "name": "atomistic_grafts",
+        "output_dir": "output_atomistic_grafts"
+    },
+    "topology": {
+        "source": "generate",
+        "generator": {
+            "lattice_size": "5x5x5",
+            "lattice_type": "SC",
+            "max_functionality": 4,
+            "degree_distribution": "0:0,1:25"
+        }
+    },
+    "chemistry": {
+        "model_type": "atomistic",
+        "monomer_type": "PDMS",
+        "degree_of_polymerization": 10,
+        "monomers": {
+            "PDMS": {
+                "smiles": "[Si](C)(C)O",
+                "chain_head": "Si",
+                "chain_tail": "O"
+            }
+        }
+    },
+    "assignment": {
+        "grafts": {
+            "enabled": true,
+            "per_edge_type": {
+                "A": {
+                    "graft_density": 0.2,
+                    "side_chain_dp": 5,
+                    "side_chain_monomer": "PDMS"
+                }
+            }
+        }
+    },
+    "conformation": {
+        "overlap_cutoff": 0.2,
+        "overlap_max_iters": 20
+    },
+    "simulation": {
+        "pair_style": "dreiding",
+        "dielectric": 1.0
+    },
+    "execution": {
+        "auto_run": false,
+        "executable": "lmp",
+        "n_procs": 1
+    }
+}

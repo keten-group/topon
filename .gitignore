@@ -8,6 +8,9 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 
 # Environments
 .venv/
@@ -28,5 +31,15 @@ Thumbs.db
 # LAMMPS runtime artifacts
 log.lammps
 *.lammpstrj
+*.dcd
 *.dump
 *.restart
+restart.*
+
+# Compiled C generator (the source is tracked, the binary is built locally)
+topon/topology/csrc/*.exe
+topon/topology/csrc/*.o
+topon/topology/csrc/generator
+
+# Default output folder of the paper-companion analysis scripts
+demos/npjcompmat/scripts/raw_data_analyses/output/

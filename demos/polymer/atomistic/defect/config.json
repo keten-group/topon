@@ -1,0 +1,41 @@
+{
+    "study": {
+        "name": "atomistic_defect",
+        "output_dir": "output_atomistic_defect"
+    },
+    "topology": {
+        "source": "generate",
+        "generator": {
+            "lattice_size": "5x5x5",
+            "lattice_type": "SC",
+            "max_functionality": 4,
+            "degree_distribution": "0:0,1:24,2:30,3:40,4:31",
+            "search": "exact"
+        }
+    },
+    "chemistry": {
+        "model_type": "atomistic",
+        "target_density": 0.9,
+        "degree_of_polymerization": 10
+    },
+    "assignment": {
+        "defects": {
+            "secondary_loops": {
+                "enabled": true,
+                "count": 5
+            }
+        }
+    },
+    "conformation": {
+        "overlap_cutoff": 0.2,
+        "overlap_max_iters": 20
+    },
+    "simulation": {
+        "run_steps": 2000
+    },
+    "execution": {
+        "auto_run": false,
+        "executable": "lmp",
+        "n_procs": 1
+    }
+}

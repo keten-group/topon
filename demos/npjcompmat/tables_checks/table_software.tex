@@ -1,0 +1,23 @@
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.9cm}>{\raggedright\arraybackslash}p{6.7cm}>{\raggedright\arraybackslash}p{4.5cm}}
+\toprule
+Item & Version / value & Source \\
+\midrule
+CG build, equilibration and original pulls & LAMMPS 22 Jul 2025 (Update 1), \texttt{lmp\_mpi}, Quest (208 MPI ranks) & header of all 327 equilibration and 327 tensile \texttt{log.lammps} files; Slurm scripts \\
+CG replicate pulls (seeds 2--4) & LAMMPS 22 Jul 2025 (Update 1) builds on Anvil (replicates 2 and 4) and Quest (replicate 3); inputs identical to the originals except the velocity seed & campaign records; replicate log files not archived locally \\
+Atomistic $T_g$, original histories & LAMMPS 3 Mar 2020 (Quest) & log header of the original PDMS DP 10 sweep; replicate manifest \\
+Atomistic $T_g$, replicates, DP 10 and 30 & LAMMPS 22 Jul 2025 (Update 1), CPU, double precision (Anvil) & replicate manifest \\
+Atomistic $T_g$, replicates, DP 100 & LAMMPS 22 Jul 2025 (Update 1), GPU package, mixed precision & replicate manifest \\
+Primitive-path analysis & Z1+ (Kr\"oger et al., Comput.\ Phys.\ Commun.\ 2023) & entanglement analysis records \\
+Generator benchmark & topon \texttt{main} at commit \texttt{573f2daf0b41e647b3ca}\allowbreak\texttt{ef95edea2fcdf8c84608}; repository C strict sculptor (V47, md5 \texttt{1d457129\ldots}); paper-era binary (built 2025-11-03, md5 \texttt{e2294a1f\ldots}) & benchmark outputs, \texttt{t4\_versions.json} \\
+Analysis environment & Python 3.12.10, numpy 2.5.2, scipy 1.15.2, pandas 2.2.3, networkx 3.4.2, pydantic 2.12.5; matplotlib 3.10.1 (figures) & \texttt{t4\_versions.json}; \texttt{sampling\_log.json}; analysis scripts \\
+\midrule
+CG anneal velocity seed & 4928459 (\texttt{velocity create 0.01}, all 327 networks) & \texttt{001\_Anneal.in} \\
+CG tensile velocity seeds & 4928459 (original), 7391052 (replicate 2), 2648317 (replicate 3), 9184735 (replicate 4) & tensile inputs; campaign records \\
+$T_g$ replicate 2 seeds & PDMS 2110010 / 2110030 / 2110100; PMTFPS 2210010 / 2210030 / 2210100 (DP 10/30/100) & 305~K input of each replicate \\
+$T_g$ replicate 3 seeds & PDMS 3110010 / 3110030 / 3110100; PMTFPS 3210010 / 3210030 / 3210100 & 305~K input of each replicate \\
+$T_g$ original histories & no seed (velocities inherited from \texttt{ready2deform.data}) & replicate manifest \\
+Original network generation & no RNG seed recorded; the runs recorded a trial ordinal (e.g.\ \texttt{network\_N6x6x6\_trial6}); the paper-era binary is seeded from the clock & deposited file names; benchmark report \\
+Statistical resampling & network bootstrap \texttt{default\_rng(0)}, 2,000 resamples (cell and bar tables; Fig.~6b bands); strand bootstrap 20260925 (chain statistics table) & statistics and band scripts \\
+Brownian-bridge model & seed 20260924 & Brownian-bridge analysis, \texttt{sampling\_log.json} \\
+\bottomrule
+\end{tabular}

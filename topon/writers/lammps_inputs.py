@@ -1,21 +1,160 @@
+import copy
 import os
 import json
 
+from .lammps_endlinked import JUNCTION as ENDLINKED_JUNCTION
+
+#: Coarse-grained relaxation protocols, selected with ``simulation.protocol``.
+#:
+#: ``pushoff`` (default)
+#:     FENE + WCA from the first step with a capped displacement. No
+#:     minimiser, no soft potential, no harmonic bond, so nothing can push a
+#:     bead through a bond and the entanglement state the build carries is
+#:     the one the run ends with.
+#: ``hardcore_min``
+#:     The older hard-core minimiser: WCA throughout, conjugate-gradient
+#:     minimisation at stage 1, FENE from stage 3. Crossing-prone -- its
+#:     stage 1 stretched 85 bonds to 1.70 sigma on the N20 build and left 57
+#:     threaded at 1.3-1.4 sigma, which let strands cross later. Kept so
+#:     earlier runs can be reproduced.
+#: ``soft_push``
+#:     The historic generated protocol: ``pair_style soft`` ramped 0 to 30,
+#:     then an epsilon ramp to the real potential. Softer still -- a soft
+#:     core has finite energy at zero separation, so chains pass straight
+#:     through each other. Every CG reference under ``tests/output/`` was
+#:     written with it.
+CG_PROTOCOLS = ("pushoff", "hardcore_min", "soft_push")
+
+#: ``(script, data file)`` for each stage of the push-off protocol, in run
+#: order. The data-file names are the interchange convention of the
+#: end-linked validation scripts (``refnet.parse``, ``measure_system.py``),
+#: so a topon run and a reference run are measured by the same tooling.
+#: ``stage1_min.data`` is historic: stage 1 no longer minimises anything.
+PUSHOFF_STAGES = (
+    ("minimize_1_serial.in", "stage1_min.data"),
+    ("minimize_2_parallel.in", "stage2_pushoff.data"),
+    ("minimize_3_parallel.in", "stage3_build_equil.data"),
+    ("deform_4_parallel.in", "stage4_final_T1.data"),
+    ("quench_5_parallel.in", "stage5_final_quench.data"),
+)
+
+#: ``(script, data file)`` for each stage of the two minimiser protocols.
+MINIMISER_STAGES = (
+    ("minimize_1_serial.in", "system_after_soft.data"),
+    ("minimize_2_parallel.in", "system_ramped.data"),
+    ("minimize_3_parallel.in", "system_equilibrated.data"),
+)
+
+#: Push-off parameters. Every number here is from the brief's specification
+#: (Task 05) and was measured on the N20/N100 builds: the two capped stages
+#: are what keep the bond histogram under 1.2 sigma while the overlaps
+#: resolve. Override any of them under ``experimental.cg.pushoff``.
+PUSHOFF_DEFAULTS = {
+    "seed": 12345,
+    "temperature": 1.0,
+    "quench_temperature": 0.4,
+    # FENE: K, R0, epsilon, sigma. R0 = 1.5 is also the bond length at which
+    # the potential diverges, which is why FENE errors out on a stretched
+    # bond where the reference's quartic bond would break it silently.
+    "bond": [30.0, 1.5, 1.0, 1.0],
+    "wca_cutoff": 1.122462,
+    "neighbor_skin": 1.0,
+    # Ghost-atom communication has to reach a stretched FENE bond (up to 1.5
+    # sigma) plus the neighbour skin, or a bond partner goes missing across a
+    # processor boundary. 3.0 covers it with room to spare.
+    "comm_cutoff": 3.0,
+    "thermo_freq": 1000,
+    "stage1": {"timestep": 0.002, "limit": 0.02, "steps": 30000, "tdamp": 1.0},
+    "stage2": {"timestep": 0.005, "limit": 0.05, "steps": 20000,
+               "free_steps": 20000, "tdamp": 1.0},
+    "stage3": {"steps": 200000, "tdamp": 10.0},
+    "stage4": {"deform_steps": 150000, "settle_steps": 100000},
+    "stage5": {"ramp_steps": 50000, "settle_steps": 20000, "tdamp": 10.0},
+    # Stage 6 exists only when simulation.final_bond_style is "quartic".
+    "stage6": {"steps": 20000},
+}
+
+
+def _merge(base, override):
+    """Deep-merge ``override`` into a copy of ``base`` (dicts only)."""
+    out = copy.deepcopy(base)
+    for k, v in (override or {}).items():
+        if isinstance(out.get(k), dict) and isinstance(v, dict):
+            out[k] = _merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 class LammpsInputGenerator:
-    def __init__(self, output_dir, study_name, config=None, experimental=None):
+    """Writes the LAMMPS scripts that relax a build.
+
+    Args:
+        output_dir: the parent of the study directory.
+        study_name: appended to ``output_dir`` to give the study root.
+        config: the ``simulation`` block -- ``protocol``, ``pair_style``,
+            ``include_angles``, ``remove_cg_angles``, ``rho_final``,
+            ``final_bond_style``.
+        experimental: the ``experimental`` block; step counts for the
+            push-off live under ``cg.pushoff``.
+        flat: put the scripts, the data file and the checkpoints in one
+            directory instead of the ``02_Chemistry`` / ``03_Conformation`` /
+            ``04_Simulation`` layout. For a bead-spring build that never went
+            through the chemistry stage, where those directories would each
+            hold one file.
+    """
+
+    def __init__(self, output_dir, study_name, config=None, experimental=None,
+                 flat=False):
         self.root_dir = os.path.join(output_dir, study_name)
         self.config = config or {}
         self.experimental = experimental or {}
-        self.sim_dir = os.path.join(self.root_dir, "04_Simulation")
-        self.chem_dir = os.path.join(self.root_dir, "02_Chemistry")
-        self.conf_dir = os.path.join(self.root_dir, "03_Conformation")
-        
+        self.flat = flat
+        if flat:
+            self.sim_dir = self.chem_dir = self.conf_dir = self.root_dir
+        else:
+            self.sim_dir = os.path.join(self.root_dir, "04_Simulation")
+            self.chem_dir = os.path.join(self.root_dir, "02_Chemistry")
+            self.conf_dir = os.path.join(self.root_dir, "03_Conformation")
+
+        self.protocol = self.config.get('protocol', 'pushoff')
+        if self.protocol not in CG_PROTOCOLS:
+            raise ValueError(
+                f"Unknown CG relaxation protocol {self.protocol!r} "
+                f"(expected one of {', '.join(CG_PROTOCOLS)})"
+            )
+
         # Determine if in test mode
         self.test_mode = self.experimental.get('test_mode', False)
-        
+
         if not os.path.exists(self.sim_dir):
             os.makedirs(self.sim_dir)
-    
+
+    # ------------------------------------------------------------------
+    # Protocol parameters
+    # ------------------------------------------------------------------
+
+    def _pushoff(self):
+        """Push-off parameters: the defaults under ``experimental.cg.pushoff``."""
+        return _merge(PUSHOFF_DEFAULTS,
+                      self.experimental.get('cg', {}).get('pushoff', {}))
+
+    def stages(self, model_type="cg"):
+        """``(script, data file)`` per stage, in run order.
+
+        The one place that knows which scripts a protocol writes and what
+        each leaves behind. Runners and gates ask this rather than hard-coding
+        file names, so adding a stage does not mean editing every caller.
+        """
+        if model_type != 'cg':
+            return list(MINIMISER_STAGES)
+        if self.protocol != 'pushoff':
+            return list(MINIMISER_STAGES)
+        stages = list(PUSHOFF_STAGES)
+        if self.config.get('final_bond_style', 'fene') == 'quartic':
+            stages.append(("convert_6_parallel.in", "stage6_quartic.data"))
+        return stages
+
     def _get_cg_param(self, *keys, default=None):
         """Get CG parameter from experimental config."""
         d = self.experimental.get('cg', {})
@@ -32,11 +171,20 @@ class LammpsInputGenerator:
 
     def write_serial_soft_minimization(self, input_data="system_relaxed.data", groups_file="system.groups", settings_file="system.in.settings", model_type="atomistic"):
         """
-        Stage 1: Serial Soft Minimization.
-        Freezes nodes, resolves hard overlaps using soft potential.
+        Stage 1 of the relaxation protocol.
+
+        For ``model_type='cg'`` the stage depends on ``simulation.protocol``:
+        the push-off writes capped-displacement dynamics under FENE + WCA
+        (nothing is minimised, despite the script's historic name), while
+        ``hardcore_min`` and ``soft_push`` minimise. The atomistic route
+        always minimises: its bonded terms are stiff and a capped push-off
+        would take far longer than a minimiser to resolve the same overlaps.
         """
+        if model_type == 'cg' and self.protocol != 'soft_push':
+            return self._write_cg_stage1(input_data, groups_file, settings_file)
+
         script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
-        
+
         data_path = os.path.relpath(os.path.join(self.conf_dir, input_data), self.sim_dir).replace("\\", "/")
         groups_path = os.path.relpath(os.path.join(self.chem_dir, groups_file), self.sim_dir).replace("\\", "/")
         settings_path = os.path.relpath(os.path.join(self.chem_dir, settings_file), self.sim_dir).replace("\\", "/")
@@ -147,6 +295,404 @@ class LammpsInputGenerator:
 
         return script_path
 
+    # ==================================================================
+    # CG stage 1: push-off (default) and the hard-core minimiser
+    # ==================================================================
+
+    def _cg_header(self, input_data, groups_file, settings_file, wca_cutoff,
+                   neighbor_skin, comm_cutoff):
+        """Everything from ``units`` down to the neighbour settings.
+
+        The bond and angle styles named here are the ones in force while the
+        data file is *parsed*, not the ones the run uses. A CG data file
+        carries a ``Bond Coeffs`` section in whatever style the chemistry
+        stage wrote (harmonic), so ``read_data`` needs that style to read it;
+        each protocol then sets its own style and coefficients before the
+        first force is ever computed. A data file with no coefficient
+        sections -- the end-linked convention writes none -- is read the same
+        way.
+
+        ``neighbor`` and ``comm_modify`` come before anything that triggers a
+        system init (``delete_bonds`` does), because a ghost cutoff too small
+        for a stretched bond is how a run loses a bond partner across a
+        processor boundary.
+
+        ``groups_file=None`` names the groups from the end-linked atom types
+        instead of including a file: that convention *is* the group
+        definition (type 3 = junction), so a bead-spring build that never went
+        through the chemistry stage needs no groups file at all. The same
+        goes for ``settings_file=None``.
+        """
+        def rel(base, name):
+            return os.path.relpath(os.path.join(base, name),
+                                   self.sim_dir).replace("\\", "/")
+
+        lines = ["units           lj",
+                 "atom_style      full",
+                 "boundary        p p p",
+                 "bond_style      harmonic"]
+        if self.config.get('include_angles', True):
+            lines.append("angle_style     harmonic")
+        lines += [f"pair_style      lj/cut {wca_cutoff}",
+                  "special_bonds   lj 0.0 1.0 1.0",
+                  "",
+                  f"read_data       {rel(self.conf_dir, input_data)}"]
+        if settings_file:
+            lines.append(f"include         {rel(self.chem_dir, settings_file)}")
+        if groups_file:
+            lines.append(f"include         {rel(self.chem_dir, groups_file)}")
+        lines.append("")
+        if not groups_file:
+            lines.append(f"group           nodes type {ENDLINKED_JUNCTION}")
+        lines += ["group           beads subtract all nodes",
+                  "",
+                  f"neighbor        {neighbor_skin} bin",
+                  "neigh_modify    every 1 delay 0 check yes",
+                  f"comm_modify     mode single cutoff {comm_cutoff}",
+                  "", ""]
+        return "\n".join(lines)
+
+    def _write_cg_stage1(self, input_data, groups_file, settings_file):
+        if self.protocol == 'pushoff':
+            return self._write_cg_pushoff_stage1(input_data, groups_file,
+                                                 settings_file)
+        return self._write_cg_hardcore_stage1(input_data, groups_file,
+                                              settings_file)
+
+    def _write_cg_pushoff_stage1(self, input_data, groups_file, settings_file):
+        """Stage 1: resolve the build's overlaps without a minimiser.
+
+        A conjugate-gradient minimiser resolves an overlap by whatever move
+        lowers the energy, and with a harmonic bond the cheapest move is often
+        to stretch a bond and let the overlapping bead through it. Measured on
+        the N20 build: 85 bonds stretched to 1.70 sigma, 57 still threaded at
+        1.3-1.4 sigma in every later stage, and Z per bridge drifting 0.19 to
+        0.24 as those threaded strands crossed. Capped dynamics cannot do it:
+        FENE diverges at 1.5 sigma, so a bond never opens far enough, and
+        ``nve/limit 0.02`` means no bead travels more than 0.02 sigma in a
+        step however large the overlap force is.
+        """
+        p = self._pushoff()
+        s1 = p["stage1"]
+        K, R0, eps, sig = p["bond"]
+        script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
+
+        body = f"""# LAMMPS Stage 1: FENE + WCA push-off (CG, protocol "pushoff")
+#
+# No minimiser, no soft potential, no harmonic bond: the force field of the
+# final state is in force from the first step and the only thing that changes
+# is how far a bead may move per step. That is what keeps the network's
+# entanglement state the one the build placed (Task 05).
+#
+# The script name is historic. Nothing here minimises.
+
+{self._cg_header(input_data, groups_file, settings_file, p["wca_cutoff"],
+                 p["neighbor_skin"], p["comm_cutoff"])}\
+# --- Kremer-Grest force field (replaces whatever the data file carried) ---
+# The pair style is pinned to WCA, so simulation.pair_style does not apply:
+# a relaxation that has to preserve a topology cannot run an attractive tail
+# that pulls chains into one another.
+bond_style      fene
+bond_coeff      1 {K} {R0} {eps} {sig}
+special_bonds   fene
+pair_style      lj/cut {p["wca_cutoff"]}
+pair_coeff      * * 1.0 1.0 {p["wca_cutoff"]}
+"""
+        if self.config.get('include_angles', True) and self.config.get('remove_cg_angles', True):
+            body += """# Kremer-Grest chains are fully flexible; the stiff angles the chemistry
+# stage writes are dropped here rather than at stage 3, so no stage of this
+# protocol runs a force field the final state does not have.
+#
+# Guarded, because the same script has to read a data file that never had
+# angles: the end-linked writer emits none, and `delete_bonds all angle 1*1`
+# on a file with no angle types is "Numeric index 1 is out of bounds (0-0)".
+# `angle_style none` then drops the style itself, not just its terms, which
+# is what lets a later stage switch to the quartic bond -- that style refuses
+# to run while any 3- or 4-body style is defined, even with zero angles left.
+if "$(extract_setting(nangletypes)) > 0" then "delete_bonds all angle 1*1 remove"
+angle_style     none
+"""
+        body += f"""
+thermo          {p["thermo_freq"]}
+thermo_style    custom step temp pe press density
+
+# --- Capped push-off ---
+velocity        all create {p["temperature"]} {p["seed"]} rot yes dist gaussian
+timestep        {s1["timestep"]}
+fix             lim all nve/limit {s1["limit"]}
+fix             lang all langevin {p["temperature"]} {p["temperature"]} {s1["tdamp"]} {p["seed"]}
+run             {s1["steps"]}
+unfix           lim
+unfix           lang
+
+write_data      {PUSHOFF_STAGES[0][1]}
+write_restart   1.restart
+"""
+        with open(script_path, 'w') as f:
+            f.write(body)
+        return script_path
+
+    def _write_cg_hardcore_stage1(self, input_data, groups_file, settings_file):
+        """Stage 1 of ``hardcore_min``: WCA throughout, minimiser kept.
+
+        The protocol ``tests/workflows/lammps_hardcore/`` held before Task 05.
+        A hard core stops chains passing through one another during the push,
+        which the soft potential does not, but the minimiser still threads
+        bonds -- so this is for reproducing earlier runs, not for new ones.
+        """
+        p = self._pushoff()
+        m = self.experimental.get('cg', {}).get('minimize', {})
+        script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
+
+        body = f"""# LAMMPS Stage 1: hard-core minimisation (CG, protocol "hardcore_min")
+#
+# WCA from the first step -- no soft potential, so nothing passes through
+# anything during the push. The conjugate-gradient minimiser is kept, which
+# is what makes this protocol crossing-prone: it resolves an overlap by
+# stretching a bond and threading a bead through it (85 bonds to 1.70 sigma
+# on the N20 build). Use "pushoff" for new work.
+
+{self._cg_header(input_data, groups_file, settings_file, p["wca_cutoff"],
+                 2.0, 5.0)}\
+# --- Stage A: Freeze All (Beads & Nodes) ---
+fix             freeze_beads beads setforce 0 0 0
+fix             freeze_nodes nodes setforce 0 0 0
+min_style       cg
+minimize        {m.get('etol', 1.0e-4)} {m.get('ftol', 1.0e-6)} {m.get('maxiter', 1000)} {m.get('maxeval', 10000)}
+unfix           freeze_beads
+write_data      min_stage_A.data
+
+# --- Stage B: Relax Beads (Nodes Fixed) ---
+minimize        {m.get('etol', 1.0e-4)} {m.get('ftol', 1.0e-6)} {m.get('maxiter', 1000)} {m.get('maxeval', 10000)}
+unfix           freeze_nodes
+write_data      min_stage_B.data
+
+# --- Stage C: Relax All ---
+minimize        {m.get('etol', 1.0e-4)} {m.get('ftol', 1.0e-6)} {m.get('final_maxiter', 10000)} {m.get('final_maxeval', 100000)}
+write_data      {MINIMISER_STAGES[0][1]}
+write_restart   1.restart
+"""
+        with open(script_path, 'w') as f:
+            f.write(body)
+        return script_path
+
+    # ==================================================================
+    # CG stages 2-6: the push-off tail
+    # ==================================================================
+
+    def _write_cg_pushoff_tail(self):
+        """Stages 2 to 5 (and 6 when the run ends under the quartic bond).
+
+        One script per stage, chained through restart files, because every
+        stage has to leave a data file behind for the gate to read: the
+        acceptance gate scans the bond histogram after stage 2 and at every
+        later stage, and Z1+ is reported per stage so states are only ever
+        compared at the same density and temperature.
+        """
+        p = self._pushoff()
+        self._write_cg_pushoff_stage2(p)
+        self._write_cg_pushoff_stage3(p)
+        self._write_cg_pushoff_stage4(p)
+        self._write_cg_pushoff_stage5(p)
+        n = 5
+        if self.config.get('final_bond_style', 'fene') == 'quartic':
+            self._write_cg_pushoff_stage6(p)
+            n = 6
+        print(f"Generated CG push-off protocol (stages 2-{n}).")
+
+    def _cg_restart_header(self, restart, p, title, note=""):
+        return f"""# LAMMPS {title} (CG, protocol "pushoff")
+{note}
+read_restart    {restart}
+
+neighbor        {p["neighbor_skin"]} bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff {p["comm_cutoff"]}
+
+thermo          {p["thermo_freq"]}
+thermo_style    custom step temp pe press density
+"""
+
+    def _write_cg_pushoff_stage2(self, p):
+        """Stage 2: loosen the cap, then take it off.
+
+        The cap is raised rather than removed in one move because the last
+        overlaps are the deep ones. By the end of this stage the dynamics are
+        plain NVE under the Langevin thermostat, which is what the bond gate
+        is checked against: zero bonds above 1.2 sigma from here on.
+        """
+        s2 = p["stage2"]
+        script_path = os.path.join(self.sim_dir, "minimize_2_parallel.in")
+        with open(script_path, 'w') as f:
+            f.write(self._cg_restart_header(
+                "1.restart", p, "Stage 2: uncapped push-off",
+                "#\n# Raise the displacement cap, then drop it. Nothing is minimised.\n"
+            ) + f"""
+timestep        {s2["timestep"]}
+fix             lim all nve/limit {s2["limit"]}
+fix             lang all langevin {p["temperature"]} {p["temperature"]} {s2["tdamp"]} {p["seed"]}
+run             {s2["steps"]}
+unfix           lim
+
+fix             nve all nve
+run             {s2["free_steps"]}
+unfix           lang
+
+write_data      {PUSHOFF_STAGES[1][1]}
+write_restart   2.restart
+""")
+        return script_path
+
+    def _write_cg_pushoff_stage3(self, p):
+        """Stage 3: equilibrate at the density the chains were built at."""
+        s3 = p["stage3"]
+        script_path = os.path.join(self.sim_dir, "minimize_3_parallel.in")
+        with open(script_path, 'w') as f:
+            f.write(self._cg_restart_header(
+                "2.restart", p, "Stage 3: equilibration at the build density",
+                "#\n# A weaker thermostat (damp 10) so the chains relax rather than being\n"
+                "# dragged. If a minimiser is wanted for a final polish it belongs\n"
+                "# after this stage, never before it, and the bond histogram has to be\n"
+                "# re-checked afterwards.\n"
+            ) + f"""
+reset_timestep  0
+fix             nve all nve
+fix             lang all langevin {p["temperature"]} {p["temperature"]} {s3["tdamp"]} {p["seed"]}
+run             {s3["steps"]}
+
+write_data      {PUSHOFF_STAGES[2][1]}
+write_restart   3.restart
+""")
+        return script_path
+
+    def _write_cg_pushoff_stage4(self, p):
+        """Stage 4: affine compression to the target density, then settle.
+
+        The target box is computed inside LAMMPS from the atom count and the
+        current box, so the generator never has to know how many beads the
+        chemistry stage produced. With no ``simulation.rho_final`` the scale
+        factor is 1 and the stage is a pure settle -- which is the
+        no-compression case of the acceptance test, not a skipped stage.
+
+        ``rho_final`` is an LJ *number* density, beads per sigma cubed, and is
+        deliberately not called ``target_density``: ``chemistry.target_density``
+        is a mass density in g/cm^3 and is what sizes the build box. Two keys
+        with one name and different units is a compression that silently does
+        not happen.
+
+        One ``run`` for the deformation, always. ``fix deform`` re-bases its
+        reference box at every ``run`` command, so a deformation split across
+        several runs multiplies the box by the same factor once per chunk.
+        """
+        s4 = p["stage4"]
+        rho = self.config.get('rho_final')
+        script_path = os.path.join(self.sim_dir, "deform_4_parallel.in")
+
+        if rho:
+            scale = (f"variable        rho_target equal {rho}\n"
+                     "variable        sfac equal (atoms/v_rho_target/(lx*ly*lz))^(1.0/3.0)\n")
+        else:
+            scale = ("# No simulation.rho_final: deform to the box the build already\n"
+                     "# has, so this stage settles the equilibrated state and nothing else.\n"
+                     "variable        sfac equal 1.0\n")
+
+        with open(script_path, 'w') as f:
+            f.write(self._cg_restart_header(
+                "3.restart", p, "Stage 4: affine compression and settle",
+                "#\n# remap x carries the atoms with the box, so the compression is affine\n"
+                "# and no chain is left outside it.\n"
+            ) + f"""
+{scale}
+fix             nve all nve
+fix             lang all langevin {p["temperature"]} {p["temperature"]} {p["stage3"]["tdamp"]} {p["seed"]}
+fix             def all deform 1 x final $(xlo*v_sfac) $(xhi*v_sfac) y final $(ylo*v_sfac) $(yhi*v_sfac) z final $(zlo*v_sfac) $(zhi*v_sfac) units box remap x
+run             {s4["deform_steps"]}
+unfix           def
+run             {s4["settle_steps"]}
+
+write_data      {PUSHOFF_STAGES[3][1]}
+write_restart   4.restart
+""")
+        return script_path
+
+    def _write_cg_pushoff_stage5(self, p):
+        """Stage 5: quench to the comparison temperature.
+
+        A 50k-step ramp at damp 10, not the 10k-step damp-100 ramp of the
+        reference input: that one leaves the system at T = 0.83 while the
+        reference *data files* sit at 0.42, and Z1+ and the chain statistics
+        both depend on temperature, so a comparison across that gap is
+        measuring the gap.
+        """
+        s5 = p["stage5"]
+        T, Tq = p["temperature"], p["quench_temperature"]
+        script_path = os.path.join(self.sim_dir, "quench_5_parallel.in")
+        with open(script_path, 'w') as f:
+            f.write(self._cg_restart_header(
+                "4.restart", p, "Stage 5: quench",
+                f"#\n# T {T} -> {Tq}, then settle at {Tq}.\n"
+            ) + f"""
+fix             nve all nve
+fix             lang all langevin {T} {Tq} {s5["tdamp"]} {p["seed"]}
+run             {s5["ramp_steps"]}
+unfix           lang
+fix             lang all langevin {Tq} {Tq} {s5["tdamp"]} {p["seed"]}
+run             {s5["settle_steps"]}
+
+write_data      {PUSHOFF_STAGES[4][1]}
+write_restart   5.restart
+print "=== PROTOCOL DONE ==="
+""")
+        return script_path
+
+    def _write_cg_pushoff_stage6(self, p):
+        """Stage 6: convert to the quartic bond, for deformation runs only.
+
+        The quartic bond breaks silently above 1.5 sigma (64 bonds broke in a
+        smoke run and split chains), so it is never the bond a relaxation runs
+        under -- it goes on at the end, on a state whose bonds are already
+        near 0.97. It also costs nothing in entanglement: re-quenching the
+        same state under quartic gave Z 0.223 against FENE's 0.224.
+
+        ``bond_style quartic/omp`` computes correct forces but leaves the
+        subtracted bonded-LJ term out of E_pair and the virial (pressure 4.79
+        instead of 0.05 at rho 0.30), so the style is pinned to the serial
+        version with suffix off / suffix on. Any stress read from a run with
+        the OpenMP package still has to be checked against a serial ``run 0``.
+
+        Both the suffix wrapper and the angle style are guarded. ``suffix on``
+        with no suffix ever defined is an error ("May only enable suffixes
+        after defining one"), so a serial run may not carry the wrapper
+        unconditionally; and the quartic style refuses to initialise while any
+        3- or 4-body style is defined, whatever the angle count, so
+        ``angle_style none`` has to be in force by the time it is set.
+        """
+        s6 = p["stage6"]
+        Tq = p["quench_temperature"]
+        script_path = os.path.join(self.sim_dir, "convert_6_parallel.in")
+        with open(script_path, 'w') as f:
+            f.write(self._cg_restart_header(
+                "5.restart", p, "Stage 6: convert to the quartic bond",
+                "#\n# For deformation / bond-breaking runs. The relaxation above ran under\n"
+                "# FENE; only the final state is converted.\n"
+            ) + f"""
+angle_style     none
+if "$(is_active(package,omp))" then "suffix off"
+bond_style      quartic
+bond_coeff      1 2351.0 0.0 -0.7425 1.5 94.745
+if "$(is_active(package,omp))" then "suffix on"
+special_bonds   lj 1 1 1
+
+fix             nve all nve
+fix             lang all langevin {Tq} {Tq} {p["stage5"]["tdamp"]} {p["seed"]}
+run             {s6["steps"]}
+
+write_data      stage6_quartic.data
+write_restart   6.restart
+print "=== PROTOCOL DONE ==="
+""")
+        return script_path
+
     def write_parallel_production(self, settings_file="system.in.settings", model_type="atomistic"):
         """
         Parent function that generates the complete parallel minimization pipeline:
@@ -154,6 +700,9 @@ class LammpsInputGenerator:
         2. minimize_3_parallel.in (Stage 3: Tight Min + Equilibration)
         """
         if model_type == 'cg':
+            if self.protocol == 'pushoff':
+                self._write_cg_pushoff_tail()
+                return
             self._write_cg_minimization_equil(settings_file)
             print(f"Generated parallel minimization scripts (CG Stages 2 & 3).")
             return
@@ -203,15 +752,15 @@ class LammpsInputGenerator:
             f.write("pair_style      lj/cut/coul/long 10.0 10.0\n")
             f.write("kspace_style    pppm 1.0e-4\n")
             f.write(f"include         {settings_path}\n\n")
-            
+
             f.write("# Enforce Set 1 Special Bonds\n")
             f.write("special_bonds   lj/coul 0.0 0.0 1.0\n\n")
-            
+
             f.write("# --- 5. The Ramp (Set 1 Logic) ---\n")
             f.write("# Linearly scale epsilon/charges from 0.001 to 1.0\n")
             f.write("variable        scale equal \"ramp(0.001, 1.0)\"\n")
             f.write("timestep        1.0\n\n")
-            
+
             f.write("fix             1 all adapt 1 pair lj/cut/coul/long epsilon * * v_scale\n")
             f.write("fix             fxnve all nve/limit 0.1\n")
             f.write("thermo          1000\n\n")
@@ -224,7 +773,7 @@ class LammpsInputGenerator:
             f.write("unfix           fxnve\n")
             f.write("unfix           1\n")
             f.write("kspace_modify   compute yes\n\n")
-            
+
             f.write("write_data      system_ramped.data\n")
 
     def _write_stage3_equilibration(self, settings_file, model_type):
@@ -307,16 +856,28 @@ class LammpsInputGenerator:
         Generates Stage 2 & 3 scripts for CG model using Reference Logic (Harmonic Ramp).
         Stage 2: Harmonic Ramp (minimize_2_cg.in) - Switch to Harmonic for stability
         Stage 3: Equilibration (minimize_3_cg.in) - Switch back to FENE
+
+        Under ``hardcore_min`` the two soft steps -- the soft pre-minimisation
+        and the epsilon ramp -- are left out and WCA runs throughout. A soft
+        core has finite energy at zero separation, so during the ramp two
+        beads may sit on top of one another at bounded cost and chains pass
+        through each other; that is exactly the move a prescribed
+        entanglement cannot survive.
         """
+        hardcore = self.protocol == 'hardcore_min'
+
         # --- Stage 2: Harmonic Ramp Minimization ---
         script_path = os.path.join(self.sim_dir, "minimize_2_parallel.in")
-        
+
         with open(script_path, 'w') as f:
-            f.write("# LAMMPS Stage 2: CG Harmonic Ramp (Reference Logic)\n\n")
-            
+            if hardcore:
+                f.write("# LAMMPS Stage 2: CG hard core, no ramp (protocol \"hardcore_min\")\n\n")
+            else:
+                f.write("# LAMMPS Stage 2: CG Harmonic Ramp (Reference Logic)\n\n")
+
             # Read Restart from Stage 1 (Preserves state)
             f.write("read_restart    1.restart\n\n")
-            
+
             f.write("neighbor        2.0 bin\n")
             f.write("neigh_modify    every 1 delay 0 check yes\n")
             f.write("comm_modify     mode single cutoff 5.0\n\n")
@@ -328,36 +889,40 @@ class LammpsInputGenerator:
                 f.write("angle_style     harmonic\n")
                 f.write("angle_coeff     1 466.1 180.0\n\n") # Generic stiff angle
 
-            f.write("# Soft to Real Potential Ramp\n")
-            f.write("pair_style      soft 1.0\n")
-            f.write("pair_coeff      * * 1.0\n")
+            if not hardcore:
+                f.write("# Soft to Real Potential Ramp\n")
+                f.write("pair_style      soft 1.0\n")
+                f.write("pair_coeff      * * 1.0\n")
             f.write("min_style       cg\n")
             f.write("minimize        1e-4 1e-6 1000 10000\n\n")
 
             # Switch to Real LJ
             pair_style = self.config.get('pair_style', 'attractive')
-            pair_cutoff = 1.122462 if pair_style == 'repulsive' else 2.5
+            pair_cutoff = 1.122462 if (hardcore or pair_style == 'repulsive') else 2.5
             f.write(f"pair_style      lj/cut {pair_cutoff}\n")
             f.write(f"pair_coeff      * * 1.0 1.0 {pair_cutoff}\n")
-            
+
             # Ramp parameters from config
             cg_ramp = self.experimental.get('cg', {}).get('ramp', {})
             scale_min = cg_ramp.get('epsilon_scale_start', 0.001)
             scale_max = cg_ramp.get('epsilon_scale_end', 1.0)
             nve_limit = cg_ramp.get('nve_limit', 0.1)
             ramp_steps = cg_ramp.get('ramp_steps', 20000)
-            
-            f.write(f"variable        scale equal \"ramp({scale_min}, {scale_max})\"\n")
-            f.write(f"fix             1 all adapt 1 pair lj/cut epsilon * * v_scale\n")
+
+            if not hardcore:
+                f.write(f"variable        scale equal \"ramp({scale_min}, {scale_max})\"\n")
+                f.write(f"fix             1 all adapt 1 pair lj/cut epsilon * * v_scale\n")
             f.write(f"fix             fxnve all nve/limit {nve_limit}\n")
             f.write("thermo          1000\n")
             f.write(f"run             {ramp_steps}\n")
             f.write("unfix           fxnve\n")
-            f.write("unfix           1\n\n")
-            
+            if not hardcore:
+                f.write("unfix           1\n")
+            f.write("\n")
+
             f.write("write_restart   2.restart\n")
             f.write("write_data      system_ramped.data\n")
-            
+
         # --- Stage 3: FENE Equilibration ---
         script_path = os.path.join(self.sim_dir, "minimize_3_parallel.in")
         
@@ -376,7 +941,7 @@ class LammpsInputGenerator:
                 f.write("angle_style     harmonic\n")
                 f.write("angle_coeff     1 466.1 180.0\n")
             pair_style = self.config.get('pair_style', 'attractive')
-            pair_cutoff = 1.122462 if pair_style == 'repulsive' else 2.5
+            pair_cutoff = 1.122462 if (hardcore or pair_style == 'repulsive') else 2.5
             f.write(f"pair_style      lj/cut {pair_cutoff}\n")
             f.write(f"pair_coeff      * * 1.0 1.0 {pair_cutoff}\n")
             f.write("min_style       cg\n")

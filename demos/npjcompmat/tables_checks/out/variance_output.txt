@@ -1,0 +1,14 @@
+cube shape (327, 3, 4); pulls 3924
+uts: fractions network 19.0%  axis 0.4%  network x axis 49.9%  seed 30.7%  | F(net x axis vs seed) 7.51  F(axis) 3.53
+   reliability, axes random: 1 pull 0.191; 3 axes x 1 seed 0.414; 9 pulls (3 seeds) 0.487; 12 pulls 0.497; ceiling (infinite seeds) 0.533
+   reliability, axes fixed:  3 axes x 1 seed 0.777; 12 pulls 0.933
+   per-seed grand mean [3.6337 3.6525 3.6682 3.63  ]
+toughness: fractions network 4.7%  axis 0.4%  network x axis 41.1%  seed 53.8%  | F(net x axis vs seed) 4.06  F(axis) 3.56
+   reliability, axes random: 1 pull 0.048; 3 axes x 1 seed 0.130; 9 pulls (3 seeds) 0.220; 12 pulls 0.207; ceiling (infinite seeds) 0.257
+   reliability, axes fixed:  3 axes x 1 seed 0.507; 12 pulls 0.804
+   per-seed grand mean [17.6909 18.076  18.1077 18.1387]
+quadrant sizes (12 pulls): [128, 35, 35, 129]
+two independent seeds (3 axes each) disagree on 45.9% of networks (6 pairs, 43.7-48.0%)
+one seed (3 axes) vs the 12-pull reference: 30.9% differ (29.1-33.9%); seed 1 (published basis): 30.0% (98)
+9-pull (seeds 1-3) vs 12-pull: 11.6% (38)
+Pearson r(UTS, toughness) 12-pull means: 0.783

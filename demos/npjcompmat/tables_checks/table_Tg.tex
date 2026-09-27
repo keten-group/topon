@@ -1,0 +1,22 @@
+% source: data/derived/tg/tg_msd_histories.csv (msd.dat of the three cooling histories, data/raw/tg_cooling.tar.xz),
+%         fitted in generate_checks.ipynb -> tables_checks/out/tg_tables.json
+% curve_fit columns reproduce the per-history values behind Fig. 5; grid columns use the grid-search convention
+\begin{tabular}{llrrrrrrcrrr}
+\toprule
+ & & \multicolumn{6}{c}{Two-slope \texttt{curve\_fit} (as in Fig.~5)} & & \multicolumn{3}{c}{Grid search, same start} \\
+\cmidrule(lr){3-8}\cmidrule(lr){10-12}
+System & DP & Orig. & Rep.~2 & Rep.~3 & Mean & Spread & Avg.\ curve & & Orig. & Rep.~2 & Rep.~3 \\
+\midrule
+PDMS & 10 & 150.7 & 136.8 & 164.3 & 150.6 & 27.5 & 150.1 & & 147.2 & 136.9 & 164.3 \\
+ & 30 & 159.0 & 168.0 & 169.3 & 165.4 & 10.4 & 164.5 & & 158.9 & 168.0 & 169.2 \\
+ & 100 & 152.0 & 153.1 & 156.8 & 154.0 & 4.8 & 153.5 & & 151.9 & 153.2 & 156.8 \\
+\midrule
+PMTFPS & 10 & 195.6 & 180.7 & 190.1 & 188.8 & 14.9 & 186.4 & & 195.7 & 180.6 & 187.8 \\
+ & 30 & 191.7 & 195.0 & 187.7 & 191.5 & 7.3 & 191.1 & & 191.6 & 191.6 & 187.8 \\
+ & 100 & 191.6 & 191.3 & 195.4 & 192.8 & 4.1 & 191.8 & & 191.6 & 191.3 & 195.5 \\
+\midrule
+Contrast & 10 & 44.9 & 43.9 & 25.8 & 38.2 & 19.1 & 36.3 & & 48.5 & 43.8 & 23.5 \\
+ & 30 & 32.8 & 27.1 & 18.4 & 26.1 & 14.4 & 26.7 & & 32.7 & 23.6 & 18.6 \\
+ & 100 & 39.7 & 38.2 & 38.6 & 38.8 & 1.5 & 38.3 & & 39.7 & 38.2 & 38.7 \\
+\bottomrule
+\end{tabular}

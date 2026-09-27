@@ -1,0 +1,58 @@
+{
+    "study": {
+        "name": "cg_grafts",
+        "output_dir": "output_grafts"
+    },
+    "topology": {
+        "source": "generate",
+        "generator": {
+            "lattice_size": "5x5x5",
+            "lattice_type": "SC",
+            "max_functionality": 4,
+            "degree_distribution": "0:0,1:25"
+        }
+    },
+    "chemistry": {
+        "model_type": "coarse_grained",
+        "bead_density": 0.85,
+        "degree_of_polymerization": 20,
+        "monomers": {
+            "PDMS": {
+                "smiles": "[Si](C)(C)O",
+                "chain_head": "Si",
+                "chain_tail": "O"
+            },
+            "B": {
+                "smiles": "[Si](C)(C)O",
+                "chain_head": "Si",
+                "chain_tail": "O"
+            }
+        }
+    },
+    "assignment": {
+        "grafts": {
+            "enabled": true,
+            "per_edge_type": {
+                "A": {
+                    "graft_density": 0.2,
+                    "side_chain_dp": 5,
+                    "side_chain_monomer": "B"
+                }
+            }
+        }
+    },
+    "conformation": {
+        "overlap_cutoff": 0.01,
+        "overlap_max_iters": 10
+    },
+    "simulation": {
+        "include_angles": true,
+        "pair_style": "attractive"
+    },
+    "execution": {
+        "auto_run": false,
+        "executable": "lmp",
+        "n_procs": 1
+    },
+    "__comment_monomers__": "In the coarse-grained model the monomer names only label bead types. The SMILES are not used, but the config validator needs every label declared in chemistry.monomers."
+}

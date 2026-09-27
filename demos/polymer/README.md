@@ -1,0 +1,58 @@
+# Polymer-network demos
+
+Each demo is one `config.json`. Run it from the repository root with
+
+```bash
+topon generate demos/polymer/<atomistic|coarse_grained>/<demo>/config.json --output ./runs
+```
+
+Every config generates a 5x5x5 simple cubic network with the Python generator (125 sites, about a fifth of them
+dangling ends, junction functionality up to 4), then builds the chemistry, places the strands and writes the LAMMPS files. The two
+resolutions share the same features, so pick whichever your LAMMPS workflow expects.
+
+## Atomistic (DREIDING, PDMS)
+
+| Demo | What it shows |
+|---|---|
+| [`atomistic/basic/`](atomistic/basic/) | A plain network with one node type and one edge type. |
+| [`atomistic/entanglement/`](atomistic/entanglement/) | Five entanglements between neighbouring strands. |
+| [`atomistic/copolymer/`](atomistic/copolymer/) | Block copolymer strands (PDMS and phenyl siloxane). |
+| [`atomistic/graft/`](atomistic/graft/) | PDMS side chains grafted onto the backbone. |
+| [`atomistic/defect/`](atomistic/defect/) | Five secondary loops (parallel strands between two junctions). |
+| [`atomistic/combined/`](atomistic/combined/) | Entanglements and grafts together. |
+
+## Coarse-grained (Kremer-Grest)
+
+The same six demos with `chemistry.model_type = "coarse_grained"` and the Kremer-Grest simulation options
+(`include_angles`, `pair_style`). In the coarse-grained model the monomer names only label bead types, so the
+copolymer, graft and combined configs declare those labels in `chemistry.monomers` (the validator asks for them, and
+the SMILES there are not used).
+
+| Demo | What it shows |
+|---|---|
+| [`coarse_grained/basic/`](coarse_grained/basic/) | A bead-spring network with attractive LJ (`pair_style: attractive`). |
+| [`coarse_grained/entanglement/`](coarse_grained/entanglement/) | Five entanglements. |
+| [`coarse_grained/copolymer/`](coarse_grained/copolymer/) | Block copolymer strands (bead types A and B). |
+| [`coarse_grained/graft/`](coarse_grained/graft/) | Grafted side chains (bead type B). |
+| [`coarse_grained/defect/`](coarse_grained/defect/) | Five secondary loops. |
+| [`coarse_grained/combined/`](coarse_grained/combined/) | Entanglements and grafts together. |
+
+## Where each feature lives in the config
+
+| Feature | Config section | Notes |
+|---|---|---|
+| Entanglements | `assignment.entanglements` | a count or a distribution of entangled strand pairs |
+| Copolymers | `assignment.copolymer.per_edge_type` | block, random, alternating or gradient sequences |
+| Grafts | `assignment.grafts.per_edge_type` | graft density, side-chain DP and monomer per edge type |
+| Defects | `assignment.defects.secondary_loops` | parallel strands with a valence cap |
+
+The two defect demos give the degree counts in full (`"0:0,1:24,2:30,3:40,4:31"`) and use the exact search
+(`"search": "exact"`), which places the secondary loops as forced double edges while it builds the network. The full
+schema is in Appendix A of [`docs/USAGE.md`](../../docs/USAGE.md).
+
+## Using another topology
+
+To build on an existing network instead, set `topology.source` to `"load"` and point `topology.existing_files` at a
+`.nodes` and `.edges` pair, for example the network written by
+[`../topology/end_linking/python/run.py`](../topology/end_linking/python/run.py), the showcase network in
+[`../showcase/`](../showcase/), or one of the paper's networks in `demos/npjcompmat/data/mechanics/`.

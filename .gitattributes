@@ -1,0 +1,19 @@
+# Store every text file with LF line endings, on every platform.
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.mp4 binary
+*.pdf binary
+*.pkl binary
+*.gpickle binary
+*.npz binary
+*.npy binary
+*.xz binary
+*.gz binary
+*.tar binary
+*.zip binary
+*.exe binary

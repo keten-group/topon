@@ -1,0 +1,23 @@
+metric,bar,delta_abs_d,ci_low,ci_high,ci_excludes_0
+Algebraic connectivity (lambda_2),panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,-0.09313183493814231,-0.5062383902831507,0.5887180861689174,False
+Algebraic connectivity (lambda_2),panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.06059368222261163,-0.5307618796485313,0.7749837186249361,False
+"Algebraic connectivity excl. dangling ends (lambda_2,core)",panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,-0.041841516807376244,-0.43571096558155126,0.5875580512853213,False
+"Algebraic connectivity excl. dangling ends (lambda_2,core)",panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.46123863530357156,-0.8442488204958305,0.16883338951321306,False
+Mean shortest path length (L),panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,-0.31137132116978566,-0.5588286631443158,0.3196761118974076,False
+Mean shortest path length (L),panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.05331983936580542,-0.6395823127653739,0.5993454727662388,False
+Cycle rank,panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,0.06815397547370816,-0.4534659456174756,0.54774515518624,False
+Cycle rank,panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.07093122397268242,-0.49570194490661457,0.4095901883632556,False
+Max. betweenness centrality,panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,-0.19794666386530557,-0.46051592289686877,0.2771069057598583,False
+Max. betweenness centrality,panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.22843446751661983,-0.6626143161266218,0.3370944463467508,False
+Bridges,panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,0.5175942880611843,-0.14008075544182833,0.945051916645934,False
+Bridges,panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,0.5377400303672911,-0.1282240303216725,1.146529579056071,False
+Degree bimodality (D_bi),panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,0.5736659321067024,-0.0411973440767101,1.0135322201921857,False
+Degree bimodality (D_bi),panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,0.6027265492680951,-0.018608453460753363,1.1670042460091992,False
+Degree heterogeneity (sigma_k),panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,0.3895284294730212,-0.230205395182369,0.7423401745947299,False
+Degree heterogeneity (sigma_k),panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,0.20343161577457614,-0.5126112739316732,0.7590697697860334,False
+Degree entropy (H),panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,0.1373869188972008,-0.41428623656955216,0.5033650002438912,False
+Degree entropy (H),panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.09093679438669999,-0.7689232707344624,0.4506333115628776,False
+Mean eigenvector centrality,panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,0.010229782437411294,-0.4943783550883832,0.4283088212621886,False
+Mean eigenvector centrality,panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.14797090624592968,-0.8183676863583226,0.4317160329467733,False
+Assortativity (r),panel b: |d(Q3->Q4)| - |d(Q1->Q2)|,-0.08890935265817598,-0.42605397338718737,0.4330979473673589,False
+Assortativity (r),panel c: |d(Q2->Q4)| - |d(Q1->Q3)|,-0.01181583135204023,-0.5053957710443142,0.5933519286811563,False

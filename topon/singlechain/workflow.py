@@ -64,6 +64,9 @@ def run_workflow(
     density: float = 0.85,
     seed: int = 42,
     verbose: bool = True,
+    # v2: embedder selector.  "linear" = legacy, buggy for branched chains;
+    # "etkdg" = RDKit ETKDGv3 + MMFF94/UFF (recommended).
+    embedder: str = "linear",
 ) -> dict:
     """
     Build a single polymer chain in solvent and write DREIDING LAMMPS files.
@@ -256,10 +259,20 @@ def run_workflow(
         pass
     chain_mol = Chem.AddHs(chain_mol_raw)
 
-    # Assign extended linear coordinates along the x-axis.
-    # Atoms are placed in a straight line with bond_length spacing.
-    # The chain is centered at the origin initially; we shift it later.
-    _assign_extended_linear_coords(chain_mol, bond_length=1.5)
+    # Assign 3D coordinates.  Default is the legacy extended-linear
+    # placement for backward compatibility with existing callers.  New
+    # code should pass ``embedder="etkdg"`` for any branched polymer
+    # (PDMS, PTFPMS, polyacrylates) — the legacy placer collapses branch
+    # atoms onto their parent heavy atom.
+    if embedder == "etkdg":
+        from topon.chemistry.embed import embed_with_etkdg
+        embed_with_etkdg(chain_mol, seed=seed)
+    elif embedder == "linear":
+        _assign_extended_linear_coords(chain_mol, bond_length=1.5)
+    else:
+        raise ValueError(
+            f"Unknown embedder {embedder!r}; expected 'linear' or 'etkdg'."
+        )
 
     if verbose:
         print(f"  Chain atoms: {chain_mol.GetNumAtoms()}")
@@ -366,6 +379,14 @@ def run_workflow(
 def _assign_extended_linear_coords(mol, bond_length: float = 1.5) -> None:
     """Assign 3D coordinates as an extended polymer chain.
 
+    .. deprecated:: 0.2.0
+       Leaves branch atoms collapsed onto their parent heavy atom — the
+       pendant-placement step only displaces pendants *randomly* from
+       the backbone, which commonly produces minimum pair-distances
+       well below 1 Å (e.g. 0.44 Å Si-methyl-C on top of backbone O for
+       PDMS DP=30).  Use :func:`topon.chemistry.embed.embed_with_etkdg`
+       instead for any polymer with side chains or stereochemistry.
+
     Strategy (simple geometric placement):
 
     1. **Find the backbone** — longest path through the heavy-atom-only
@@ -388,6 +409,14 @@ def _assign_extended_linear_coords(mol, bond_length: float = 1.5) -> None:
     bond_length : float
         Default bond length (Å) when no specific value is available.
     """
+    import warnings
+    warnings.warn(
+        "_assign_extended_linear_coords places branch atoms on top of their "
+        "parent (min pair distance can be < 0.5 Å for branched polymers). "
+        "Use topon.chemistry.embed.embed_with_etkdg(mol, seed=...) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     import numpy as np
     from rdkit import Chem
     from rdkit.Geometry import Point3D

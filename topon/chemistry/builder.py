@@ -20,6 +20,14 @@ import numpy as np
 from topon.config.schema import ChemistryConfig
 
 
+# Feature-detect marker for downstream projects.
+# True since the fix that removed the trailing "[O]" placeholder from
+# `_create_chain_from_smiles`, which produced a peroxide -O-O- bond at the
+# chain tail for O-terminal monomers (e.g. PDMS, PTFPMS) under the atomistic
+# auto-bridge path.
+_PEROXIDE_FIX_APPLIED = True
+
+
 class ChemistryBuilder:
     """
     Builds molecular structure from attributed graph.
@@ -62,6 +70,15 @@ class ChemistryBuilder:
 
         # Entangled pairs
         self.entangled_pairs = []
+
+        # Molecule bookkeeping for the end-linked writer convention:
+        # every junction is its own molecule, every chain is one molecule,
+        # and a dangling chain's free end site belongs to the chain.
+        self.node_is_end_cap = {}   # node_id -> bool
+        self.node_mol = {}          # node_id -> molecule id
+        self.chain_mol = {}         # (u, v, key) -> molecule id
+        self.sol_atom_map = []      # [[atom idxs], ...] for sol chains
+        self._next_mol = 0
     
     def build(self):
         """
@@ -121,10 +138,25 @@ class ChemistryBuilder:
             degree = self.G.degree(node)
             if degree == 0:
                 continue
-            
-            # Get node type from graph
-            node_type = self.G.nodes[node].get("node_type", "A")
-            
+
+            # Get node type from graph.  For backward compatibility with
+            # legacy callers, accept the attribute name ``type`` as a fallback.  Emit a
+            # DeprecationWarning so new code migrates to ``node_type``.
+            node_attrs = self.G.nodes[node]
+            if "node_type" in node_attrs:
+                node_type = node_attrs["node_type"]
+            elif "type" in node_attrs:
+                import warnings
+                warnings.warn(
+                    "Graph node attribute 'type' is read for backward-compat; "
+                    "please use 'node_type' in new code.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                node_type = node_attrs["type"]
+            else:
+                node_type = "A"
+
             # Get molecule config for this type
             node_config = self.config.node_type_map.get(node_type)
             if not node_config:
@@ -144,8 +176,45 @@ class ChemistryBuilder:
                 self._place_end_cap(node, molecule)
             else:
                 self._place_simple_atom(node, molecule)
-        
+
+            # A junction is its own molecule and carries the junction role;
+            # an end cap is the free end of its one chain, so it waits for
+            # that chain to claim it.
+            #
+            # Which one a node is follows its declared type when it has one:
+            # a crosslinker that happens to carry a single strand is still a
+            # crosslinker (the DP-20 reference has eight of them), and only
+            # an undeclared node falls back to reading degree 1 as a free
+            # end. The structure placed above is unaffected: in CG both
+            # branches put one bead there.
+            declared = next((node_attrs[k] for k in ("node_type", "type", "kind")
+                             if k in node_attrs), None)
+            if node_config is not None:
+                self.node_is_end_cap[node] = bool(node_config.is_end_cap)
+            elif declared is not None:
+                self.node_is_end_cap[node] = declared in ("end", "END")
+            else:
+                self.node_is_end_cap[node] = degree == 1
+            if not self.node_is_end_cap[node]:
+                self._next_mol += 1
+                self.node_mol[node] = self._next_mol
+                self._tag_atoms(self.node_map[node], self._next_mol, "junction")
+
         print(f"    Placed {len(self.node_map)} node structures")
+
+    def _tag_atoms(self, atom_ref, mol_id: int, role: str) -> None:
+        """Record molecule and role on atoms, for the end-linked writer.
+
+        Inert for the default writer convention, which puts every atom in
+        molecule 1 and types beads by ``bead_type``.
+        """
+        idxs = atom_ref if isinstance(atom_ref, (list, tuple)) else [atom_ref]
+        for idx in idxs:
+            if idx is None:
+                continue
+            atom = self.chemical_space.GetAtomWithIdx(int(idx))
+            atom.SetIntProp("topon_mol", int(mol_id))
+            atom.SetProp("topon_role", role)
     
     def _place_simple_atom(self, node: int, atom_symbol: str = "Si"):
         """Place a simple atom crosslinker."""
@@ -174,9 +243,25 @@ class ChemistryBuilder:
                 self.node_map[node] = idx
     
     def _place_end_cap(self, node: int, molecule: str):
-        """Place an end-cap molecule."""
+        """Place an end-cap molecule.
+
+        Atomistic mode: instantiate the full SMILES (e.g. trimethylsilyl
+        ``[Si](C)(C)C``). The atomistic Pipeline's pendant-coordinate pass
+        propagates positions for the methyl Cs through bond neighbours, so
+        leaving them out of ``node_map`` is fine.
+
+        Coarse-grained mode: collapse to a single bead. The CG Pipeline
+        emits only nodes / backbone / grafts displacement files (there is
+        no pendant pass), so a multi-atom SMILES end cap would leave its
+        non-Si atoms with no displacement entry and they'd end up stuck
+        at the origin. One bead per node is the CG design intent anyway.
+        """
         from rdkit import Chem
-        
+
+        if self.config.model_type == "coarse_grained":
+            self._place_simple_atom(node, "Si")
+            return
+
         mol = Chem.MolFromSmiles(molecule)
         if mol:
             mol = Chem.RemoveHs(mol)
@@ -384,9 +469,16 @@ class ChemistryBuilder:
                 monomer_config = self.config.monomers.get("PDMS")
 
             # Build the chain (pass full edge data for graft/copolymer attributes)
+            self._next_mol += 1
+            self.chain_mol[(u, v, key)] = self._next_mol
             self._build_chain(u, v, key, dp, monomer_config, data)
             chain_count += 1
-        
+
+        n_loops = sum(1 for u, v in self.G.edges() if u == v)
+        if n_loops:
+            print(f"      of which {n_loops} primary loops (rings closed on "
+                  f"their own junction)")
+        self._build_sol_chains()
         print(f"    Built {chain_count} chains")
     
     def _build_chain(self, u: int, v: int, key: int, dp: int, monomer_config, edge_data: dict = None):
@@ -409,7 +501,14 @@ class ChemistryBuilder:
                 vec = pos_v - pos_u
         else:
             vec = np.array([1, 0, 0])  # Default direction
-        
+
+        if u == v:
+            # A primary loop: both ends of the strand land on the same
+            # junction, so there is no chord to take a direction from.
+            # An arbitrary axis is enough; on a POSS cage the two calls
+            # below then pick opposite corners, as two strands would.
+            vec = np.array([1.0, 0.0, 0.0])
+
         # Get attachment atoms
         att_u = self._get_attachment_atom(u, vec)
         att_v = self._get_attachment_atom(v, -vec)
@@ -421,7 +520,86 @@ class ChemistryBuilder:
         if self.config.model_type == "coarse_grained":
             self._build_chain_cg(u, v, key, dp, att_u, att_v, edge_data or {})
         else:
-            self._build_chain_atomistic(u, v, key, dp, monomer_config, att_u, att_v)
+            self._build_chain_atomistic(
+                u, v, key, dp, monomer_config, att_u, att_v, edge_data or {}
+            )
+        self._tag_chain((u, v, key), u, v)
+
+    def _tag_chain(self, edge_id, u, v) -> None:
+        """Give a strand's atoms their molecule id and their chain roles.
+
+        The molecule is the chain; its two chemical ends carry the ``end``
+        role and everything between them ``interior``. A dangling strand
+        ends on an end-cap node, which joins the chain's molecule and is
+        the chain's free end. That is the end-linked convention, where
+        every chain is DP beads whether or not it reacted at both ends.
+        """
+        atoms = list(self.edge_atom_map.get(edge_id, []))
+        if not atoms:
+            return
+        mol_id = self.chain_mol.get(edge_id, 1)
+
+        def cap_atom(node):
+            ref = self.node_map.get(node) if self.node_is_end_cap.get(node) else None
+            if ref is None or isinstance(ref, int):
+                return ref
+            return ref[0]
+
+        # The chain's two chemical ends: its backbone head and tail, or the
+        # end-cap node at whichever side is free. Atomistic chains carry
+        # side atoms in `edge_atom_map` too, so the ends come from
+        # `edge_backbone_map` rather than from the list order.
+        head, tail = self.edge_backbone_map.get(edge_id, (atoms[0], atoms[-1]))
+        ends = {cap_atom(u) if cap_atom(u) is not None else head,
+                cap_atom(v) if cap_atom(v) is not None else tail}
+        for idx in atoms + [a for a in (cap_atom(u), cap_atom(v)) if a is not None]:
+            self._tag_atoms(idx, mol_id, "end" if idx in ends else "interior")
+        for _, graft_atoms in self.graft_atom_map.get(edge_id, []):
+            self._tag_atoms(graft_atoms, mol_id, "interior")
+
+    def _build_sol_chains(self) -> None:
+        """Build the sol: chains bonded to no junction.
+
+        They are not in the junction graph (``G.graph["sol_chains"]``
+        carries their count and DP, written by the defects stage), but they
+        hold beads, and the box is sized from the bead count. Leaving them
+        out makes the bridge density, and with it the tensile peak, too
+        high by their share (7 % of the beads on the DP-20 reference,
+        together with the primary loops).
+        """
+        spec = self.G.graph.get("sol_chains")
+        if not spec:
+            return
+        count = int(spec.get("count", 0))
+        dp = int(spec.get("dp", 25))
+        if count <= 0 or dp <= 0:
+            return
+        if self.config.model_type != "coarse_grained":
+            warnings.warn(
+                f"{count} sol chains requested; sol is built for "
+                f"coarse-grained systems only, so they are left out of the "
+                f"atomistic structure (and of its bead budget).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+        from rdkit import Chem
+
+        bead_type = spec.get("bead_type", "B")
+        for _ in range(count):
+            self._next_mol += 1
+            idxs = []
+            for _ in range(dp):
+                bead = Chem.Atom("C")
+                bead.SetProp("bead_type", bead_type)
+                idxs.append(self.chemical_space.AddAtom(bead))
+            for a, b in zip(idxs[:-1], idxs[1:]):
+                self.chemical_space.AddBond(a, b, Chem.BondType.SINGLE)
+            for i, idx in enumerate(idxs):
+                self._tag_atoms(idx, self._next_mol,
+                                "end" if i in (0, len(idxs) - 1) else "interior")
+            self.sol_atom_map.append(idxs)
+        print(f"    Built {count} sol chains of {dp} beads")
     
     def _build_chain_cg(self, u, v, key, dp, att_u, att_v, edge_data: dict = None):
         """Build a coarse-grained chain (simple bead chain).
@@ -458,17 +636,21 @@ class ChemistryBuilder:
             self.chemical_space.AddBond(att_u, chain_idxs[0], Chem.BondType.SINGLE)
             self.chemical_space.AddBond(chain_idxs[-1], att_v, Chem.BondType.SINGLE)
 
-        # Graft side chains
+        # Graft side chains.
+        # Stored as ``[(frac, [side-chain atom ids]), ...]`` to match
+        # Pipeline's graft-placement loop (and the atomistic shape). The
+        # backbone position ``pos`` is mapped to ``frac = (pos+1)/(dp+1)``
+        # so the placement code can interpolate along the backbone vector.
         graft_positions = edge_data.get("graft_positions", [])
         graft_dp = edge_data.get("graft_dp", 5)
         graft_monomer = edge_data.get("graft_monomer", "G")
 
-        graft_map = {}  # backbone_pos -> [side-chain atom indices]
+        edge_grafts: list[tuple[float, list[int]]] = []
         for pos in graft_positions:
             if pos < 0 or pos >= len(chain_idxs):
                 continue
             backbone_idx = chain_idxs[pos]
-            side_idxs = []
+            side_idxs: list[int] = []
             prev = backbone_idx
             for _ in range(graft_dp):
                 g_bead = Chem.Atom("C")
@@ -477,50 +659,85 @@ class ChemistryBuilder:
                 self.chemical_space.AddBond(prev, g_idx, Chem.BondType.SINGLE)
                 side_idxs.append(g_idx)
                 prev = g_idx
-            graft_map[pos] = side_idxs
+            edge_grafts.append(((pos + 1) / (dp + 1), side_idxs))
 
         self.edge_atom_map[edge_id] = chain_idxs
         self.edge_backbone_map[edge_id] = (chain_idxs[0], chain_idxs[-1]) if chain_idxs else (None, None)
-        if graft_map:
-            self.graft_atom_map[edge_id] = graft_map
+        if edge_grafts:
+            self.graft_atom_map[edge_id] = edge_grafts
     
-    def _build_chain_atomistic(self, u, v, key, dp, monomer_config, att_u, att_v):
-        """Build an atomistic chain with smart bridge detection."""
+    def _build_chain_atomistic(self, u, v, key, dp, monomer_config, att_u, att_v, edge_data: dict = None):
+        """Build an atomistic chain with smart bridge detection.
+
+        When ``edge_data['graft_positions']`` is non-empty AND the monomer
+        SMILES matches the PDMS reference ``[Si](C)(C)O``, falls back to a
+        per-repeat builder (``_build_pdms_chain_with_grafts``) that emits a
+        side chain at each marked backbone Si and records the per-edge graft
+        atom map. For non-PDMS monomers with grafts, a warning is emitted
+        and grafts are skipped — the SMILES-concatenation path can't add
+        conditional side chains at specific repeat positions.
+        """
         from rdkit import Chem
-        
+
+        if edge_data is None:
+            edge_data = {}
+
         edge_id = (u, v, key)
         smiles = monomer_config.smiles
         chain_head_atom = monomer_config.chain_head
         chain_tail_atom = monomer_config.chain_tail
-        
-        # Create chain from SMILES
-        try:
-            chain_mol = self._create_chain_from_smiles(smiles, dp)
-        except ValueError as exc:
+
+        graft_positions = list(edge_data.get("graft_positions") or [])
+        graft_dp = int(edge_data.get("graft_dp", 5))
+        use_per_repeat = bool(graft_positions) and smiles == "[Si](C)(C)O"
+
+        if graft_positions and not use_per_repeat:
             warnings.warn(
-                f"Skipping edge ({u}, {v}): {exc}",
-                RuntimeWarning,
-                stacklevel=2,
+                f"Edge ({u},{v}): graft_positions set but monomer SMILES "
+                f"is {smiles!r} — atomistic graft is currently implemented "
+                f"only for PDMS '[Si](C)(C)O'; grafts skipped.",
+                RuntimeWarning, stacklevel=2,
             )
-            return
-        if chain_mol is None:
-            return
-        
-        # Add chain atoms to chemical space
-        chain_idxs = [self.chemical_space.AddAtom(a) for a in chain_mol.GetAtoms()]
-        for b in chain_mol.GetBonds():
-            self.chemical_space.AddBond(
-                chain_idxs[b.GetBeginAtomIdx()],
-                chain_idxs[b.GetEndAtomIdx()],
-                b.GetBondType()
+            graft_positions = []
+
+        edge_grafts: list[tuple[float, list[int]]] = []
+
+        if use_per_repeat:
+            chain_idxs, edge_grafts = self._build_pdms_chain_with_grafts(
+                dp, graft_positions, graft_dp
             )
-        
-        if not chain_idxs:
-            return
-        
-        # Find head and tail (first and last atoms matching expected types)
-        chain_head = chain_idxs[0]
-        chain_tail = chain_idxs[-1]
+            if not chain_idxs:
+                return
+            chain_head = chain_idxs[0]
+            chain_tail = chain_idxs[-1]
+        else:
+            # SMILES-concatenation path (fast for non-grafted PDMS or any
+            # custom monomer where per-position grafting isn't supported).
+            try:
+                chain_mol = self._create_chain_from_smiles(smiles, dp)
+            except ValueError as exc:
+                warnings.warn(
+                    f"Skipping edge ({u}, {v}): {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return
+            if chain_mol is None:
+                return
+
+            chain_idxs = [self.chemical_space.AddAtom(a) for a in chain_mol.GetAtoms()]
+            for b in chain_mol.GetBonds():
+                self.chemical_space.AddBond(
+                    chain_idxs[b.GetBeginAtomIdx()],
+                    chain_idxs[b.GetEndAtomIdx()],
+                    b.GetBondType()
+                )
+
+            if not chain_idxs:
+                return
+
+            chain_head = chain_idxs[0]
+            chain_tail = chain_idxs[-1]
         
         # Check if need bridge on left side
         node_u_symbol = self.chemical_space.GetAtomWithIdx(att_u).GetSymbol()
@@ -550,7 +767,94 @@ class ChemistryBuilder:
         
         self.edge_atom_map[edge_id] = chain_idxs
         self.edge_backbone_map[edge_id] = (chain_head, chain_tail)
-    
+        if edge_grafts:
+            self.graft_atom_map[edge_id] = edge_grafts
+
+    def _build_pdms_chain_with_grafts(
+        self,
+        dp: int,
+        graft_positions: list,
+        graft_dp: int,
+    ) -> tuple[list, list]:
+        """Build a PDMS chain repeat-by-repeat, attaching side chains.
+
+        Each backbone repeat is structurally ``Si(C)(C)O`` so the chain is
+        the same atom-order as ``[Si](C)(C)O`` × dp (matches the
+        SMILES-concatenation path's ``chain_idxs`` ordering, so any
+        index-based callers behave identically). For each backbone Si
+        whose index ``k`` is in ``graft_positions``, one of the two
+        methyl C caps is replaced by a branch O that leads into a side
+        chain of ``graft_dp`` repeat units (``Si(C)(C)O`` × graft_dp
+        but with the trailing O omitted on the last repeat). This keeps
+        every Si at valence 4.
+
+        Returns:
+            (chain_idxs, edge_grafts) where
+                chain_idxs   = global RDKit atom indices in build order
+                edge_grafts  = [(frac, [side_atom_idx, ...]), ...]
+                               frac = (k+1)/(dp+1), matching the canonical
+                               workflow's per-edge graft_map shape.
+        """
+        from rdkit import Chem
+
+        graft_set = set(int(p) for p in graft_positions)
+        M = self.chemical_space
+        chain_idxs: list = []
+        edge_grafts: list[tuple[float, list[int]]] = []
+        prev = None  # previous repeat's linker O
+
+        for k in range(dp):
+            si = M.AddAtom(Chem.Atom("Si"))
+            chain_idxs.append(si)
+            if prev is not None:
+                M.AddBond(prev, si, Chem.BondType.SINGLE)
+
+            if k in graft_set:
+                # 1 methyl cap (instead of 2) + branch O + side chain
+                c1 = M.AddAtom(Chem.Atom("C"))
+                chain_idxs.append(c1)
+                M.AddBond(si, c1, Chem.BondType.SINGLE)
+
+                g_o = M.AddAtom(Chem.Atom("O"))
+                chain_idxs.append(g_o)
+                M.AddBond(si, g_o, Chem.BondType.SINGLE)
+
+                # Side chain: graft_dp repeats of Si(C)(C)O; drop the
+                # trailing O on the last repeat so the tail Si caps at
+                # valence 3 (Si + 2 methyls + 1 bridge from prev = 4).
+                g_atoms = [g_o]
+                g_prev = g_o
+                for j in range(graft_dp):
+                    g_si = M.AddAtom(Chem.Atom("Si"))
+                    g_atoms.append(g_si)
+                    M.AddBond(g_prev, g_si, Chem.BondType.SINGLE)
+                    g_c1 = M.AddAtom(Chem.Atom("C"))
+                    g_c2 = M.AddAtom(Chem.Atom("C"))
+                    g_atoms.extend([g_c1, g_c2])
+                    M.AddBond(g_si, g_c1, Chem.BondType.SINGLE)
+                    M.AddBond(g_si, g_c2, Chem.BondType.SINGLE)
+                    if j < graft_dp - 1:
+                        g_next_o = M.AddAtom(Chem.Atom("O"))
+                        g_atoms.append(g_next_o)
+                        M.AddBond(g_si, g_next_o, Chem.BondType.SINGLE)
+                        g_prev = g_next_o
+                edge_grafts.append(((k + 1) / (dp + 1), g_atoms))
+            else:
+                # Normal repeat: 2 methyl caps
+                c1 = M.AddAtom(Chem.Atom("C"))
+                c2 = M.AddAtom(Chem.Atom("C"))
+                chain_idxs.extend([c1, c2])
+                M.AddBond(si, c1, Chem.BondType.SINGLE)
+                M.AddBond(si, c2, Chem.BondType.SINGLE)
+
+            # Trailing linker O of this repeat
+            o = M.AddAtom(Chem.Atom("O"))
+            chain_idxs.append(o)
+            M.AddBond(si, o, Chem.BondType.SINGLE)
+            prev = o
+
+        return chain_idxs, edge_grafts
+
     def _create_chain_from_smiles(self, smiles: str, dp: int):
         """Create a polymer chain from repeating SMILES unit.
 
@@ -569,9 +873,13 @@ class ChemistryBuilder:
             unit = smiles
             linker = ""
 
-        # Build full chain SMILES
+        # Build full chain SMILES.
+        # The last repeat unit's linker O serves as the chain tail; the
+        # auto-bridge in `_build_chain_atomistic` direct-bonds it to the
+        # network/end-cap Si node. Do NOT append a trailing "[O]" — that
+        # produces a spurious -O-O- peroxide bond at the chain tail.
         if linker:
-            chain_smiles = (unit + linker) * dp + "[O]"
+            chain_smiles = (unit + linker) * dp
         else:
             chain_smiles = unit * dp
 

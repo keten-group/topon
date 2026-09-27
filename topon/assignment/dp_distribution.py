@@ -47,12 +47,41 @@ def assign_dp(G: nx.MultiGraph, config: DPDistributionConfig) -> None:
         # Assign to edges
         for (u, v, key), dp in zip(edges, dp_values):
             G.edges[u, v, key]["dp"] = dp
-    
+
+    if config.endlinked_dangling:
+        _apply_endlinked_dangling(G)
+
     # Report stats
     all_dps = [data.get("dp", 0) for u, v, key, data in G.edges(keys=True, data=True)]
     if all_dps:
         print(f"    DP range: {min(all_dps)} - {max(all_dps)}")
         print(f"    DP mean: {sum(all_dps) / len(all_dps):.1f}")
+
+
+def _apply_endlinked_dangling(G: nx.MultiGraph) -> None:
+    """Spend one bead of every dangling strand on its free end site.
+
+    In the end-linked convention a dangling chain is DP beads, the last of
+    which *is* the free end: topon models that end as a degree-1 site of
+    its own, so the strand between it and the junction carries ``dp - 1``.
+    Without this the bead count runs one high per dangling strand (209 on
+    the DP-20 reference: 102 709 instead of 102 500).
+    """
+    from topon.assignment.defects import is_end_site
+
+    adjusted = 0
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if u == v:
+            continue
+        if is_end_site(G, u) or is_end_site(G, v):
+            dp = int(data.get("dp", 1))
+            if dp > 1:
+                G.edges[u, v, key]["dp"] = dp - 1
+                adjusted += 1
+    if adjusted:
+        G.graph["endlinked_dangling"] = True
+        print(f"    End-linked convention: {adjusted} dangling strands "
+              f"carry dp - 1 beads (their free end is the DP-th bead)")
 
 
 def generate_dp_distribution(n: int, mean_dp: float, pdi: float) -> list[int]:

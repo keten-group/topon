@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Topon"
+abstract: "Topon builds polymer networks for LAMMPS. The network topology is generated as a graph first and the chemistry (coarse-grained or atomistic) is mapped onto it afterwards."
+authors:
+  - family-names: "Yıldırım"
+    given-names: "Ahmet Burak"
+    affiliation: "Department of Mechanical Engineering, Northwestern University"
+  - family-names: "Arora"
+    given-names: "Akash"
+    affiliation: "The Dow Chemical Company"
+  - family-names: "Ahn"
+    given-names: "Dongchan"
+    affiliation: "The Dow Chemical Company"
+  - family-names: "Keten"
+    given-names: "Sinan"
+    affiliation: "Department of Mechanical Engineering and Department of Civil and Environmental Engineering, Northwestern University"
+version: "0.2.0"
+doi: "10.5281/zenodo.19672939"
+license: MIT
+repository-code: "https://github.com/keten-group/topon"
+keywords:
+  - polymer networks
+  - network topology
+  - molecular dynamics
+  - LAMMPS
+  - coarse-grained

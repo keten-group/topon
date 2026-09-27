@@ -1,0 +1,4 @@
+{
+ "anneal_end_aniso_mean": 0.14321771790914595,
+ "note": "mean over networks of max(L)/min(L)-1 over the last 100 thermo rows (1000 tau) of the anneal; task3_stationarity.py box_stats"
+}

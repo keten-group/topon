@@ -1,0 +1,20 @@
+Tg per history: 4 ps, manuscript curve_fit routine (make_figure5_replicates.py)
+PDMS   DP_10   nT=42 T=100-305  per-history  150.7  136.8  164.3 | mean  150.6 spread  27.5 SD 13.8 | avg-curve  150.1 || grid convention  147.2  136.9  164.3 fitq%   28   40   31
+PDMS   DP_30   nT=42 T=100-305  per-history  159.0  168.0  169.3 | mean  165.4 spread  10.4 SD  5.6 | avg-curve  164.5 || grid convention  158.9  168.0  169.2 fitq%   75   86   81
+PDMS   DP_100  nT=42 T=100-305  per-history  152.0  153.1  156.8 | mean  154.0 spread   4.8 SD  2.5 | avg-curve  153.5 || grid convention  151.9  153.2  156.8 fitq%   91   91   88
+PMTFPS DP_10   nT=42 T=100-305  per-history  195.6  180.7  190.1 | mean  188.8 spread  14.9 SD  7.5 | avg-curve  186.4 || grid convention  195.7  180.6  187.8 fitq%   88   89   93
+PMTFPS DP_30   nT=42 T=100-305  per-history  191.7  195.0  187.7 | mean  191.5 spread   7.3 SD  3.7 | avg-curve  191.1 || grid convention  191.6  191.6  187.8 fitq%   93   93   94
+PMTFPS DP_100  nT=42 T=100-305  per-history  191.6  191.3  195.4 | mean  192.8 spread   4.1 SD  2.3 | avg-curve  191.8 || grid convention  191.6  191.3  195.5 fitq%   94   94   95
+
+contrast PMTFPS - PDMS, 4 ps (curve_fit per history | avg-curve) || grid convention
+DP_10     44.9   43.9   25.8 | mean  38.2 spread  19.1 SD 10.8 | avg-curve  36.3 || grid   48.5   43.8   23.5 mean  38.6 spread  25.0
+DP_30     32.8   27.1   18.4 | mean  26.1 spread  14.4 SD  7.2 | avg-curve  26.7 || grid   32.7   23.6   18.6 mean  25.0 spread  14.2
+DP_100    39.7   38.2   38.6 | mean  38.8 spread   1.5 SD  0.7 | avg-curve  38.3 || grid   39.7   38.2   38.7 mean  38.8 spread   1.6
+
+lag scan: Tg of the history-averaged curve at DP 100 (curve_fit)
+lag 2 ps: PMTFPS  195.7  PDMS  169.5  contrast  26.2  | per-history contrast mean  25.5
+lag 3 ps: PMTFPS  195.4  PDMS  163.5  contrast  31.9  | per-history contrast mean  31.9
+lag 4 ps: PMTFPS  191.8  PDMS  153.5  contrast  38.3  | per-history contrast mean  38.8
+lag 5 ps: PMTFPS  191.1  PDMS  145.8  contrast  45.3  | per-history contrast mean  45.9
+lag 6 ps: PMTFPS  190.4  PDMS  136.7  contrast  53.6  | per-history contrast mean  53.5
+lag 8 ps: PMTFPS  186.2  PDMS  123.1  contrast  63.1  | per-history contrast mean  62.9

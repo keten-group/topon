@@ -1,0 +1,43 @@
+true stress reproduction: max|d diff| 0.00e+00  max|p diff| 0.00e+00  max|q diff| 0.00e+00
+true: quadrant sizes [128, 35, 35, 129]; raw 32, BH 31, Holm 23, CI excl 0 31
+nominal: quadrant sizes [111, 52, 52, 112]; networks changing quadrant 89; BH-significant 37
+cells BH-significant under BOTH true and nominal stress (corrected cycle rank): 25
+true only: 6; nominal only: 12; neither: 12
+flag mismatches vs fig6_cells_summary_12pull.csv sig_nom: non-cycle-rank 0 []; cycle-rank []
+older-convention file: both-significant count 25
+cycle rank (corrected) true vs nominal:
+                     transition  cohens_d     bh_q     d_nom    q_nom  sig_nom
+      Toughening (weak, Q1->Q2) -0.211918 0.385896  0.083290 0.657925    False
+    Toughening (strong, Q3->Q4) -0.280072 0.218654 -0.154402 0.379702    False
+Strengthening (brittle, Q1->Q3)  0.185314 0.427736  0.615029 0.001423     True
+  Strengthening (tough, Q2->Q4)  0.114383 0.635464  0.342164 0.057025    False
+                 Total (Q1->Q4) -0.098512 0.503717  0.440672 0.002455     True
+true-only cells:
+           key                      transition  cohens_d         bh_q     d_nom    q_nom
+   num_bridges Strengthening (brittle, Q1->Q3) -0.611741 6.889521e-03 -0.024938 0.899900
+deg_bimodality   Strengthening (tough, Q2->Q4) -0.986105 7.068621e-07 -0.317988 0.057025
+       deg_std Strengthening (brittle, Q1->Q3) -0.912792 7.042084e-04 -0.275246 0.137948
+   deg_entropy Strengthening (brittle, Q1->Q3) -0.888487 6.226411e-03 -0.356134 0.087332
+ assortativity Strengthening (brittle, Q1->Q3) -0.617854 1.742250e-03 -0.243969 0.179110
+ assortativity   Strengthening (tough, Q2->Q4) -0.606038 2.136718e-03 -0.333567 0.050403
+nominal-only cells:
+                 key                      transition  cohens_d     bh_q     d_nom    q_nom
+            lambda_2       Toughening (weak, Q1->Q2)  0.375538 0.062160  0.748080 0.000044
+            lambda_2     Toughening (strong, Q3->Q4)  0.282406 0.175314  0.563272 0.003147
+       lambda_2_core       Toughening (weak, Q1->Q2)  0.296730 0.097278  0.512775 0.002885
+        avg_path_len       Toughening (weak, Q1->Q2) -0.316281 0.095589 -0.624421 0.000121
+        avg_path_len     Toughening (strong, Q3->Q4)  0.004910 0.981239 -0.461580 0.020060
+          cycle_rank Strengthening (brittle, Q1->Q3)  0.185314 0.427736  0.615029 0.001423
+          cycle_rank                  Total (Q1->Q4) -0.098512 0.503717  0.440672 0.002455
+     max_betweenness       Toughening (weak, Q1->Q2) -0.286839 0.084503 -0.363288 0.022053
+      deg_bimodality       Toughening (weak, Q1->Q2) -0.101652 0.652412 -0.424810 0.024438
+             deg_std       Toughening (weak, Q1->Q2) -0.138723 0.503717 -0.407628 0.040178
+         deg_entropy     Toughening (strong, Q3->Q4) -0.264990 0.218654 -0.379770 0.036059
+avg_eigenvector_cent     Toughening (strong, Q3->Q4)  0.224923 0.268444  0.482525 0.010773
+band reproduction vs figure5b_degree_bands_k12.csv: max|dp| 0.0e+00, max|d ci_low| 0.0e+00
+  P(f=1) Q1->Q2: -0.03 pp  95% CI [-1.81, +1.61]  bootstrap two-sided p ~ 0.934
+  P(f=2) Q1->Q2: -0.72 pp  95% CI [-2.71, +1.45]  bootstrap two-sided p ~ 0.536
+  P(f=6) Q1->Q2: -1.10 pp  95% CI [-3.24, +1.03]  bootstrap two-sided p ~ 0.305
+  P(f=1) Q3->Q4: -3.13 pp  95% CI [-5.18, -1.20]  bootstrap two-sided p ~ 0.001
+  P(f=2) Q3->Q4: +0.35 pp  95% CI [-1.78, +2.53]  bootstrap two-sided p ~ 0.749
+  P(f=6) Q3->Q4: -1.98 pp  95% CI [-4.28, +0.29]  bootstrap two-sided p ~ 0.079

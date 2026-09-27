@@ -7,8 +7,8 @@ Wraps the existing topology loader so it returns a NetworkGraph,
 which is the canonical inter-stage type defined in topon.core.
 
 The underlying generation logic lives in:
-  topon/_legacy/topology/generator.py   (C-extension wrapper)
-  topon/_legacy/topology/generator_python.py  (pure Python port)
+  topon/topology/generator.py         (C generator wrapper)
+  topon/topology/generator_python.py  (pure Python port)
 
 Usage
 -----

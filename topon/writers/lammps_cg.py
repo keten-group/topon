@@ -2,16 +2,44 @@ import os
 import itertools
 from rdkit import Chem
 
+#: Atom types of the end-linked convention, in the order they are written.
+ENDLINKED_TYPES = {"end": 1, "interior": 2, "junction": 3}
+
+
 class CGWriter:
     """
     Writes LAMMPS data files for Coarse-Grained (Kremer-Grest) systems.
+
+    Two conventions:
+
+    ``topon`` (default)
+        One molecule for the whole network; atom types are the distinct
+        ``bead_type`` properties, numbered in sorted order.
+    ``endlinked``
+        The convention of `fix bond/create` datasets: type 1 = chain-end
+        bead, 2 = chain interior, 3 = junction; one molecule per chain and
+        one per junction; a dangling chain's free end is its DP-th bead and
+        a primary loop is a ring whose two ends bond to the same junction.
+        This is what ``refnet.parse`` and the Z1+ exporter read, so it is
+        what makes topon output directly comparable with an end-linked
+        dataset. It needs the molecule and role properties
+        :class:`topon.chemistry.builder.ChemistryBuilder` writes
+        (``topon_mol``, ``topon_role``); atoms carrying neither are written
+        as interior beads of one molecule.
     """
-    def __init__(self, mol, output_file, include_angles=True, box_size=None, pair_style="attractive"):
+    def __init__(self, mol, output_file, include_angles=True, box_size=None,
+                 pair_style="attractive", convention="topon"):
         self.mol = mol
         self.output_file = output_file
         self.include_angles = include_angles
         self.box_size = box_size if box_size else (100.0, 100.0, 100.0)
         self.pair_style = pair_style
+        if convention not in ("topon", "endlinked"):
+            raise ValueError(
+                f"Unknown CG data convention {convention!r} "
+                f"(expected 'topon' or 'endlinked')"
+            )
+        self.convention = convention
 
         
         # Standard Kremer-Grest Parameters (Epsilon=1.0, Sigma=1.0)
@@ -36,6 +64,7 @@ class CGWriter:
     def write(self):
         print(f"Writing CG Data File: {os.path.basename(self.output_file)}")
         print(f"  -> Angles Enabled: {self.include_angles}")
+        print(f"  -> Convention: {self.convention}")
         
         self._assign_atom_types()
         self._extract_bonds()
@@ -47,6 +76,9 @@ class CGWriter:
         print("Write complete.")
 
     def _assign_atom_types(self):
+        if self.convention == "endlinked":
+            self._assign_atom_types_endlinked()
+            return
         # 1. Discover all unique bead types from RDKit properties
         unique_types = set()
         for atom in self.mol.GetAtoms():
@@ -67,6 +99,34 @@ class CGWriter:
                 'type': self.atom_types[b_type],
                 'x': 0.0, 'y': 0.0, 'z': 0.0 # Placeholders, will be displaced later
             })
+
+    def _assign_atom_types_endlinked(self):
+        """Types and molecules of the end-linked convention.
+
+        Roles come from the chemistry builder; molecule ids are renumbered
+        from 1 in the order they first appear, so the file is dense whether
+        or not every node built a structure.
+        """
+        self.atom_types = dict(ENDLINKED_TYPES)
+        seen: dict = {}
+        missing = 0
+        for atom in self.mol.GetAtoms():
+            role = atom.GetProp("topon_role") if atom.HasProp("topon_role") else None
+            if role not in self.atom_types:
+                role = "interior"
+                missing += 1
+            raw_mol = atom.GetIntProp("topon_mol") if atom.HasProp("topon_mol") else 0
+            mol_id = seen.setdefault(raw_mol, len(seen) + 1)
+            self.atom_data.append({
+                'id': atom.GetIdx() + 1,
+                'mol_id': mol_id,
+                'type': self.atom_types[role],
+                'x': 0.0, 'y': 0.0, 'z': 0.0,
+            })
+        if missing:
+            print(f"  -> [WARN] {missing} atoms carried no chain role and were "
+                  f"written as interior beads")
+        print(f"  -> Molecules: {len(seen)}")
 
     def _extract_bonds(self):
         # Generic FENE bond for all connections
@@ -119,7 +179,10 @@ class CGWriter:
             f.write(f"{-lz/2.0:.4f} {lz/2.0:.4f} zlo zhi\n\n")
             
             f.write("Masses\n\n")
-            for t_name, t_id in self.atom_types.items():
+            types = self.atom_types.items()
+            if self.convention == "endlinked":
+                types = sorted(types, key=lambda kv: kv[1])
+            for t_name, t_id in types:
                 f.write(f"{t_id} {self.mass} # {t_name}\n")
                 
             f.write("\nPair Coeffs\n\n")

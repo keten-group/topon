@@ -9,8 +9,8 @@ three network files that define the case's topology:
 | `network_N6x6x6_trial*.nodes` | plain text | Node list with attributes. |
 | `network_N6x6x6_trial*.gpickle` | Python pickle | `networkx` graph — redundant with the two above, but convenient to load. |
 
-The trial index in the filename varies per case (it's the seed used during
-generation). The `graph_file` column in `data/csv/mechanics.csv` holds the exact
+The trial index in the filename varies per case (it is the trial at which the
+generator found the graph). The `graph_file` column in `data/csv/mechanics.csv` holds the exact
 relative path for each row (from the demo root), so the mapping is unambiguous:
 
 ```python

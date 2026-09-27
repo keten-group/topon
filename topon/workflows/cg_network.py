@@ -19,19 +19,19 @@ Usage (Python)
     from topon.workflows.cg_network import run
 
     run(
-        nodes_path="tests/sample_graphs/network_N5x5x5_trial3.nodes",
-        edges_path="tests/sample_graphs/network_N5x5x5_trial3.edges",
-        config_path="examples/config_cg_combined.json",
-        experimental_path="examples/experimental_test.json",
+        nodes_path="demos/showcase/network_5x5x5/network.nodes",
+        edges_path="demos/showcase/network_5x5x5/network.edges",
+        config_path="demos/polymer/coarse_grained/combined/config.json",
+        experimental_path="experimental.json",
         output_dir="output/cg_run",
     )
 
 Usage (CLI)
 -----------
     python -m topon.workflows.cg_network \\
-        --nodes tests/sample_graphs/network_N5x5x5_trial3.nodes \\
-        --edges tests/sample_graphs/network_N5x5x5_trial3.edges \\
-        --config examples/config_cg_combined.json \\
+        --nodes demos/showcase/network_5x5x5/network.nodes \\
+        --edges demos/showcase/network_5x5x5/network.edges \\
+        --config demos/polymer/coarse_grained/combined/config.json \\
         --output output/cg_run
 """
 
@@ -47,6 +47,7 @@ import numpy as np
 from rdkit import Chem
 
 # Stage 1 — topology interface
+from topon.topology.loader import graph_periodicity as _graph_periodicity
 from topon.topology.network import load as load_network
 
 # Stage 2 — chemistry (writers + displacement utilities)
@@ -54,7 +55,7 @@ from topon.writers import CGWriter, LammpsInputGenerator
 from topon.utils import write_lammps_displacement_file
 from topon.assignment.attributor import EntanglementsConfig
 from topon.assignment.entanglements import select_entanglements
-from topon.utils.network_helpers import calculate_entangled_kink
+from topon.conformation.entanglement.realize import entangled_backbone_paths
 
 # Stage 3 — conformation
 from topon.conformation import ConformationManager
@@ -231,6 +232,26 @@ def run(
     chain_coords = {}
     graft_coords = {}
 
+    # Entangled edges, realised by the configured method ("waypoint" is the
+    # default, "kink" the legacy bump). The shared helper is keyed by
+    # (u, v, key); this map is keyed by edge index, so each edge's key is
+    # recovered by data-dict identity -- G.edges(data=True) hands out the
+    # live attribute dicts.
+    key_of = {}
+    for i, (eu, ev, edata) in enumerate(edges):
+        for k2, d2 in G[eu][ev].items():
+            if d2 is edata:
+                key_of[i] = (eu, ev, k2)
+                break
+    ent_paths_by_key = entangled_backbone_paths(
+        G, dims,
+        {key_of[i]: a for i, a in edge_atom_map.items() if i in key_of},
+        method=ent_conf_dict.get("method", "waypoint"),
+        kink_params=(ent_conf_dict.get("kink_params") or {}),
+    )
+    ent_paths = {i: ent_paths_by_key[key_of[i]] for i in edge_atom_map
+                 if i in key_of and key_of[i] in ent_paths_by_key}
+
     for i, atoms in edge_atom_map.items():
         u, v, data = edges[i]
         pos_u = np.array(G.nodes[u].get("pos", (0, 0, 0)))
@@ -246,36 +267,9 @@ def run(
             perp = np.cross(unit_vec, np.array([1.0, 0.0, 0.0]))
         perp_unit = perp / np.linalg.norm(perp)
 
-        entangled_partner_key = data.get("entangled_with")
-        backbone_xyz = []
-
-        if entangled_partner_key is not None:
-            p_u, p_v = entangled_partner_key[0], entangled_partner_key[1]
-            p_pos_u = np.array(G.nodes[p_u]["pos"])
-            p_pos_v = np.array(G.nodes[p_v]["pos"])
-            p_vec = p_pos_v - p_pos_u
-            p_mic = p_vec - dims * np.round(p_vec / dims)
-
-            my_mid = pos_u + 0.5 * mic
-            p_mid = p_pos_u + 0.5 * p_mic
-            delta = p_mid - my_mid
-            delta -= dims * np.round(delta / dims)
-            p_mid_wrapped = my_mid + delta
-
-            orient_vec = p_mid_wrapped - my_mid
-            if np.linalg.norm(orient_vec) < 0.01:
-                orient_vec = perp_unit
-
-            kink_dict = calculate_entangled_kink(
-                start_pos=np.zeros(3),
-                end_pos=mic,
-                num_atoms=len(atoms) + 2,
-                orientation_vec=orient_vec,
-                z_phase=1.0,
-            )
-            full_path = [kink_dict[k] for k in sorted(kink_dict.keys())]
-            backbone_xyz = [pos_u + np.array(pt) for pt in full_path[1:-1]]
-        else:
+        backbone_xyz = ent_paths.get(i)
+        if backbone_xyz is None:
+            backbone_xyz = []
             for j in range(len(atoms)):
                 frac = (j + 1) / (len(atoms) + 1)
                 backbone_xyz.append(pos_u + frac * mic)
@@ -313,12 +307,21 @@ def run(
     print("[Stage 3] Conformation embedding...")
 
     cm = ConformationManager(str(output_dir), study_name)
-    conformed, roles = cm.apply_displacements("system.data")
+    # Same cell stage 2 routed the chains with, so boundary-wrapping
+    # chains land in a box of the same period, plus the boundary
+    # conditions so an open axis is not wrapped and molecules stay whole.
+    periodicity = _graph_periodicity(G)
+    conformed, roles = cm.apply_displacements(
+        "system.data",
+        lattice_box=None if dims is None else tuple(dims),
+        periodicity=periodicity,
+    )
     noisy = cm.apply_noise(conformed, magnitude=1e-4)
     cm.resolve_overlaps(
         noisy, roles,
         cutoff=config["conformation"]["overlap_cutoff"],
         max_iters=config["conformation"].get("overlap_max_iters", 20),
+        periodicity=periodicity,
     )
 
     # =========================================================================
@@ -349,11 +352,11 @@ def run(
             n_procs=exec_cfg.get("n_procs", 1),
             use_mpi=False,
         )
-        runner.run_sequence([
-            "minimize_1_serial.in",
-            "minimize_2_parallel.in",
-            "minimize_3_parallel.in",
-        ])
+        # Ask the generator which scripts it wrote rather than naming them:
+        # the push-off protocol has five stages, the two minimiser protocols
+        # three, and this list going stale is a run that silently stops
+        # before it is compressed or quenched.
+        runner.run_sequence([script for script, _data in gen.stages("cg")])
 
     return root
 
