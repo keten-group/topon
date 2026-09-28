@@ -1,14 +1,14 @@
 # topon architecture
 
-A graph-first Python toolkit for building polymer networks ready to drive LAMMPS molecular dynamics. Topology is decided as a graph first, then mapped into chemistry and coordinates; the same graph can produce a coarse-grained Kremer-Grest system or a fully atomistic DREIDING system without changing the topology code.
+topon is a Python toolkit that builds polymer networks for LAMMPS molecular dynamics. It decides the topology as a graph first and then maps that graph to chemistry and coordinates. The same graph can produce a coarse-grained Kremer-Grest system or an atomistic DREIDING system with no change to the topology code.
 
-This document is the onboarding doc for new contributors. Read it first, then go to [USAGE.md](USAGE.md) for how to run things.
+This document describes the package layout for contributors. [USAGE.md](USAGE.md) explains how to run topon.
 
 ---
 
 ## 1. The topon family
 
-Two peer sub-systems share the same Python package. They do related but distinct jobs.
+The package contains two independent sub-systems with related jobs.
 
 | | **core topon** (polymer networks) | **simbox** (molecule packing) |
 |---|---|---|
@@ -21,13 +21,13 @@ Two peer sub-systems share the same Python package. They do related but distinct
 | Crosslinks | Y-merge (CG) / chemistry-defined (atomistic) | reaction templates (epoxy/amine, etc.) |
 | Topology shape | lattice graph (SC / BCC / FCC / Diamond / MIX, configurable functionality) | molecule library + grid packing |
 
-A third, smaller utility, `topon/singlechain/`, handles single-chain solubility computations and is not used by the main pipeline.
+A third, smaller utility (`topon/singlechain/`) handles single-chain solubility calculations. The main pipeline does not use it.
 
 ---
 
 ## 2. The six-stage pipeline
 
-The `Pipeline` class in [`topon/pipeline.py`](../topon/pipeline.py) is the single orchestrator for **core topon**. Its `run()` method calls six stages in order.
+The `Pipeline` class in [`topon/pipeline.py`](../topon/pipeline.py) runs the core topon pipeline. Its `run()` method calls six stages in order.
 
 ```
 config.json
@@ -51,111 +51,120 @@ load_config_full() ───► ToponConfig (Pydantic) ──► Pipeline.run()
 ```
 
 ### Stage 1. Topology
-**Module:** `topon/topology/` &nbsp;**Code:** `Pipeline._run_topology_stage`
+`Pipeline._run_topology_stage` runs this stage from `topon/topology/`.
 
-Generates or loads a NetworkX `MultiGraph`. Nodes are network junctions; edges are polymer chains. Two paths:
-- `source="generate"` runs the pure-Python generator (`topon.topology.generator_python.PythonTopologyGenerator`) in process. When `topology.generator.exe_path` is set it calls the C generator (`generator.exe`) via `topon.topology.generator.run_generator` instead, then loads the `.nodes`/`.edges` files it writes.
-- `source="load"` reads existing `.gpickle` or `.nodes`+`.edges` files via `topon.topology.loader.load_graph`.
+This stage generates or loads a NetworkX `MultiGraph`. Nodes are network junctions and edges are polymer chains. There are two sources.
+- `source="generate"` runs the pure-Python generator (`topon.topology.generator_python.PythonTopologyGenerator`) in process. When `topology.generator.exe_path` is set, it calls the C generator (`generator.exe`) through `topon.topology.generator.run_generator` instead and then loads the `.nodes`/`.edges` files it writes.
+- `source="load"` reads existing `.gpickle` or `.nodes`+`.edges` files through `topon.topology.loader.load_graph`.
 
-Lattices: `SC`, `BCC`, `FCC` and `Diamond` (fixed neighbour patterns at
-the default range), plus `MIX`, which overlays SC/BCC/FCC basis sites in
-one cubic cell at configurable fractions. **The candidate-edge set is a
-lattice plus a range.** `topology.generator.neighbour_cutoff`, in
-cell units, is a parameter of every type. At the default 1.0 the pure
-lattices keep their canonical nearest-neighbour pattern; at any other
-value the edges are every pair of sites within the range under the
-minimum image, the search `MIX` has always used, so crosslinkers several
-site spacings apart become candidate partners for the sculptor. That is
-what makes a sculpted graph match a reaction-generated network (three to
-four SC shells for DP-20 strands, six to eight for DP-100). The graph
-records the cutoff and the shell distances it produced
-(`G.graph["neighbour_cutoff"]`, `G.graph["shell_distances"]`); the shell
+#### Lattices and range
+
+The lattice types are `SC`, `BCC`, `FCC` and `Diamond`, each with a fixed
+neighbor pattern at the default range, and `MIX`, which overlays SC, BCC
+and FCC basis sites in one cubic cell at set fractions. The candidate
+edges are defined by a lattice and a range. `topology.generator.neighbour_cutoff`
+sets the range in cell units for every lattice type. At the default 1.0
+the pure lattices keep their canonical nearest-neighbor pattern. At any
+other value every pair of sites within the range (under the minimum
+image) is a candidate edge, which is the search `MIX` always uses.
+Crosslinkers several site spacings apart then become candidate partners
+for the sculptor. This lets a sculpted graph match a reaction-generated
+network (three to four SC shells for DP-20 strands, six to eight for
+DP-100). The graph records the cutoff and the shell distances it produced
+(`G.graph["neighbour_cutoff"]`, `G.graph["shell_distances"]`). The shell
 table and the key resolver live in `topology/shells.py`. `periodicity`
-opens individual axes, giving a free surface on that face; an open axis
+opens individual axes and gives a free surface on that face. An open axis
 is never bonded across, at any range. Both generators support all five
-lattices, per-axis boundaries and the range, and build identical lattices
-for every combination.
+lattices, per-axis boundaries and the range, and they build identical
+lattices for every combination.
 
-**Two searches, two failure modes.** The lattice is a superset of
-candidate edges; a sculptor picks the network out of it, and
-`topology.generator.search` says which one.
-`generator_python.run_single_trial` is the **strict** sculptor. It removes
+#### Strict and exact searches
+
+The lattice gives a superset of candidate edges, and a sculptor picks the
+network from it. `topology.generator.search` selects the sculptor.
+`generator_python.run_single_trial` is the strict sculptor. It removes
 candidate edges one at a time, samples `max_trials` trials and records
-every removal in `G.graph["move_history"]`, which is what a sculpting
-animation replays.
-`topology/degree_matching.py` is the **exact** search. It assigns the
+every removal in `G.graph["move_history"]`, which a sculpting animation
+replays.
+`topology/degree_matching.py` is the exact search. It assigns the
 requested degree to every site and completes the degree sequence by
-augmenting paths (a degree-constrained subgraph), so it does not sample
-trials and has no move history. Left unset, `search` resolves to `exact`
-when the degree distribution pins every degree from 0 to
-`max_functionality` and to `strict` otherwise. A fully pinned request is
-the case the strict sculptor cannot reach. A near-complete tetrafunctional
-target with dangling-end sites fails on every scaffold in either generator,
-while the exact search lands it in under two seconds. They fail in opposite
-places. The exact search needs a scaffold with spare candidate edges, so
-a request that pins most of its sites to the scaffold's own coordination
-(Diamond at `max_functionality: 4`, where 73 % of the reference P(f) sits
-at the ceiling) is its one refusal, and it says so rather than retrying. Both return the same graph, with every
-site a node, vacancies kept at degree 0, the builder's `box`,
-`periodicity` and shell attributes intact, edges in the scaffold's own
-order. Both searches exist in both generators. The C searcher runs the
-exact search behind `--search=exact` (a port with the same steps and
-constants), and the pipeline sends an exact request there when `exe_path`
-is set, except one that forces double edges or reserves defect capacity,
-which only the Python search takes.
+augmenting paths (i.e., a degree-constrained subgraph), so it samples no
+trials and keeps no move history. If `search` is unset, it resolves to
+`exact` when the degree distribution pins every degree from 0 to
+`max_functionality` and to `strict` otherwise.
 
-**Two generators, two jobs.** The C source in
-[`topon/topology/csrc/`](../topon/topology/csrc/) is the standalone
-searcher. It runs on its own, without Python, and is the tool for long
+The two searches fail in different cases. The strict sculptor struggles
+with fully pinned requests. A near-complete tetrafunctional target with
+dangling-end sites fails on every scaffold in either generator, while the
+exact search finds it in under two seconds. The exact search
+needs a scaffold with spare candidate edges. It refuses a request that
+pins most of its sites to the scaffold's own coordination (e.g., Diamond
+at `max_functionality: 4` with 73 % of the sites at the ceiling) and
+reports this instead of retrying. Both searches return the same kind of
+graph. Every site is a node, vacancies stay at degree 0, the builder's
+`box`, `periodicity` and shell attributes are kept, and edges follow the
+scaffold's own order. Both searches exist in both generators. The C
+generator runs the exact search with `--search=exact` (a port with the
+same steps and constants). When `exe_path` is set, the pipeline sends
+exact requests to C. The exception is a request that forces double edges
+or reserves defect capacity, which only the Python search accepts.
+
+#### C and Python generators
+
+The C source in [`topon/topology/csrc/`](../topon/topology/csrc/) is a
+standalone searcher. It runs without Python and is meant for long
 exhaustive searches. The pure-Python `generator_python.py` is the pipeline
-default and exists for quick in-process generation of likely networks with
-no compiler. They are independent programs, not a library and a wrapper;
-nothing in `csrc/` is called from Python and it should not grow a Python
-binding. Only the shared surface (lattice construction, the
-`.nodes`/`.edges` format) has to stay in step. They agree on
-distributions, not individual draws, since the C one draws from its own
-stream (seeded from the clock unless `TOPON_SEED` is set).
+default and generates likely networks quickly in process, with no
+compiler. The two are independent programs. Nothing in `csrc/` is called
+from Python, and it should not get a Python binding. Only the shared parts
+(lattice construction and the `.nodes`/`.edges` format) must stay in step.
+The two agree in distribution. Individual draws differ because the C
+generator uses its own random stream (seeded from the clock unless
+`TOPON_SEED` is set).
 
-The split is earned. Measured on SC at `max_func=4` as time to first
-success, at 6³ Python takes 0.01 s against the C's 0.04 s (process
-startup dominates), at 12³ Python takes 1.5 s against 0.11 s, and at 24³
-(13824 nodes) the C finishes in 6.7 s where Python would run for hours.
+On SC at `max_func=4`, the time to first success is 0.01 s in Python and
+0.04 s in C at 6³ (process startup dominates), 1.5 s and 0.11 s at 12³,
+and 6.7 s in C at 24³ (13824 nodes), where Python would run for hours.
 
-Produces: `self.graph` (annotated `MultiGraph`) and `self.dims` (box size as `np.ndarray`), plus the stage's section of the run manifest.
+The stage produces `self.graph` (the annotated `MultiGraph`) and `self.dims` (the box size as an `np.ndarray`), plus its section of the run manifest.
 
-**The run manifest.** `Pipeline` writes `manifest.json` into the run
-directory, one section per stage, through `topon/core/manifest.py`. Stage
-1's section records the lattice, the search, the degree counts requested
-against the ones achieved, the giant-component fraction, the seed and the
-timing; `topon inspect` renders it next to the stage-output summary. It is
-advisory. No stage reads it back to make a decision, so a missing or
-half-written manifest changes nothing about a run.
+#### Run manifest
 
-**The periodic cell is recorded, not inferred.** Generators write the exact
-repeat distance into `G.graph["box"]`, and `.nodes` files carry it in a
-`# BOX Lx Ly Lz` header. `infer_dims_from_graph` returns that value when it
-is present and only falls back to estimating the cell from the coordinate
-extent (`max - min + 1`) for graphs written before this existed. The estimate
-is exact for SC, whose sites are integer-spaced, but overshoots any lattice
-with fractional basis sites. BCC and FCC body/face sites sit at +0.5 and
-Diamond sites at quarter-cell offsets, so a 4x4x4 BCC or FCC reported 4.5.
-Because `self.dims` is the box every minimum-image calculation uses, that
-overshoot violated the `bond < box/2` invariant in Design Principle 3 and
-sent roughly a third of BCC edges (a quarter of FCC) to the wrong periodic
-replica, where they were built at twice their true bond length. Any new
-lattice with non-integer sites must record its cell for the same reason.
+`Pipeline` writes `manifest.json` into the run directory through
+`topon/core/manifest.py`, with one section per stage. The stage 1 section
+records the lattice, the search, the requested and achieved degree counts,
+the giant-component fraction, the seed and the timing. `topon inspect`
+prints it next to the stage-output summary. The manifest is advisory. No
+stage reads it back, so a missing or half-written manifest does not change
+a run.
+
+#### Periodic cell
+
+Generators write the exact repeat distance into `G.graph["box"]`, and
+`.nodes` files carry it in a `# BOX Lx Ly Lz` header. `infer_dims_from_graph`
+returns that value when it is present. For older graphs without it, the
+function estimates the cell from the coordinate extent (`max - min + 1`).
+The estimate is exact for SC, whose sites are integer-spaced, but too
+large for any lattice with fractional basis sites (BCC and FCC body and
+face sites sit at +0.5 and Diamond sites at quarter-cell offsets, so a
+4x4x4 BCC or FCC gives 4.5). Every minimum-image calculation uses
+`self.dims`, so an oversized box breaks the `bond < box/2` rule of Design
+Principle 3. It sends about a third of BCC edges (a quarter of FCC) to the
+wrong periodic image, where they are built at twice their true bond
+length. Any new lattice with non-integer sites must record its cell for
+this reason.
 
 ### Stage 2. Analysis
-**Module:** `topon/assignment/manager.py:analyze` &nbsp;**Code:** `Pipeline._run_analysis_stage`
+`Pipeline._run_analysis_stage` runs this stage through `topon/assignment/manager.py:analyze`.
 
-Computes graph statistics (degree distribution, connectivity, defect/entanglement *capacity* of the topology) before any annotations are written. The analysis result is held in `self.analysis_report`. Read-only; does not modify the graph.
+This stage computes graph statistics (degree distribution, connectivity, and the defect and entanglement *capacity* of the topology) before any annotation is written. The result is stored in `self.analysis_report`. The stage does not modify the graph.
 
-(Distinct from the `topon/analysis/` package, which exposes `analyze_graph()` for the standalone `topon analyze` CLI sub-command. `Pipeline` does not import from `topon.analysis`.)
+It is separate from the `topon/analysis/` package, which provides `analyze_graph()` for the `topon analyze` sub-command. `Pipeline` does not import from `topon.analysis`.
 
 ### Stage 3. Assignment
-**Module:** `topon/assignment/` &nbsp;**Code:** `Pipeline._run_assignment_stage`
+`Pipeline._run_assignment_stage` runs this stage from `topon/assignment/`.
 
-Annotates the graph in place. `AssignmentManager` (`assignment/manager.py`) orchestrates several module-level assigners:
+This stage annotates the graph in place. `AssignmentManager` (`assignment/manager.py`) calls the module-level assigners listed below.
 
 | Concern | API | Lives in |
 |---|---|---|
@@ -168,121 +177,121 @@ Annotates the graph in place. `AssignmentManager` (`assignment/manager.py`) orch
 | Entanglements (which chain pairs to entangle) | `select_entanglements()` | `assignment/entanglements.py` |
 | Re-attribute existing graph (round-trip workflows) | `GraphAttributor` (class) | `assignment/attributor.py` |
 
-After this stage the graph carries every annotation downstream stages need.
+After this stage the graph carries every annotation the later stages need.
 
 ### Stage 4. Chemistry
-**Module:** `topon/chemistry/` &nbsp;**Code:** `Pipeline._run_chemistry_stage`
+`Pipeline._run_chemistry_stage` runs this stage from `topon/chemistry/`.
 
-`ChemistryBuilder` (in `chemistry/builder.py`, one unified entry point, *not* split into CG/atomistic classes) builds an RDKit `Mol` with 3D coordinates derived from the graph. Supporting modules:
+`ChemistryBuilder` (`chemistry/builder.py`) builds an RDKit `Mol` with 3D coordinates from the graph. It is a single class for both resolutions, with no separate CG and atomistic classes. The supporting modules are listed below.
 
 | Module | Role |
 |---|---|
-| `chemistry/builder.py` | The `ChemistryBuilder` class; bulk of stage-4 logic |
+| `chemistry/builder.py` | The `ChemistryBuilder` class, with most of the stage-4 logic |
 | `chemistry/sequences.py` | Shared monomer sequence helpers used by the builder |
 | `chemistry/embed.py` | ETKDGv3 per-chain conformer embedding |
-| `chemistry/{dreiding,kg}/` | **Stub sub-namespaces** reserved for force-field-specific chemistry (`kg/` has only a docstring; `dreiding/` is a 1-line stub). The CG vs atomistic switch happens inside `builder.py` via `config.chemistry.model_type`. |
+| `chemistry/{dreiding,kg}/` | Stub sub-namespaces reserved for force-field-specific chemistry (`kg/` has only a docstring, and `dreiding/` is a 1-line stub). The CG or atomistic switch happens inside `builder.py` through `config.chemistry.model_type`. |
 
-This stage also writes the first set of LAMMPS-relevant outputs to `<output_dir>/02_Chemistry/`:
+This stage also writes the first LAMMPS files to `<output_dir>/02_Chemistry/`.
 
-- `system.data`: atom positions and connectivity (via `CGWriter` or `DreidingWriter` in `topon/writers/`)
-- `system.in.settings`: force-field coefficients, written by `DreidingWriter` on the atomistic route and left as a stub on the coarse-grained one
-- `system.groups`: `nodes` and `beads` LAMMPS group definitions
-- `system_nodes.displace`, `system_backbone.displace`, `system_grafts.displace` (plus `system_pendant.displace` and `system_hydrogens.displace` on the atomistic route): displacement files for stage 5
+- `system.data` holds atom positions and connectivity (written by `CGWriter` or `DreidingWriter` in `topon/writers/`).
+- `system.in.settings` holds force-field coefficients. `DreidingWriter` writes it on the atomistic route, and the coarse-grained route leaves it as a stub.
+- `system.groups` defines the `nodes` and `beads` LAMMPS groups.
+- `system_nodes.displace`, `system_backbone.displace` and `system_grafts.displace` (plus `system_pendant.displace` and `system_hydrogens.displace` on the atomistic route) are the displacement files for stage 5.
 
 ### Stage 5. Conformation
-**Module:** `topon/conformation/` &nbsp;**Code:** `Pipeline._run_conformation_stage`
+`Pipeline._run_conformation_stage` runs this stage from `topon/conformation/`.
 
-Stage 5 has two entry points, for the two kinds of build.
+Stage 5 has two entry points, one for each kind of build.
 
 `ConformationManager` (`conformation/manager.py`) is the pipeline's path for a system that already has a data file. It reads the chemistry-stage output, applies the displacement files, adds a small uniform noise to break degeneracy, and resolves overlaps iteratively.
 
-`conformation/placement/chains.py::place` is the path for a bead-spring build drawn from the graph itself. It is **not** on the `Pipeline` path. `Pipeline._run_conformation_stage` constructs only `ConformationManager`, and `place` is reached by direct API use (`topon.conformation.place`). It takes a graph, a DP and one of three shapes, sizes the build box from the bead count and the build density (or, equivalently, from a coil ratio), draws every strand and reports the gate every strand had to pass. It runs no dynamics and writes no file. It returns coordinates and the measurements that say whether they are fit to hand on. `conformation/packing/` remains a 1-line stub.
+`conformation/placement/chains.py::place` builds a bead-spring system directly from the graph. `Pipeline` does not call it (`Pipeline._run_conformation_stage` constructs only `ConformationManager`), so it is used through the API as `topon.conformation.place`. It takes a graph, a DP and one of three chain shapes. It sizes the build box from the bead count and the build density (or, equivalently, a coil ratio), draws every strand and checks each strand against a gate. It runs no dynamics and writes no file. It returns the coordinates and the gate readings that show whether they are usable. `conformation/packing/` is still a 1-line stub.
 
-The gate is three readings per strand (every bond at or below the design length, every bond at or above `min_bond`, no bead within `min_sep` of a non-adjacent bead of its own chain). It exists because a path can be the right length, land on both junctions and still be unusable. A six-wave meander at DP 20 resamples to 0.17-sigma bonds with beads jammed between their own second neighbours, and the push-off then separates them *through* the bond between, which is the threaded bond that lets strands cross later.
+The gate checks three things per strand (every bond at or below the design length, every bond at or above `min_bond`, and no bead within `min_sep` of a non-adjacent bead of its own chain). A path can have the right length and end on both junctions and still be unusable. For example, a six-wave meander at DP 20 resamples to 0.17-sigma bonds with beads packed between their own second neighbors. The push-off then separates those beads *through* the bond between them, and that threaded bond lets strands cross later.
 
-Three further modules sit beside these and are **not** on the default pipeline path. They are used by the entanglement workflows and are opt-in:
+Three more modules are opt-in and not on the default pipeline path. The entanglement workflows use them.
 
-- `conformation/entanglement/` builds chain paths that wind around each other a prescribed number of times. `waypoints.py` draws a chain through points the caller chooses (`Site(at, turns)`) and is the current approach; `braid.py` and `allocation.py` are an earlier search-based construction that picks its own positions, kept because its budgeting and obstruction checks have no equivalent yet in the waypoint path. `designed.py` puts a braid on a chain that is *already placed* and refuses a request whose windings do not fit in the strands' contour, naming the minimum DP. `control.py` closes a loop on the measured Z1+ of the relaxed system; it is exported as `topon.conformation.entanglement.controller` and takes a caller-supplied `runner` so the stage stays free of LAMMPS.
-- `conformation/junction_shell.py` spreads the chains leaving a crosslink so their first beads do not overlap, with the shell radius growing with functionality.
-- `conformation/paths.py` is plain geometry (two junctions and a bead count in, a path out). `bridging_walk` is melt-like and random; `route_through` is deterministic, for when a prescribed topology has to be repeatable. Both keep every bond exact and land on both junctions. `Clearance` lets any of them be drawn around the beads already in the box, which is what stops the following minimisation from resolving an overlap by pushing two chains through each other. Two routines are for the strands with no second endpoint to interpolate to, and the pipeline's chemistry stage does call these two. `closed_meander` draws a primary loop as a regular polygon through its junction, and `free_walk` draws a sol chain.
+- `conformation/entanglement/` builds chain paths that wind around each other a set number of times. `waypoints.py` draws a chain through points the caller chooses (`Site(at, turns)`) and is the current approach. `braid.py` and `allocation.py` are an earlier search-based construction that picks its own positions. They are kept because the waypoint path has no equivalent yet for their budgeting and obstruction checks. `designed.py` puts a braid on a chain that is already placed. It refuses a request whose windings do not fit in the strands' contour and names the minimum DP. `control.py` closes a loop on the measured Z1+ of the relaxed system. It is exported as `topon.conformation.entanglement.controller` and takes a caller-supplied `runner`, so the stage does not depend on LAMMPS.
+- `conformation/junction_shell.py` spreads the chains leaving a crosslink so their first beads do not overlap. The shell radius grows with functionality.
+- `conformation/paths.py` is plain geometry (two junctions and a bead count in, a path out). `bridging_walk` is melt-like and random. `route_through` is deterministic, for a prescribed topology that must be repeatable. Both keep every bond length exact and end on both junctions. `Clearance` lets either of them draw around the beads already in the box, so the following minimization does not resolve an overlap by pushing two chains through each other. Two routines handle strands with no second endpoint, and the pipeline's chemistry stage calls both. `closed_meander` draws a primary loop as a regular polygon through its junction, and `free_walk` draws a sol chain.
 
-Conformation defaults (`Pipeline._DEFAULT_CONFORMATION`):
+The conformation defaults are in `Pipeline._DEFAULT_CONFORMATION`.
 
 ```python
 {"overlap_cutoff": 0.01, "overlap_max_iters": 10, "noise_magnitude": 1e-4}
 ```
 
-Output: `<output_dir>/03_Conformation/system_relaxed.data`.
+The stage writes `<output_dir>/03_Conformation/system_relaxed.data`.
 
-**The simulation box comes from stage 1, not from the coordinates.** Callers
-pass `lattice_box=dims` into `apply_displacements`, giving a box of
-`dims * scale`; only when it is omitted does the manager fall back to
-estimating `(max node coord + 1) * scale` from the `.displace` files. This
-has to match the cell stage 4 used to route chains across the periodic
-boundary. When the two disagree, a chain that wraps under one period lands
-in a box of another and its closing bond is left stretched across the
-system. The two estimates happen to coincide for SC, which is why the
-fallback survived so long, and passing the box also makes the written box
-exactly `volume^(1/3)`, so the target density is hit on every lattice.
+The simulation box comes from stage 1, not from the coordinates. Callers
+pass `lattice_box=dims` to `apply_displacements`, which gives a box of
+`dims * scale`. Only when it is omitted does the manager estimate
+`(max node coord + 1) * scale` from the `.displace` files. The box must
+match the cell that stage 4 used to route chains across the periodic
+boundary. If the two differ, a chain that wraps under one period lands in
+a box of another size and its closing bond stays stretched across the
+system. The two estimates coincide for SC. Passing the box also makes
+the written box exactly `volume^(1/3)`, so the target density is reached
+on every lattice.
 
 ### Stage 6. Output
-**Module:** `topon/writers/` (`LammpsInputGenerator`) &nbsp;**Code:** `Pipeline._run_output_stage`
+`Pipeline._run_output_stage` runs this stage through `topon/writers/` (`LammpsInputGenerator`).
 
-Writes the LAMMPS input scripts that drive the simulation. What it writes
-depends on `simulation.protocol`:
+This stage writes the LAMMPS input scripts. Their content depends on
+`simulation.protocol`.
 
-- **`pushoff`** (the coarse-grained default) has five stages (capped-displacement push-off under FENE + WCA, uncapped push-off, equilibration at the build density, affine compression, quench) and no minimiser at any stage.
-- **`hardcore_min`** and **`soft_push`** are the two older three-stage decks, minimiser and all, kept so earlier runs can be reproduced. The atomistic route always uses `soft_push`'s shape, because its bonded terms are stiff and a capped push-off would take far longer than a minimiser to resolve the same overlaps.
+- `pushoff` (the coarse-grained default) has five stages (capped-displacement push-off under FENE + WCA, uncapped push-off, equilibration at the build density, affine compression, quench) and no minimizer.
+- `hardcore_min` and `soft_push` are the older three-stage decks with a minimizer. They are kept to reproduce earlier runs. The atomistic route always uses the `soft_push` layout, because its bonded terms are stiff and a capped push-off would take much longer than a minimizer to resolve the same overlaps.
 
-Output: `<output_dir>/04_Simulation/*.in`. Ask
-`LammpsInputGenerator.stages(model_type)` which scripts were written and what
-each one leaves behind, rather than naming them, because the two protocol
-families differ in both.
+The scripts go to `<output_dir>/04_Simulation/*.in`. The two protocol
+families differ in which scripts they write and what each one leaves
+behind, so use `LammpsInputGenerator.stages(model_type)` to get the list
+instead of hard-coding the names.
 
-The simulation itself is *not* run by `Pipeline.run()`. That is the job of `topon/simulation/` (`SimulationRunner` for a plain sequence, or `protocols.StagedRun` to run the stages and apply the acceptance gates as it goes).
+`Pipeline.run()` does not run the simulation. `topon/simulation/` does, with `SimulationRunner` for a plain sequence or `protocols.StagedRun` to run the stages and apply the acceptance gates after each one.
 
 ---
 
 ## 3. Module map
 
-Concise tour of every directory under `topon/`. Every module above the dashed line is part of the main pipeline; sub-systems below are independent.
+The table lists every directory under `topon/`. Modules above the dashed row belong to the main pipeline, and the sub-systems below it are independent.
 
 | Directory | Files / Subdirs | Role |
 |---|---|---|
-| `topology/` | 7 files (`shells.py` holds the neighbour-shell table and cutoff resolver; `degree_matching.py` the exact degree-sequence search) + `csrc/` (C generator) + `network/` (a thin loader wrapper), `sequence/`, `simple/` (stubs) | Graph generation and loading. Stage 1. |
-| `analysis/` | 3 files (`report.py` is `topon analyze`, `run_summary.py` is `topon inspect`) | Read-only graph statistics for the `topon analyze` CLI, and the post-run summary. **Not used by `Pipeline` stage 2**, which calls `AssignmentManager.analyze()`. |
-| `assignment/` | 8 files | Graph annotation: node/edge types, DP, defects, entanglements, copolymers. Stage 3. |
-| `chemistry/` | 4 files (`builder.py` is most of stage 4); `dreiding/`/`kg/` are stubs | RDKit Mol construction with 3D coords. Stage 4. |
-| `conformation/` | `manager.py` (data-file route) and `placement/chains.py` (bead-spring route, `place`) are stage 5; `entanglement/` (waypoint and braid construction, designed pairs, the Z controller) and `junction_shell.py` are opt-in and off the default path; `packing/` is a stub | Chain placement, overlap resolution, and designed entanglement geometry. Stage 5. |
+| `topology/` | 7 files (`shells.py` holds the neighbor-shell table and cutoff resolver, `degree_matching.py` the exact degree-sequence search) + `csrc/` (C generator) + `network/` (a thin loader wrapper), `sequence/`, `simple/` (stubs) | Graph generation and loading. Stage 1. |
+| `analysis/` | 3 files (`report.py` is `topon analyze`, `run_summary.py` is `topon inspect`) | Read-only graph statistics for the `topon analyze` CLI, and the post-run summary. Not used by `Pipeline` stage 2, which calls `AssignmentManager.analyze()`. |
+| `assignment/` | 8 files | Graph annotation (node/edge types, DP, defects, entanglements, copolymers). Stage 3. |
+| `chemistry/` | 4 files (`builder.py` is most of stage 4), and `dreiding/` and `kg/` are stubs | RDKit Mol construction with 3D coords. Stage 4. |
+| `conformation/` | `manager.py` (data-file route) and `placement/chains.py` (bead-spring route, `place`) are stage 5. `entanglement/` (waypoint and braid construction, designed pairs, the Z controller) and `junction_shell.py` are opt-in and off the default path. `packing/` is a stub | Chain placement, overlap resolution, and designed entanglement geometry. Stage 5. |
 | `writers/` | 8 files (`lammps_endlinked.py` writes the `fix bond/create` convention straight from a placement) | LAMMPS data and input-script writers. Stage 4 + Stage 6. |
-| `forcefield/` | 4 files | DREIDING parameter parser; Kremer-Grest parameters. Read by chemistry/writers. |
-| `config/` | 4 files | Pydantic `ToponConfig` schema; `load_config()` / `load_config_full()`. |
+| `forcefield/` | 4 files | DREIDING parameter parser and Kremer-Grest parameters. Read by chemistry/writers. |
+| `config/` | 4 files | Pydantic `ToponConfig` schema, `load_config()` and `load_config_full()`. |
 | `diagnostics/` | 2 files (`rules.py` is the rule registry) | The semantic checks behind `topon doctor`. |
 | `core/` | 3 files (`manifest.py` is the run manifest read/written across stages) | Shared types, protocols and run-level artifacts. |
-| `utils/` | 4 files | Shared helpers (e.g. `write_lammps_displacement_file`). |
+| `utils/` | 4 files | Shared helpers (e.g., `write_lammps_displacement_file`). |
 | `pipeline.py` | - | The `Pipeline` orchestrator class. |
 | `cli.py`, `shell.py`, `__main__.py` | - | CLI dispatch and the interactive `topon>` shell. |
 | `workflows/` | 4 files | High-level workflow helpers (`cg_network`, `atomistic_network`, `reactive_crosslink`). |
 | - | - | - |
 | `simbox/` | 8 files | Independent molecule packer + crosslink-template emitter. DREIDING-only. |
 | `singlechain/` | 3 files | Single-chain solubility utility. |
-| `simulation/` | `runner.py` + `protocols/` (`gates.py`, `staged.py`) | LAMMPS subprocess runner, and the acceptance gates that read a relaxation back: bond histogram per checkpoint, Z1+ held where it must hold, temperature from the velocities. |
+| `simulation/` | `runner.py` + `protocols/` (`gates.py`, `staged.py`) | LAMMPS subprocess runner and the acceptance gates that check a relaxation (bond histogram per checkpoint, Z1+ held where it must hold, temperature from the velocities). |
 
 ---
 
 ## 4. Design principles
 
-These are the rules every change is expected to follow.
+Every change should follow these rules.
 
-1. **Graph-first separation.** Topology is decided as a NetworkX graph before chemistry is built. The same graph can produce a CG system or an atomistic system by switching the chemistry builder. *Topology never sees atom types, coordinates, or force-field details.*
+1. **Graph-first separation.** Topology is decided as a NetworkX graph before chemistry is built. The same graph can produce a CG system or an atomistic system by switching the chemistry builder. Topology code never sees atom types, coordinates or force-field details.
 
-2. **Six-stage pipeline, one-way data flow.** Each stage has a single responsibility. Downstream stages do not reach back into upstream state. The stage descriptions in §2 and the module-boundary table below are authoritative.
+2. **Six-stage pipeline, one-way data flow.** Each stage has a single responsibility. Downstream stages do not reach back into upstream state. The stage descriptions in §2 and the module-boundary table below define these boundaries.
 
-3. **LAMMPS data files are wrap-only.** The core topon and simbox writers (`topon/writers/`, `topon/simbox/writer.py`) emit 7-column Atoms rows (no `ix iy iz`) and rely on LAMMPS's neighbor / ghost-atom system to handle PBC via min-image, which is correct as long as every bond is shorter than `box/2` (true for KG / DREIDING networks where chains rarely wrap differently from each other). The one exception is `write_endlinked` (`topon/writers/lammps_endlinked.py`), which writes image flags so the coordinates it was given can be reconstructed.
+3. **LAMMPS data files are wrap-only.** The core topon and simbox writers (`topon/writers/`, `topon/simbox/writer.py`) write 7-column Atoms rows (no `ix iy iz`). LAMMPS handles periodic boundaries through its neighbor and ghost-atom lists under the minimum image. This is correct as long as every bond is shorter than `box/2`, which holds for KG and DREIDING networks because their chains rarely wrap differently from each other. The one exception is `write_endlinked` (`topon/writers/lammps_endlinked.py`), which writes image flags so the coordinates it was given can be reconstructed.
 
-4. **Configuration via Pydantic, no globals in stage code.** Every stage module reads from a `ToponConfig` (or its raw-dict supplements). No `os.environ` lookups, no module-level constants that change behaviour, no hard-coded paths inside `topon/`. Config is loaded once, by the CLI or by whoever builds the `Pipeline`, and handed down.
+4. **Configuration through Pydantic, no globals in stage code.** Every stage module reads from a `ToponConfig` (or its raw-dict supplements). Code inside `topon/` does not use `os.environ` lookups, module-level constants that change behavior, or hard-coded paths. The config is loaded once, by the CLI or by the code that builds the `Pipeline`, and passed down.
 
-5. **Module boundaries:**
+5. **Module boundaries.** Each module has a fixed scope.
 
 | Module | Does | Does NOT |
 |---|---|---|
@@ -298,9 +307,9 @@ These are the rules every change is expected to follow.
 
 ## 5. Configuration model
 
-The package uses **Pydantic** (`topon/config/`) to validate JSON configuration. Some sections that have not yet been migrated to schema (`simulation`, `execution`, `experimental`) are passed through as a raw dict alongside the validated config (see `Pipeline.__init__`). `conformation` is validated like any other section, and `load_config_full` still hands a copy of it back in the raw dict, because `Pipeline` and both workflow modules have always read it from there.
+The package validates the JSON configuration with Pydantic (`topon/config/`). Three sections have no schema yet (`simulation`, `execution`, `experimental`). They are passed as a raw dict next to the validated config (see `Pipeline.__init__`). `conformation` is validated like any other section. `load_config_full` also returns a copy of it in the raw dict, because `Pipeline` and both workflow modules read it from there.
 
-Top-level `ToponConfig` sections, in order of pipeline use:
+The top-level `ToponConfig` sections, in the order the pipeline uses them, are listed below.
 
 | Section | Used by | Notes |
 |---|---|---|
@@ -308,24 +317,24 @@ Top-level `ToponConfig` sections, in order of pipeline use:
 | `topology` | Stage 1 | `source` (`"generate"` / `"load"`), `lattice_size`, `degree_distribution`, etc. |
 | `assignment` | Stage 3 | sub-objects for entanglements, defects, grafts, copolymer sequences |
 | `chemistry` | Stage 4 | `model_type` (`"coarse_grained"` / `"atomistic"`), `target_density` |
-| `conformation` | Stage 5 | `overlap_cutoff`, `overlap_max_iters`, `noise_magnitude` for the data-file route, which is the one `Pipeline` runs. The bead-spring keys (`placement`, `coil_ratio` / `build_density`, `junction_shell_spacing`, `entanglement`) are validated here but read by `topon.conformation.place` and the controller, which `Pipeline` does not call, so `topon generate` validates them and ignores them. Also passed through raw |
+| `conformation` | Stage 5 | `overlap_cutoff`, `overlap_max_iters`, `noise_magnitude` for the data-file route, which is the one `Pipeline` runs. The bead-spring keys (`placement`, `coil_ratio` / `build_density`, `junction_shell_spacing`, `entanglement`) are validated here but read only by `topon.conformation.place` and the controller. `Pipeline` does not call these, so `topon generate` validates the keys and ignores them. Also passed through raw |
 | `simulation` (raw) | Stage 4 (angles) and Stage 6 | relaxation protocol, LAMMPS pair_style, angle handling |
 | `execution` (raw) | the `topon.workflows` runners, not `Pipeline` | LAMMPS subprocess settings (`auto_run`, `executable`, `n_procs`) |
 | `experimental` (raw) | Stage 6 | feature-flagged extras |
 
-**Unknown keys.** `GeneratorConfig`, the per-class blocks under
-`assignment.defects` and the whole `conformation` section refuse keys
-they do not define. The other nested sections ignore them, because a
-config may carry other tools' parameters (under `topology`, for example),
-and `topon doctor`'s `unknown_config_keys` warning covers them instead.
+`GeneratorConfig`, the per-class blocks under `assignment.defects` and the
+whole `conformation` section refuse unknown keys. The other nested
+sections ignore them, because a config may carry parameters for other
+tools (e.g., under `topology`). For those sections `topon doctor` warns
+through its `unknown_config_keys` rule.
 
-For the full key-by-key reference and example configs, see [USAGE.md](USAGE.md).
+[USAGE.md](USAGE.md) has the full key reference and example configs.
 
 ---
 
 ## 6. CLI surface
 
-The `topon` CLI (`topon/cli.py`) dispatches to:
+The `topon` CLI (`topon/cli.py`) maps each sub-command to a backend.
 
 | Sub-command | Backend |
 |---|---|
@@ -340,7 +349,7 @@ The `topon` CLI (`topon/cli.py`) dispatches to:
 | `topon recipes` | prints a table of common use cases |
 | `topon shell` | the interactive `topon>` shell (`topon/shell.py`) |
 
-Full flag-by-flag reference: [USAGE.md](USAGE.md).
+[USAGE.md](USAGE.md) lists every flag.
 
 ---
 

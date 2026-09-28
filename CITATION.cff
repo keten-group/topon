@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
-title: "Topon"
-abstract: "Topon builds polymer networks for LAMMPS. The network topology is generated as a graph first and the chemistry (coarse-grained or atomistic) is mapped onto it afterwards."
+title: "topon"
+abstract: "topon generates polymer networks with a prescribed topology and writes them as LAMMPS input files. The network is built as a graph first, and the chemistry (coarse-grained or atomistic) is mapped onto it afterwards."
 authors:
   - family-names: "Yıldırım"
     given-names: "Ahmet Burak"
