@@ -1,0 +1,50 @@
+# LAMMPS Stage 1: Serial Soft Minimization (ATOMISTIC, CHARMM)
+# pair_style soft only; the .soft settings carry the bonded terms
+# with 1-4 weights 0 (CHARMM 1-4 terms need an lj/charmm pair style).
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     charmm
+dihedral_style  charmm
+improper_style  harmonic
+special_bonds   charmm
+pair_style      soft 1.0
+
+read_data       ../03_Conformation/system_relaxed.data
+include         ../02_Chemistry/system.in.settings.soft
+pair_coeff      * * 0.0
+include         ../02_Chemistry/system.groups
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff 12.0
+variable        prefactor equal ramp(0,30)
+thermo          100
+
+# --- Junctions held, everything else pushed apart ---
+if "$(is_defined(group,nodes))" then "fix freeze_nodes nodes setforce 0 0 0"
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+min_style cg
+minimize 1.0e-4 1.0e-6 1000 10000
+unfix soft_push
+if "$(is_defined(fix,freeze_nodes))" then "unfix freeze_nodes"
+
+# --- All atoms ---
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+minimize 1.0e-4 1.0e-6 1000 10000
+unfix soft_push
+
+reset_timestep 0
+timestep 1.0
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+fix nve_limit all nve/limit 0.1
+run 1000
+unfix nve_limit
+unfix soft_push
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+minimize 1.0e-4 1.0e-6 1000 10000
+unfix soft_push
+write_data system_after_soft.data nocoeff
+write_restart 1.restart

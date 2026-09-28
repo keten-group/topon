@@ -1,0 +1,426 @@
+LAMMPS (2 Apr 2025)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:99)
+  using 1 OpenMP thread(s) per MPI task
+Loaded 1 plugins from <LAMMPS install>/plugins
+package omp 4
+set 4 OpenMP thread(s) per MPI task
+using multi-threaded neighbor list subroutines
+# Stage 3 -- Tight min + short NVT + (optional) NPT.
+# MARTINI 3 port of the CHARMM stage 3 (same structure, same
+# 1 fs timestep, same 100.0 Tdamp). MARTINI-specific changes are noted inline:
+#   * pair_style lj/cut/coul/cut    (vs lj/charmm/coul/long + kspace pppm)
+#   * dielectric 15.0               (RF approximation; MARTINI default)
+#   * special_bonds lj/coul 0 1 1   (nrexcl=1: exclude 1-2 only, matching the
+#     reference high_pro.itp + GROMACS; was 0 0 0 which OVER-excluded 1-3/1-4 and
+#     let the proper sidechain geometry collapse during dynamics)
+#   * angle_style cosine/squared    (MARTINI 3 IDP backbone funct=10)
+#   * no fix cmap                   (CMAP is CHARMM-only)
+#   * comm_modify cutoff 60         (MARTINI bonds longer than atomistic)
+# Run from this relaxation/ directory.
+
+units           real
+boundary        p p p
+atom_style      full
+bond_style      harmonic
+angle_style     cosine/squared
+dihedral_style  charmm
+improper_style  harmonic
+
+pair_style      lj/cut/coul/cut 12.0    # MARTINI: was lj/charmm/coul/long + pppm
+pair_modify     shift yes
+special_bonds   lj 0.0 1.0 1.0 coul 0.0 1.0 1.0   # MARTINI: was special_bonds charmm
+dielectric      15.0                              # MARTINI: RF approx (no equivalent in CHARMM)
+
+read_data       system_ramped.data
+Reading data file ...
+  orthogonal box = (0 0 0) to (74.922346 74.922346 74.922346)
+  1 by 1 by 1 MPI processor grid
+  reading atoms ...
+  4032 atoms
+  reading velocities ...
+  4032 velocities
+  scanning bonds ...
+  2 = max bonds/atom
+  scanning angles ...
+  3 = max angles/atom
+  scanning dihedrals ...
+  6 = max dihedrals/atom
+  scanning impropers ...
+  1 = max impropers/atom
+  orthogonal box = (0 0 0) to (74.922346 74.922346 74.922346)
+  1 by 1 by 1 MPI processor grid
+  reading bonds ...
+  4320 bonds
+  reading angles ...
+  5160 angles
+  reading dihedrals ...
+  9432 dihedrals
+  reading impropers ...
+  1432 impropers
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        1        1       
+  special bond factors coul:  0        1        1       
+     3 = max # of 1-2 neighbors
+     3 = max # of special neighbors
+  special bonds CPU = 0.001 seconds
+  read_data CPU = 0.137 seconds
+include         ../protein_network.in.groups
+group protein molecule 1:8
+4032 atoms in group protein
+# 8 protein chains, 0 W water beads
+
+# Hierarchical-relaxation per-class groups (used by stage 1)
+group bb type 1 2 3 6 12
+2160 atoms in group bb
+group sc type 4 5 7 8 9 10 13 14
+1728 atoms in group sc
+group crosslink type 11
+144 atoms in group crosslink
+include         ../protein_network.in.settings
+# pair_coeff: explicit MARTINI 3 nonbond_params (LAMMPS units real).
+pair_coeff 1 1 1.541587 4.700000  # Q5-Q5
+pair_coeff 1 2 1.101577 4.300000  # Q5-SP1
+pair_coeff 1 3 1.292543 4.700000  # Q5-P2
+pair_coeff 1 4 0.349665 4.730000  # Q5-SC3
+pair_coeff 1 5 1.278681 4.375000  # Q5-SQ3p
+pair_coeff 1 6 1.157983 4.300000  # Q5-SP2a
+pair_coeff 1 7 0.962476 3.950000  # Q5-TP1
+pair_coeff 1 8 1.438815 4.375000  # Q5-SQ5n
+pair_coeff 1 9 0.245220 4.040000  # Q5-TC4
+pair_coeff 1 10 0.290631 4.010000  # Q5-TC5
+pair_coeff 1 11 0.961042 3.950000  # Q5-TN6
+pair_coeff 1 12 1.157983 4.300000  # Q5-SP2
+pair_coeff 1 13 0.196463 4.650000  # Q5-TC3
+pair_coeff 1 14 1.233509 4.300000  # Q5-SP5
+pair_coeff 2 2 0.733748 4.100000  # SP1-SP1
+pair_coeff 2 3 0.858031 4.300000  # SP1-P2
+pair_coeff 2 4 0.418260 4.100000  # SP1-SC3
+pair_coeff 2 5 1.344646 4.100000  # SP1-SQ3p
+pair_coeff 2 6 0.733748 4.100000  # SP1-SP2a
+pair_coeff 2 7 0.614245 3.650000  # SP1-TP1
+pair_coeff 2 8 1.499044 4.100000  # SP1-SQ5n
+pair_coeff 2 9 0.346558 3.780000  # SP1-TC4
+pair_coeff 2 10 0.382409 3.660000  # SP1-TC5
+pair_coeff 2 11 0.614245 3.650000  # SP1-TN6
+pair_coeff 2 12 0.733748 4.100000  # SP1-SP2
+pair_coeff 2 13 0.308317 3.940000  # SP1-TC3
+pair_coeff 2 14 0.733748 4.100000  # SP1-SP5
+pair_coeff 3 3 0.970363 4.700000  # P2-P2
+pair_coeff 3 4 0.516252 4.300000  # P2-SC3
+pair_coeff 3 5 1.532027 4.300000  # P2-SQ3p
+pair_coeff 3 6 0.901052 4.300000  # P2-SP2a
+pair_coeff 3 7 0.702677 3.950000  # P2-TP1
+pair_coeff 3 8 1.711042 4.300000  # P2-SQ5n
+pair_coeff 3 9 0.399140 3.950000  # P2-TC4
+pair_coeff 3 10 0.442161 3.950000  # P2-TC5
+pair_coeff 3 11 0.702677 3.950000  # P2-TN6
+pair_coeff 3 12 0.901052 4.300000  # P2-SP2
+pair_coeff 3 13 0.346558 3.980000  # P2-TC3
+pair_coeff 3 14 0.901052 4.300000  # P2-SP5
+pair_coeff 4 4 0.561663 4.100000  # SC3-SC3
+pair_coeff 4 5 0.776769 4.100000  # SC3-SQ3p
+pair_coeff 4 6 0.418260 4.100000  # SC3-SP2a
+pair_coeff 4 7 0.308317 3.940000  # SC3-TP1
+pair_coeff 4 8 0.496654 4.530000  # SC3-SQ5n
+pair_coeff 4 9 0.456501 3.650000  # SC3-TC4
+pair_coeff 4 10 0.418260 3.650000  # SC3-TC5
+pair_coeff 4 11 0.346558 3.780000  # SC3-TN6
+pair_coeff 4 12 0.418260 4.100000  # SC3-SP2
+pair_coeff 4 13 0.456501 3.650000  # SC3-TC3
+pair_coeff 4 14 0.372849 4.140000  # SC3-SP5
+pair_coeff 5 5 0.791109 4.100000  # SQ3p-SQ3p
+pair_coeff 5 6 1.523662 4.100000  # SQ3p-SP2a
+pair_coeff 5 7 1.177820 3.650000  # SQ3p-TP1
+pair_coeff 5 8 0.920172 4.100000  # SQ3p-SQ5n
+pair_coeff 5 9 0.748327 3.660000  # SQ3p-TC4
+pair_coeff 5 10 0.817639 3.650000  # SQ3p-TC5
+pair_coeff 5 11 1.173518 3.650000  # SQ3p-TN6
+pair_coeff 5 12 1.406549 4.100000  # SQ3p-SP2
+pair_coeff 5 13 0.648901 3.780000  # SQ3p-TC3
+pair_coeff 5 14 1.497371 4.100000  # SQ3p-SP5
+pair_coeff 6 6 0.733748 4.100000  # SP2a-SP2a
+pair_coeff 6 7 0.614245 3.650000  # SP2a-TP1
+pair_coeff 6 8 1.453394 4.100000  # SP2a-SQ5n
+pair_coeff 6 9 0.346558 3.780000  # SP2a-TC4
+pair_coeff 6 10 0.382409 3.660000  # SP2a-TC5
+pair_coeff 6 11 0.614245 3.650000  # SP2a-TN6
+pair_coeff 6 12 0.791109 4.100000  # SP2a-SP2
+pair_coeff 6 13 0.308317 3.940000  # SP2a-TC3
+pair_coeff 6 14 0.791109 4.100000  # SP2a-SP5
+pair_coeff 7 7 0.544933 3.400000  # TP1-TP1
+pair_coeff 7 8 1.338193 3.650000  # TP1-SQ5n
+pair_coeff 7 9 0.223470 3.660000  # TP1-TC4
+pair_coeff 7 10 0.250956 3.520000  # TP1-TC5
+pair_coeff 7 11 0.544933 3.400000  # TP1-TN6
+pair_coeff 7 12 0.614245 3.650000  # TP1-SP2
+pair_coeff 7 13 0.204350 3.850000  # TP1-TC3
+pair_coeff 7 14 0.614245 3.650000  # TP1-SP5
+pair_coeff 8 8 0.975143 4.100000  # SQ5n-SQ5n
+pair_coeff 8 9 0.460803 4.230000  # SQ5n-TC4
+pair_coeff 8 10 0.534895 4.090000  # SQ5n-TC5
+pair_coeff 8 11 1.330306 3.650000  # SQ5n-TN6
+pair_coeff 8 12 1.565727 4.100000  # SQ5n-SP2
+pair_coeff 8 13 0.351099 4.840000  # SQ5n-TC3
+pair_coeff 8 14 1.671367 4.100000  # SQ5n-SP5
+pair_coeff 9 9 0.360899 3.400000  # TC4-TC4
+pair_coeff 9 10 0.360899 3.400000  # TC4-TC5
+pair_coeff 9 11 0.250956 3.520000  # TC4-TN6
+pair_coeff 9 12 0.346558 3.780000  # TC4-SP2
+pair_coeff 9 13 0.360899 3.400000  # TC4-TC3
+pair_coeff 9 14 0.308317 3.940000  # TC4-SP5
+pair_coeff 10 10 0.360899 3.400000  # TC5-TC5
+pair_coeff 10 11 0.293977 3.400000  # TC5-TN6
+pair_coeff 10 12 0.382409 3.660000  # TC5-SP2
+pair_coeff 10 13 0.293977 3.400000  # TC5-TC3
+pair_coeff 10 14 0.346558 3.780000  # TC5-SP5
+pair_coeff 11 11 0.544933 3.400000  # TN6-TN6
+pair_coeff 11 12 0.614245 3.650000  # TN6-SP2
+pair_coeff 11 13 0.223470 3.660000  # TN6-TC3
+pair_coeff 11 14 0.559273 3.650000  # TN6-SP5
+pair_coeff 12 12 0.791109 4.100000  # SP2-SP2
+pair_coeff 12 13 0.308317 3.940000  # SP2-TC3
+pair_coeff 12 14 0.791109 4.100000  # SP2-SP5
+pair_coeff 13 13 0.360899 3.400000  # TC3-TC3
+pair_coeff 13 14 0.270076 4.040000  # TC3-SP5
+pair_coeff 14 14 0.913002 4.100000  # SP5-SP5
+
+# bond_coeff: harmonic for real bonds + constraint bonds (ULTRA stiff).
+bond_coeff 1 9.560229 3.600000  # funct 1 K=8000.0 kJ/mol/nm^2 r0=0.36 nm
+bond_coeff 2 11.950287 3.600000  # funct 1 K=10000.0 kJ/mol/nm^2 r0=0.36 nm
+bond_coeff 3 11.950287 3.050000  # funct 1 K=10000.0 kJ/mol/nm^2 r0=0.305 nm
+bond_coeff 4 5.975143 3.300000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.33 nm
+bond_coeff 5 5.975143 3.800000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.38 nm
+bond_coeff 6 8.962715 3.300000  # funct 1 K=7500.0 kJ/mol/nm^2 r0=0.33 nm
+bond_coeff 7 8.962715 2.870000  # funct 1 K=7500.0 kJ/mol/nm^2 r0=0.287 nm
+bond_coeff 8 8.962715 3.520000  # funct 1 K=7500.0 kJ/mol/nm^2 r0=0.352 nm
+bond_coeff 9 5.975143 3.250000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.325 nm
+bond_coeff 10 5.975143 3.520000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.352 nm
+bond_coeff 11 9.560229 2.700000  # dityrosine crosslink
+bond_coeff 12 11.950287 3.000000  # constraint (rigid-stiff)
+bond_coeff 13 11.950287 2.850000  # constraint (rigid-stiff)
+bond_coeff 14 11.950287 2.700000  # constraint (rigid-stiff)
+
+# angle_coeff: cosine/squared (covers funct 2 and approximates funct 10).
+angle_coeff 1 2.987572 137.0000  # funct 10
+angle_coeff 2 1.792543 90.0000  # funct 10
+angle_coeff 3 11.950287 85.0000  # funct 10
+angle_coeff 4 1.792543 110.0000  # funct 10
+angle_coeff 5 1.792543 100.0000  # funct 10
+angle_coeff 6 3.585086 120.0000  # funct 10
+angle_coeff 7 1.792543 70.0000  # funct 10
+angle_coeff 8 1.792543 75.0000  # funct 10
+angle_coeff 9 2.987572 180.0000  # funct 2
+angle_coeff 10 7.170172 120.0000  # funct 2
+
+# dihedral_coeff: charmm style for funct 9 (proper, multi-term).
+dihedral_coeff 1 0.669216 1 60 0.0  # funct 9
+dihedral_coeff 2 -0.143403 1 150 0.0  # funct 9
+dihedral_coeff 3 -0.286807 2 130 0.0  # funct 9
+dihedral_coeff 4 0.191205 1 160 0.0  # funct 9
+dihedral_coeff 5 0.191205 1 -160 0.0  # funct 9
+dihedral_coeff 6 0.286807 2 0 0.0  # funct 9
+dihedral_coeff 7 0.191205 2 -80 0.0  # funct 9
+dihedral_coeff 8 0.478011 1 60 0.0  # funct 9
+dihedral_coeff 9 0.191205 1 -100 0.0  # funct 9
+dihedral_coeff 10 0.764818 1 -10 0.0  # funct 9
+dihedral_coeff 11 -0.310707 2 15 0.0  # funct 9
+dihedral_coeff 12 0.191205 1 -120 0.0  # funct 9
+dihedral_coeff 13 -0.334608 1 -130 0.0  # funct 9
+dihedral_coeff 14 -0.334608 2 100 0.0  # funct 9
+
+# improper_coeff: harmonic (funct 2 -- TYR ring planarity, etc.).
+improper_coeff 1 5.975143 180.0000  # funct 2
+improper_coeff 2 3.585086 -20.0000  # funct 2
+improper_coeff 3 9.560229 -10.0000  # funct 2
+improper_coeff 4 3.585086 -25.0000  # funct 2
+
+neigh_modify    one 10000
+comm_modify     mode single cutoff 60.0           # MARTINI: longer than CHARMM atomistic
+
+thermo          100
+thermo_style    custom step pe ke etotal evdwl ecoul epair ebond eangle edihed eimp press vol temp
+
+# --- Tight minimisation (as in the CHARMM stage 3) ---
+min_style       cg
+minimize        1.0e-6 1.0e-8 100000 1000000
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Neighbor list info ...
+  update: every = 1 steps, delay = 0 steps, check = yes
+  max neighbors/atom: 10000, page size: 100000
+  master list distance cutoff = 14
+  ghost atom cutoff = 60
+  binsize = 7, bins = 11 11 11
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair lj/cut/coul/cut/omp, perpetual
+      attributes: half, newton on, omp
+      pair build: half/bin/newton/omp
+      stencil: half/bin/3d
+      bin: standard
+Per MPI rank memory allocation (min/avg/max) = 63.15 | 63.15 | 63.15 Mbytes
+   Step         PotEng         KinEng         TotEng         E_vdwl         E_coul         E_pair         E_bond        E_angle        E_dihed        E_impro         Press          Volume          Temp     
+         0   169553.31      306545.95      476099.27      15566.706     -269.02651      15297.68       135631.62      7815.9941      301.0967       10506.922      20984.707      420565.95      25512.234    
+       100  -2426.8711      306545.95      304119.08     -9355.5955     -262.94308     -9618.5385      1410.0672      3546.6045      152.50188      2082.4938      31556.998      420565.95      25512.234    
+       200  -6171.0528      306545.95      300374.9      -10183.68      -313.97611     -10497.656      334.26996      2616.027       28.687786      1347.6186      31934.947      420565.95      25512.234    
+       300  -7161.4842      306545.95      299384.47     -10550.352     -348.36983     -10898.722      268.33298      2308.1216     -25.005037      1185.7886      31958.64       420565.95      25512.234    
+       311  -7215.4494      306545.95      299330.5      -10559.648     -352.61781     -10912.266      264.31825      2302.1532     -25.850781      1156.1962      31961.034      420565.95      25512.234    
+Loop time of 3.64464 on 4 procs for 311 steps with 4032 atoms
+
+205.8% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = linesearch alpha is zero
+  Energy initial, next-to-last, final = 
+      169553.314791863  -7215.44940679186  -7215.44940679186
+  Force two-norm initial, final = 7444.1462 143.12547
+  Force max component initial, final = 1586.2691 23.468026
+  Final line search alpha, max atom move = 3.9983354e-13 9.383304e-12
+  Iterations, force evaluations = 311 1033
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 1.6922     | 1.6922     | 1.6922     |   0.0 | 46.43
+Bond    | 1.2267     | 1.2267     | 1.2267     |   0.0 | 33.66
+Neigh   | 0.1007     | 0.1007     | 0.1007     |   0.0 |  2.76
+Comm    | 0.34553    | 0.34553    | 0.34553    |   0.0 |  9.48
+Output  | 0.000163   | 0.000163   | 0.000163   |   0.0 |  0.00
+Modify  | 0.21159    | 0.21159    | 0.21159    |   0.0 |  5.81
+Other   |            | 0.06776    |            |       |  1.86
+
+Nlocal:           4032 ave        4032 max        4032 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          66837 ave       66837 max       66837 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:         216838 ave      216838 max      216838 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 216838
+Ave neighs/atom = 53.779266
+Ave special neighs/atom = 2.1428571
+Neighbor list builds = 13
+Dangerous builds = 0
+write_data      system_minimized_final.data
+System init for write_data ...
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
+
+# --- Short NVT (5000 steps x 1 fs = 5 ps), T=310K is the MARTINI canonical ---
+reset_timestep  0
+variable        T equal 310.0                     # MARTINI: 310 K (the CHARMM stage 3 uses 300 K)
+velocity        all create ${T} 12345
+velocity        all create 310 12345
+timestep        1.0                               # same as the CHARMM stage 3
+fix             1 all nvt temp ${T} ${T} 100.0   # same Tdamp as CHARMM
+fix             1 all nvt temp 310 ${T} 100.0   
+fix             1 all nvt temp 310 310 100.0   
+run             5000
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Per MPI rank memory allocation (min/avg/max) = 57.53 | 57.53 | 57.53 Mbytes
+   Step         PotEng         KinEng         TotEng         E_vdwl         E_coul         E_pair         E_bond        E_angle        E_dihed        E_impro         Press          Volume          Temp     
+         0  -7215.4494      3724.85       -3490.5994     -10559.648     -352.61781     -10912.266      264.31825      2302.1532     -25.850781      1156.1962     -953.28566      420565.95      310          
+       100  -5471.4669      2196.2252     -3275.2417     -10143.207     -343.10551     -10486.313      1191.8015      2387.2553     -0.8025029      1436.5915     -960.8414       420565.95      182.78046    
+       200  -5630.4222      2772.6197     -2857.8025     -10185.292     -347.98168     -10533.274      971.56564      2457.497       1.1010897      1472.6882     -1010.2665      420565.95      230.75079    
+       300  -5608.4713      3208.7689     -2399.7024     -10240.502     -382.78832     -10623.29       1080.565       2448.1295      5.2803673      1480.8441     -1077.1673      420565.95      267.04924    
+       400  -5663.9168      3704.2695     -1959.6473     -10268.741     -402.55942     -10671.301      1129.4623      2390.3591      7.393428       1480.1689     -994.97304      420565.95      308.28719    
+       500  -5692.46        3978.5766     -1713.8833     -10292.236     -423.53215     -10715.768      1148.9671      2367.7488      2.6302246      1503.962      -966.75928      420565.95      331.11635    
+       600  -5653.0571      3770.3199     -1882.7372     -10335.594     -418.75962     -10754.354      1235.7439      2330.9762      4.5464213      1530.0302     -990.09152      420565.95      313.78422    
+       700  -5877.0524      3700.667      -2176.3854     -10416.362     -422.68019     -10839.042      1193.201       2255.2703      1.3380632      1512.1803     -880.1001       420565.95      307.98737    
+       800  -6109.2566      3685.1952     -2424.0614     -10535.681     -435.24282     -10970.924      1188.0728      2184.8707     -27.093712      1515.8178     -857.75586      420565.95      306.69973    
+       900  -6249.3448      3691.6796     -2557.6652     -10583.896     -425.40158     -11009.297      1152.8453      2139.1971     -57.292394      1525.2023     -819.51606      420565.95      307.2394     
+      1000  -6366.8169      3739.4879     -2627.3289     -10708.766     -434.38492     -11143.151      1205.8131      2129.152      -63.666373      1505.0357     -837.66543      420565.95      311.21824    
+      1100  -6417.3683      3670.7653     -2746.603      -10772.118     -444.56238     -11216.68       1225.52        2139.9718     -70.425191      1504.2456     -853.9435       420565.95      305.4988     
+      1200  -6563.3497      3756.9766     -2806.3732     -10824.594     -473.04576     -11297.64       1200.9569      2132.7696     -81.045092      1481.6084     -864.19893      420565.95      312.67372    
+      1300  -6650.1074      3791.5739     -2858.5335     -10913.605     -465.92795     -11379.533      1221.8987      2108.6352     -82.632817      1481.5246     -890.37242      420565.95      315.55308    
+      1400  -6775.1634      3757.0831     -3018.0803     -10991.66      -471.34938     -11463.009      1209.3248      2091.4503     -97.606273      1484.6771     -845.00619      420565.95      312.68259    
+      1500  -6852.3351      3680.7407     -3171.5944     -11090.332     -491.42292     -11581.755      1250.2728      2086.1992     -104.50964      1497.4573     -842.52385      420565.95      306.32901    
+      1600  -6989.1629      3733.4243     -3255.7386     -11187.161     -511.013       -11698.174      1209.8611      2105.8464     -120.61307      1513.9169     -773.21778      420565.95      310.71359    
+      1700  -7015.3321      3723.0671     -3292.265      -11246.718     -503.43717     -11750.155      1256.3896      2099.4843     -121.43416      1500.3829     -772.58356      420565.95      309.85161    
+      1800  -7042.7408      3749.9462     -3292.7946     -11290.31      -498.50579     -11788.815      1276.5442      2055.178      -119.70101      1534.0535     -775.29193      420565.95      312.08862    
+      1900  -7110.854       3747.6956     -3363.1584     -11364.247     -502.86636     -11867.114      1318.5864      2045.486      -123.21829      1515.4056     -807.71255      420565.95      311.90132    
+      2000  -7184.1739      3698.4954     -3485.6785     -11417.213     -514.21603     -11931.429      1315.8243      2044.4602     -124.10531      1511.0762     -839.14222      420565.95      307.80664    
+      2100  -7330.7316      3767.2739     -3563.4577     -11490.542     -503.21395     -11993.756      1265.3458      2032.7357     -131.85564      1496.7986     -828.01727      420565.95      313.53072    
+      2200  -7435.7836      3704.2179     -3731.5658     -11548.659     -516.8639      -12065.523      1276.5342      2007.6109     -124.41108      1470.0056     -812.29223      420565.95      308.28289    
+      2300  -7519.2246      3679.7262     -3839.4984     -11675.265     -522.34005     -12197.605      1326.2745      2013.7699     -120.59402      1458.9303     -866.41742      420565.95      306.24458    
+      2400  -7564.6568      3675.4973     -3889.1595     -11694.631     -531.49699     -12226.128      1286.5491      2035.2064     -138.02607      1477.7416     -847.27003      420565.95      305.89263    
+      2500  -7662.0535      3792.3035     -3869.75       -11799.439     -539.84329     -12339.283      1301.6103      2042.7408     -138.91814      1471.7963     -828.74997      420565.95      315.6138     
+      2600  -7688.0652      3782.2882     -3905.777      -11798.049     -518.26367     -12316.313      1288.7756      2027.292      -143.47375      1455.654      -735.88453      420565.95      314.78028    
+      2700  -7712.9791      3688.9506     -4024.0285     -11897.503     -517.42538     -12414.928      1340.3624      2041.1951     -151.39387      1471.7854     -730.25584      420565.95      307.01228    
+      2800  -7819.4249      3723.0829     -4096.342      -11995.908     -504.39833     -12500.306      1329.6818      2038.2906     -157.40243      1470.3116     -797.41341      420565.95      309.85293    
+      2900  -7886.5889      3727.2438     -4159.3451     -12024.032     -504.03024     -12528.062      1277.517       2034.7468     -169.42089      1498.6307     -796.25091      420565.95      310.19922    
+      3000  -7942.2992      3737.4661     -4204.8331     -12128.428     -509.45711     -12637.885      1351.2295      2032.7151     -179.83298      1491.4746     -837.12732      420565.95      311.04997    
+      3100  -8033.6051      3764.5905     -4269.0146     -12231.683     -504.61023     -12736.293      1327.8512      2031.7781     -176.82907      1519.8875     -796.06562      420565.95      313.3074     
+      3200  -8116.8127      3703.0098     -4413.8029     -12311.253     -535.27189     -12846.525      1342.2227      2027.3402     -180.3968       1540.5457     -785.66096      420565.95      308.18235    
+      3300  -8213.0918      3715.4938     -4497.598      -12419.944     -541.08505     -12961.03       1380.2631      2040.0555     -195.2916       1522.9107     -761.46286      420565.95      309.22133    
+      3400  -8262.6576      3705.8173     -4556.8402     -12454.395     -541.86074     -12996.255      1330.4187      2062.4425     -195.28546      1536.0221     -722.19651      420565.95      308.41601    
+      3500  -8324.504       3729.2168     -4595.2872     -12498.098     -538.32422     -13036.422      1371.3093      2048.7569     -209.92517      1501.7771     -755.70326      420565.95      310.36342    
+      3600  -8362.8381      3718.4909     -4644.3472     -12539.291     -535.57441     -13074.865      1357.8002      2044.4549     -207.22898      1517.0009     -816.66408      420565.95      309.47076    
+      3700  -8426.4147      3712.7802     -4713.6345     -12576.909     -547.14432     -13124.053      1357.5314      2027.7813     -202.50381      1514.8298     -721.71881      420565.95      308.99549    
+      3800  -8479.1292      3745.9187     -4733.2105     -12650.565     -526.15104     -13176.716      1376.9427      2004.4376     -189.25517      1505.4619     -754.47586      420565.95      311.75343    
+      3900  -8518.4715      3699.917      -4818.5545     -12675.719     -552.85237     -13228.571      1374.184       2019.1481     -181.41323      1498.1809     -738.33346      420565.95      307.92495    
+      4000  -8554.1754      3723.1285     -4831.047      -12748.466     -543.68492     -13292.151      1389.829       2013.8064     -183.69347      1518.0333     -729.1678       420565.95      309.85672    
+      4100  -8616.0218      3726.4347     -4889.5871     -12832.603     -546.68959     -13379.292      1428.4056      1999.3594     -178.42412      1513.9295     -684.26363      420565.95      310.13188    
+      4200  -8714.5676      3723.7611     -4990.8065     -12870.171     -554.92423     -13425.095      1384.4645      1982.3572     -176.19319      1519.8993     -631.30642      420565.95      309.90937    
+      4300  -8729.9566      3706.7704     -5023.1862     -12935.194     -554.47548     -13489.67       1416.2459      1994.3499     -176.99591      1526.1132     -662.11608      420565.95      308.49533    
+      4400  -8683.395       3690.4769     -4992.9182     -12911.024     -541.89452     -13452.918      1424.0473      2025.5009     -186.42838      1506.4035     -646.88824      420565.95      307.1393     
+      4500  -8684.6207      3782.8559     -4901.7647     -12947.368     -537.93357     -13485.301      1433.7242      2041.3809     -191.26481      1516.8402     -693.24863      420565.95      314.82753    
+      4600  -8683.1347      3882.6794     -4800.4553     -13033.125     -567.8429      -13600.968      1539.5507      2044.693      -190.73096      1524.3207     -676.23483      420565.95      323.13532    
+      4700  -8693.4839      3829.3747     -4864.1092     -13054.579     -572.94001     -13627.519      1537.1113      2056.6965     -191.31778      1531.5454     -601.76824      420565.95      318.69905    
+      4800  -8774.9468      3785.0437     -4989.9031     -13065.088     -550.97995     -13616.068      1501.755       2025.0003     -202.10837      1516.4745     -514.23416      420565.95      315.00961    
+      4900  -8817.8753      3749.7233     -5068.1519     -13144.087     -533.46136     -13677.549      1524.4689      1997.8037     -199.79597      1537.197      -563.93696      420565.95      312.07008    
+      5000  -8932.5004      3725.3239     -5207.1764     -13153.439     -565.64417     -13719.083      1500.384       1999.3269     -210.8049       1497.6768     -576.85726      420565.95      310.03944    
+Loop time of 15.5539 on 4 procs for 5000 steps with 4032 atoms
+
+Performance: 27.774 ns/day, 0.864 hours/ns, 321.462 timesteps/s, 1.296 Matom-step/s
+200.6% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 5.3527     | 5.3527     | 5.3527     |   0.0 | 34.41
+Bond    | 4.3409     | 4.3409     | 4.3409     |   0.0 | 27.91
+Neigh   | 0.4743     | 0.4743     | 0.4743     |   0.0 |  3.05
+Comm    | 1.8936     | 1.8936     | 1.8936     |   0.0 | 12.17
+Output  | 0.003128   | 0.003128   | 0.003128   |   0.0 |  0.02
+Modify  | 3.385      | 3.385      | 3.385      |   0.0 | 21.76
+Other   |            | 0.1043     |            |       |  0.67
+
+Nlocal:           4032 ave        4032 max        4032 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          66246 ave       66246 max       66246 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:         236523 ave      236523 max      236523 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 236523
+Ave neighs/atom = 58.661458
+Ave special neighs/atom = 2.1428571
+Neighbor list builds = 53
+Dangerous builds = 0
+unfix           1
+write_data      after_nvt.data
+System init for write_data ...
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
+
+# --- Short NPT at 1 atm (5000 steps x 1 fs = 5 ps) ---
+# OFF by default: for dry / vacuum boxes (no W water packed), NPT collapses
+# the cell because there is no solvent pressure to balance against.
+# UNCOMMENT for hydrated systems (--water-density > 0) to let the box find
+# its natural MARTINI density.
+#
+# fix             1 all npt temp ${T} ${T} 100.0 iso 1.0 1.0 1000.0
+# run             5000
+# unfix           1
+
+write_data      ../system_equilibrated.data
+System init for write_data ...
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
+print           "Stage 3 done -> ../system_equilibrated.data (NVT-only; uncomment NPT block for hydrated runs)."
+Stage 3 done -> ../system_equilibrated.data (NVT-only; uncomment NPT block for hydrated runs).
+Total wall time: 0:00:19

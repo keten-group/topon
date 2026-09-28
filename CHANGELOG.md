@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.3.0
+
+### CHARMM for polymer networks
+
+- `chemistry.force_field = "charmm"` writes an atomistic network with CHARMM parameters instead of DREIDING. Each
+  repeat unit, node molecule and bridge atom names its residue in RTF files you supply (`charmm_residue`, and
+  optionally `charmm_atom_names`), and its atoms are matched to that residue by name or by graph. Every term comes from
+  the RTF, PRM and stream files in `chemistry.charmm.files`, read in order.
+- A residue, atom or parameter the files do not define stops the chemistry stage with the complete list, and
+  `topon generate` ends with a message that names what to add. No term is filled in by default.
+- The atom charges of each residue must add up to the charge of its RTF residue, and the network's charge must be an
+  integer. POSS nodes, grafts, sol chains and `model_type: "coarse_grained"` are refused with CHARMM.
+- The three LAMMPS stages use CHARMM styles (`lj/charmmfsw/coul/long` with arithmetic mixing and PPPM,
+  `dihedral_style charmmfsw` with 1-4 weights, Urey-Bradley angles). The soft stage and the LJ ramp read their own
+  includes (`.soft` and `.lj`).
+- The CHARMM C35r ether force field is bundled (MIT), and a config names its files as `bundled:NAME`.
+  `demos/polymer/atomistic/charmm_peg/` builds a PEG network with it.
+- DREIDING remains the default, and its output is unchanged.
+
+### Protein networks
+
+- New command `topon protein` builds a crosslinked protein network from an amino-acid sequence (a repeat block or a
+  whole chain) in CHARMM36m (all-atom) or Martini 3 (coarse-grained). The chains are grown on a cubic lattice (the
+  bond-fluctuation model) and crosslinked through tyrosines (dityrosine) or cysteines (disulfide) up to the gel point.
+  It writes the LAMMPS data file, the coefficient includes, the groups, three relaxation scripts and a summary.
+- CHARMM36m builds place the atoms from the RTF internal coordinates and apply each crosslink as its RTF patch (`DITY`
+  or `DISU`). Hydrated builds add TIP3P water, held rigid in the stage-3 MD, and NaCl. Every term, including the 1-4
+  terms, NBFIX and the CMAP grids, comes from the bundled CHARMM36m files (MIT), and `--charmm-files` takes other
+  files instead.
+- Martini 3 builds use the Martini3-IDP bonded terms. The bundled polyply topologies cover the resilin reference, and
+  any other sequence is run through polyply (the optional `martini` extra). Tryptophan is refused, because Martini 3
+  represents it with a virtual site.
+- A build that does not reach the gel point stops unless `--allow-no-gel` is given, and `--seed` makes a build
+  reproducible.
+- `python -m topon.protein_network check-bonds` reports the bonds that stay stretched or threaded through a ring after
+  the relaxation. Ring threading is detected, not prevented.
+- `demos/protein/` holds a CHARMM36m and a Martini 3 resilin network. `THIRD_PARTY_LICENSES.md` lists every bundled
+  force-field file with its source and license.
+
+### Fixes
+
+- A strict topology request with defects no longer fails with `KeyError` when the degree distribution does not list
+  every degree.
+- Coarse-grained copolymer and graft configs no longer need their bead labels declared in `chemistry.monomers`.
+- `topon init --preset` works from a regular install, because the presets now ship in `topon/presets/`.
+- The molecule packer of `topon simbox` no longer divides by zero at its default `min_dist` of 0.
+
+### Packaging
+
+- Optional extras `martini` (polyply, and cgsmiles, which polyply 1.8 needs but does not declare) and `validate`
+  (OpenMM).
+- The CHARMM and Martini data folders and the presets are package data.
+
 ## 0.2.1
 
 ### Topology

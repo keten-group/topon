@@ -1,6 +1,6 @@
 # topon architecture
 
-topon is a Python toolkit that builds polymer networks for LAMMPS molecular dynamics. It decides the topology as a graph first and then maps that graph to chemistry and coordinates. The same graph can produce a coarse-grained Kremer-Grest system or an atomistic DREIDING system with no change to the topology code.
+topon is a Python toolkit that builds polymer networks for LAMMPS molecular dynamics. It decides the topology as a graph first and then maps that graph to chemistry and coordinates. The same graph can produce a coarse-grained Kremer-Grest system or an atomistic DREIDING or CHARMM system with no change to the topology code. A separate sub-system builds crosslinked protein networks from an amino-acid sequence.
 
 This document describes the package layout for contributors. [USAGE.md](USAGE.md) explains how to run topon.
 
@@ -8,18 +8,18 @@ This document describes the package layout for contributors. [USAGE.md](USAGE.md
 
 ## 1. The topon family
 
-The package contains two independent sub-systems with related jobs.
+The package contains three independent sub-systems with related jobs.
 
-| | **core topon** (polymer networks) | **simbox** (molecule packing) |
-|---|---|---|
-| Implementation path | `topon/{topology,assignment,chemistry,conformation,writers}/` | `topon/simbox/` |
-| Entry point | `topon` CLI / `topon.pipeline.Pipeline` | `topon simbox` CLI / `topon.simbox` API |
-| Resolution | atomistic (DREIDING) or coarse-grained (Kremer-Grest) | atomistic (DREIDING) |
-| Force field | DREIDING / Kremer-Grest | DREIDING |
-| LAMMPS data | `atom_style full`, wrap-only (7-column atom rows, no image flags) | `atom_style full`, wrap-only |
-| Pipeline | the six stages below | independent packing flow |
-| Crosslinks | Y-merge (CG) / chemistry-defined (atomistic) | reaction templates (epoxy/amine, etc.) |
-| Topology shape | lattice graph (SC / BCC / FCC / Diamond / MIX, configurable functionality) | molecule library + grid packing |
+| | **core topon** (polymer networks) | **protein networks** | **simbox** (molecule packing) |
+|---|---|---|---|
+| Implementation path | `topon/{topology,assignment,chemistry,conformation,writers}/`, CHARMM typing in `topon/chemistry/charmm/` | `topon/protein_network/` (Martini 3), `topon/protein_network/charmm/` (CHARMM36m) | `topon/simbox/` |
+| Entry point | `topon` CLI / `topon.pipeline.Pipeline` | `topon protein` / `topon.protein_network.network.build_protein_network` | `topon simbox` CLI / `topon.simbox` API |
+| Resolution | atomistic (DREIDING, or CHARMM from RTF/PRM files) or coarse-grained (Kremer-Grest) | all-atom (CHARMM36m) or coarse-grained (Martini 3) | atomistic (DREIDING) |
+| Force field | DREIDING, CHARMM (`chemistry.force_field`), Kremer-Grest | CHARMM36m, or Martini 3 with the Martini3-IDP bonded terms (polyply chain topologies) | DREIDING |
+| LAMMPS data | `atom_style full`, wrap-only (7-column atom rows, no image flags) | `atom_style full`, 10-column atom rows with image flags (§6) | `atom_style full`, wrap-only |
+| Pipeline | the six stages below | sequence → chain layout → lattice growth and crosslinking → chemistry → LAMMPS files (§6) | independent packing flow |
+| Crosslinks | Y-merge (CG) / chemistry-defined (atomistic) | dityrosine or disulfide (CHARMM `DITY` or `DISU` patch, Martini SC4-SC4 or SC1-SC1 bond) | reaction templates (epoxy/amine, etc.) |
+| Topology shape | lattice graph (SC / BCC / FCC / Diamond / MIX, configurable functionality) | self-avoiding walks on a cubic lattice (bond-fluctuation model) | molecule library + grid packing |
 
 A third, smaller utility (`topon/singlechain/`) handles single-chain solubility calculations. The main pipeline does not use it.
 
@@ -189,12 +189,13 @@ After this stage the graph carries every annotation the later stages need.
 | `chemistry/builder.py` | The `ChemistryBuilder` class, with most of the stage-4 logic |
 | `chemistry/sequences.py` | Shared monomer sequence helpers used by the builder |
 | `chemistry/embed.py` | ETKDGv3 per-chain conformer embedding |
-| `chemistry/{dreiding,kg}/` | Stub sub-namespaces reserved for force-field-specific chemistry (`kg/` has only a docstring, and `dreiding/` is a 1-line stub). The CG or atomistic switch happens inside `builder.py` through `config.chemistry.model_type`. |
+| `chemistry/charmm/` | CHARMM typing of the atomistic network (`chemistry.force_field = "charmm"`). `assign.py` cuts the RDKit molecule into residue instances (each repeat unit, node molecule and bridge atom), matches each to the RTF residue its config names (by `charmm_atom_names`, or by graph isomorphism) and returns every atom's type, charge and name, plus the RTF impropers. `build_terms` looks every term up through `topon.forcefield.charmm`. `data/` holds the C35r ether force field (MIT). |
+| `chemistry/{dreiding,kg}/` | Stub sub-namespaces (`kg/` has only a docstring, and `dreiding/` is a 1-line stub). The CG or atomistic switch happens inside `builder.py` through `config.chemistry.model_type`, and the DREIDING or CHARMM switch in `Pipeline._run_chemistry_stage` through `config.chemistry.force_field`. |
 
 This stage also writes the first LAMMPS files to `<output_dir>/02_Chemistry/`.
 
-- `system.data` holds atom positions and connectivity (written by `CGWriter` or `DreidingWriter` in `topon/writers/`).
-- `system.in.settings` holds force-field coefficients. `DreidingWriter` writes it on the atomistic route, and the coarse-grained route leaves it as a stub.
+- `system.data` holds atom positions and connectivity (written by `CGWriter`, `DreidingWriter` or `CharmmWriter` in `topon/writers/`).
+- `system.in.settings` holds force-field coefficients. `DreidingWriter` or `CharmmWriter` writes it on the atomistic route, and the coarse-grained route leaves it as a stub. CHARMM adds `.soft` and `.lj` includes for the soft and ramp stages.
 - `system.groups` defines the `nodes` and `beads` LAMMPS groups.
 - `system_nodes.displace`, `system_backbone.displace` and `system_grafts.displace` (plus `system_pendant.displace` and `system_hydrogens.displace` on the atomistic route) are the displacement files for stage 5.
 
@@ -261,18 +262,20 @@ The table lists every directory under `topon/`. Modules above the dashed row bel
 | `topology/` | 7 files (`shells.py` holds the neighbor-shell table and cutoff resolver, `degree_matching.py` the exact degree-sequence search) + `csrc/` (C generator) + `network/` (a thin loader wrapper), `sequence/`, `simple/` (stubs) | Graph generation and loading. Stage 1. |
 | `analysis/` | 3 files (`report.py` is `topon analyze`, `run_summary.py` is `topon inspect`) | Read-only graph statistics for the `topon analyze` CLI, and the post-run summary. Not used by `Pipeline` stage 2, which calls `AssignmentManager.analyze()`. |
 | `assignment/` | 8 files | Graph annotation (node/edge types, DP, defects, entanglements, copolymers). Stage 3. |
-| `chemistry/` | 4 files (`builder.py` is most of stage 4), and `dreiding/` and `kg/` are stubs | RDKit Mol construction with 3D coords. Stage 4. |
+| `chemistry/` | 4 files (`builder.py` is most of stage 4), `charmm/` (RTF typing and the bundled C35r ethers), and `dreiding/` and `kg/` are stubs | RDKit Mol construction with 3D coords, and CHARMM typing. Stage 4. |
 | `conformation/` | `manager.py` (data-file route) and `placement/chains.py` (bead-spring route, `place`) are stage 5. `entanglement/` (waypoint and braid construction, designed pairs, the Z controller) and `junction_shell.py` are opt-in and off the default path. `packing/` is a stub | Chain placement, overlap resolution, and designed entanglement geometry. Stage 5. |
-| `writers/` | 8 files (`lammps_endlinked.py` writes the `fix bond/create` convention straight from a placement) | LAMMPS data and input-script writers. Stage 4 + Stage 6. |
-| `forcefield/` | 4 files | DREIDING parameter parser and Kremer-Grest parameters. Read by chemistry/writers. |
+| `writers/` | 9 files (`lammps_endlinked.py` writes the `fix bond/create` convention straight from a placement, `lammps_charmm.py` the CHARMM data file and includes) | LAMMPS data and input-script writers. Stage 4 + Stage 6. |
+| `forcefield/` | 5 files (`charmm.py` is the one CHARMM reader, used by the polymer route and the protein builder) | DREIDING parameter parser, Kremer-Grest parameters, and the CHARMM RTF/PRM/stream reader with CHARMM's matching rules, 1-4 weights, NBFIX, CMAP grids and the LAMMPS type tables. Read by chemistry/writers. |
 | `config/` | 4 files | Pydantic `ToponConfig` schema, `load_config()` and `load_config_full()`. |
 | `diagnostics/` | 2 files (`rules.py` is the rule registry) | The semantic checks behind `topon doctor`. |
 | `core/` | 3 files (`manifest.py` is the run manifest read/written across stages) | Shared types, protocols and run-level artifacts. |
 | `utils/` | 4 files | Shared helpers (e.g., `write_lammps_displacement_file`). |
 | `pipeline.py` | - | The `Pipeline` orchestrator class. |
 | `cli.py`, `shell.py`, `__main__.py` | - | CLI dispatch and the interactive `topon>` shell. |
+| `presets/` | 3 JSON files | The demo configs `topon init --preset` copies. |
 | `workflows/` | 4 files | High-level workflow helpers (`cg_network`, `atomistic_network`, `reactive_crosslink`). |
 | - | - | - |
+| `protein_network/` | 19 files + `data/` (Martini 3) + `charmm/` (CHARMM36m) | Protein networks from a sequence (§6). `network.py` is the `topon protein` entry point. |
 | `simbox/` | 8 files | Independent molecule packer + crosslink-template emitter. DREIDING-only. |
 | `singlechain/` | 3 files | Single-chain solubility utility. |
 | `simulation/` | `runner.py` + `protocols/` (`gates.py`, `staged.py`) | LAMMPS subprocess runner and the acceptance gates that check a relaxation (bond histogram per checkpoint, Z1+ held where it must hold, temperature from the velocities). |
@@ -287,7 +290,7 @@ Every change should follow these rules.
 
 2. **Six-stage pipeline, one-way data flow.** Each stage has a single responsibility. Downstream stages do not reach back into upstream state. The stage descriptions in §2 and the module-boundary table below define these boundaries.
 
-3. **LAMMPS data files are wrap-only.** The core topon and simbox writers (`topon/writers/`, `topon/simbox/writer.py`) write 7-column Atoms rows (no `ix iy iz`). LAMMPS handles periodic boundaries through its neighbor and ghost-atom lists under the minimum image. This is correct as long as every bond is shorter than `box/2`, which holds for KG and DREIDING networks because their chains rarely wrap differently from each other. The one exception is `write_endlinked` (`topon/writers/lammps_endlinked.py`), which writes image flags so the coordinates it was given can be reconstructed.
+3. **LAMMPS data files are wrap-only.** The core topon and simbox writers (`topon/writers/`, `topon/simbox/writer.py`) write 7-column Atoms rows (no `ix iy iz`). LAMMPS handles periodic boundaries through its neighbor and ghost-atom lists under the minimum image. This is correct as long as every bond is shorter than `box/2`, which holds for KG and DREIDING networks because their chains rarely wrap differently from each other. The one exception in the polymer route is `write_endlinked` (`topon/writers/lammps_endlinked.py`), which writes image flags so the coordinates it was given can be reconstructed. The protein-network writers also write image flags (§6).
 
 4. **Configuration through Pydantic, no globals in stage code.** Every stage module reads from a `ToponConfig` (or its raw-dict supplements). Code inside `topon/` does not use `os.environ` lookups, module-level constants that change behavior, or hard-coded paths. The config is loaded once, by the CLI or by the code that builds the `Pipeline`, and passed down.
 
@@ -302,6 +305,7 @@ Every change should follow these rules.
 | `writers/` | Format and write LAMMPS files | Computation of any kind |
 | `analysis/` | Compute graph statistics | Modify the graph |
 | `simbox/` | Independent molecule packing sub-system | Interact with the main pipeline |
+| `protein_network/` | Independent protein-network sub-system | Run through `Pipeline` |
 
 ---
 
@@ -316,7 +320,7 @@ The top-level `ToponConfig` sections, in the order the pipeline uses them, are l
 | `study` | all stages | `study.name`, `study.output_dir` |
 | `topology` | Stage 1 | `source` (`"generate"` / `"load"`), `lattice_size`, `degree_distribution`, etc. |
 | `assignment` | Stage 3 | sub-objects for entanglements, defects, grafts, copolymer sequences |
-| `chemistry` | Stage 4 | `model_type` (`"coarse_grained"` / `"atomistic"`), `target_density` |
+| `chemistry` | Stage 4 | `model_type` (`"coarse_grained"` / `"atomistic"`), `force_field` (`"dreiding"` / `"charmm"`, with a `charmm` block of files), `target_density` |
 | `conformation` | Stage 5 | `overlap_cutoff`, `overlap_max_iters`, `noise_magnitude` for the data-file route, which is the one `Pipeline` runs. The bead-spring keys (`placement`, `coil_ratio` / `build_density`, `junction_shell_spacing`, `entanglement`) are validated here but read only by `topon.conformation.place` and the controller. `Pipeline` does not call these, so `topon generate` validates the keys and ignores them. Also passed through raw |
 | `simulation` (raw) | Stage 4 (angles) and Stage 6 | relaxation protocol, LAMMPS pair_style, angle handling |
 | `execution` (raw) | the `topon.workflows` runners, not `Pipeline` | LAMMPS subprocess settings (`auto_run`, `executable`, `n_procs`) |
@@ -332,7 +336,43 @@ through its `unknown_config_keys` rule.
 
 ---
 
-## 6. CLI surface
+## 6. Protein networks
+
+`topon/protein_network/` does not run through `Pipeline`. It has its own flow from a sequence to LAMMPS files, in Martini 3 or CHARMM36m.
+
+```
+sequence, repeats, chains, model, crosslink residue and method, seed
+    │   (topon protein / network.build_protein_network)
+    ▼
+sequence.plan_chain  ──►  lattice layout (a node per crosslink residue)
+    │
+    ▼
+bfm: self-avoiding walks on a cubic lattice, Monte Carlo, crosslinks  ──►  JSON snapshots
+    │
+    ├── martini: polyply chain ITP (martini_topology) replicated per chain
+    │            (template_builder), water and ions, lammps_writer
+    │
+    └── charmm:  RTF residues and crosslink patches (charmm/builder),
+                 water and ions, forcefield.charmm terms, charmm/lammps_writer
+    ▼
+LAMMPS data + includes + three relaxation scripts + summary JSON
+```
+
+The design choices are as follows.
+
+- `sequence.plan_chain` puts every crosslink residue on its own lattice node. A repeat block with one crosslink residue keeps one crosslink node per block, and any other chain is laid out by anchors at its ends and at its crosslink residues.
+- The Martini chain topology comes from polyply. The bundled `{nat,high,no}_pro.itp` cover the resilin reference, and any other sequence is run through `polyply gen_params -lib martini3`. `data/martini_v3_protein.itp` holds the 33 bead types that polyply's amino-acid library uses, taken from the Martini 3.0.0 release.
+- The CHARMM36m builder takes every coefficient from `topon.forcefield.charmm` (1-4 weights, 1-4 LJ, NBFIX, no defaults) and writes the `fix cmap` grids from the PRM, so the whole force field comes from one parameter file.
+- Both writers emit 10-column Atoms rows with image flags. The flags come from a spanning tree of the bond graph in which the chain bonds come before the crosslinks, so every tree bond is minimum-image. A crosslink that closes a cycle around the periodic box cannot be made short by any image flags. The Martini writer drops that bond, and the CHARMM builder removes the reaction before patching, so the two residues stay unpatched. Both report the count. Bonds within a chain always survive.
+- The Martini writer adds a small coordinate perturbation, because several beads can start on the same lattice site.
+- GROMACS reaction-field electrostatics has no exact LAMMPS equivalent. It is approximated with `pair_style lj/cut/coul/cut 12.0` and `dielectric 15.0`, which drops the reaction-field correction term and needs only stock LAMMPS.
+- The restricted-bending angle of the Martini 3 IDP backbone is approximated with `angle_style cosine/squared`, which matches its leading term.
+
+The protein networks have no virtual sites (and so no Martini 3 tryptophan) and no elastic network, and the dry Martini stage 3 has no NPT. Crosslinks are dityrosine or disulfide. A few bonds can stay threaded through rings after the soft stage of a CHARMM build, which `check-bonds` reports (USAGE §4.3).
+
+---
+
+## 7. CLI surface
 
 The `topon` CLI (`topon/cli.py`) maps each sub-command to a backend.
 
@@ -346,6 +386,7 @@ The `topon` CLI (`topon/cli.py`) maps each sub-command to a backend.
 | `topon analyze` | `topon.analysis.report.analyze_graph()` |
 | `topon simbox` | `topon.simbox` API |
 | `topon chain` | `topon.singlechain` |
+| `topon protein` | `topon.protein_network.network.build_protein_network` (also `python -m topon.protein_network build`) |
 | `topon recipes` | prints a table of common use cases |
 | `topon shell` | the interactive `topon>` shell (`topon/shell.py`) |
 
@@ -353,7 +394,7 @@ The `topon` CLI (`topon/cli.py`) maps each sub-command to a backend.
 
 ---
 
-## 7. Where to go next
+## 8. Where to go next
 
 | Question | Doc |
 |---|---|

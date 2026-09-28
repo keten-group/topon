@@ -19,7 +19,7 @@ _BANNER = r"""
    |        ##      ##    ##   ##          ##    ##   ##  ##  ##      |
    |        ##      ########   ##          ########   ##   #####      |
    |                                                                  |
-   |   Topological polymer network generator for LAMMPS               |
+   |   Topological polymer & protein network generator for LAMMPS     |
    |                                                       v{version:<7s}    |
    +==================================================================+
 
@@ -30,7 +30,7 @@ _BANNER = r"""
 
    All commands (type `help <cmd>` for details):
      init       validate    doctor      generate    inspect
-     analyze    simbox      chain       recipes
+     analyze    simbox      chain       protein     recipes
 
    Pipeline (`generate`):
       Topology -> Analysis -> Assignment -> Chemistry -> Conformation -> Output
@@ -66,7 +66,7 @@ _BANNER_ONE_SHOT_FOOTER = r"""
 )
 @click.pass_context
 def main(ctx, no_shell: bool):
-    """Topon: topological polymer network generator for LAMMPS.
+    """Topon: topological polymer and protein network generator for LAMMPS.
 
     With no subcommand on a TTY, drops into an interactive shell where
     you can type `help`, `init`, `doctor`, etc. directly. Pipe input or
@@ -158,7 +158,13 @@ def generate(
     # execution / experimental sections that aren't in ToponConfig).
     click.echo("Running pipeline...")
     pipeline = Pipeline(config, raw_config=raw_cfg)
-    pipeline.run()
+    from topon.chemistry.charmm import CharmmTypingError, MissingCharmmParameters
+    try:
+        pipeline.run()
+    except (CharmmTypingError, MissingCharmmParameters) as e:
+        # a config or force-field problem the message fully explains
+        click.echo(f"CHARMM: {e}", err=True)
+        sys.exit(1)
 
     click.echo(f"Pipeline complete. Output written to: {config.study.output_dir}")
 
@@ -287,6 +293,9 @@ def analyze(graph_path: str, format: str, nodes: str):
         click.echo(json.dumps(report, indent=2))
 
 
+# Preset name -> the demo config it copies. The copies ship inside the
+# package (topon/presets/<name>.json), so `topon init --preset` also works
+# from a regular (non-editable) install.
 _PRESET_MAP = {
     "atomistic_pdms": "demos/polymer/atomistic/basic/config.json",
     "cg_kg":         "demos/polymer/coarse_grained/basic/config.json",
@@ -295,14 +304,11 @@ _PRESET_MAP = {
 
 
 def _resolve_preset_path(preset: str) -> Path:
-    """Locate a preset config.json by walking up from the topon package."""
-    rel = _PRESET_MAP[preset]
-    here = Path(__file__).resolve()
-    for parent in [here.parent, *here.parents]:
-        candidate = parent / rel
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(f"Could not find bundled preset '{preset}' (looked for {rel}).")
+    """The bundled copy of a preset's config.json."""
+    path = Path(__file__).resolve().parent / "presets" / f"{preset}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Could not find bundled preset '{preset}' ({path}).")
+    return path
 
 
 def _interactive_config() -> dict:
@@ -587,6 +593,32 @@ def shell():
     sys.exit(run_shell(main, intro=intro))
 
 
+@main.command(
+    name="protein",
+    context_settings={
+        "ignore_unknown_options": True,
+        "allow_extra_args": True,
+        "help_option_names": [],  # let the argparse CLI print its --help
+    },
+)
+@click.argument("protein_args", nargs=-1, type=click.UNPROCESSED)
+def protein(protein_args):
+    """Protein network from a sequence, CHARMM36m or Martini 3.
+
+    \b
+        topon protein --sequence GGRPSDSYGAPGGGN --repeats 18 --chains 8 \\
+                      --model martini --output runs/resilin_martini
+        topon protein --sequence GGRPSDSYGAPGGGN --repeats 12 --chains 8 \\
+                      --model charmm --water-content 35 --output runs/resilin_charmm
+        topon protein --config protein.json
+
+    Same as `python -m topon.protein_network build`; run
+    `topon protein --help` for every flag.
+    """
+    from topon.protein_network.cli import main as protein_main
+    sys.exit(protein_main(["build", *protein_args]))
+
+
 @main.command()
 def recipes():
     """Print a 'I want X -> run Y' table for the most common use cases.
@@ -603,6 +635,12 @@ def recipes():
          "topon init --preset cg_kg"),
         ("POSS chain-cap demo",
          "topon init --preset poss"),
+        ("Protein network from a sequence (Martini 3)",
+         "topon protein --sequence GGRPSDSYGAPGGGN --repeats 18 --chains 8 "
+         "--model martini --output runs/resilin_martini"),
+        ("Protein network from a sequence (CHARMM36m)",
+         "topon protein --sequence GGRPSDSYGAPGGGN --repeats 12 --chains 8 "
+         "--model charmm --output runs/resilin_charmm"),
         ("Crosslink simulation box (no graph)",
          "topon simbox --n-epoxy 50 --n-amino 25 --n-poss 10"),
         ("Single polymer chain in solvent",

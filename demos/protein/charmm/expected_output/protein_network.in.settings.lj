@@ -1,0 +1,30 @@
+# CHARMM LJ for lj/cut* pair styles (epsilon ramp stage); use with
+# pair_modify mix arithmetic. No 1-4 parameters here.
+
+pair_coeff 1 1 0.110000 3.563595 # C
+pair_coeff 2 2 0.070000 3.550053 # CA
+pair_coeff 3 3 0.070000 3.563595 # CC
+pair_coeff 4 4 0.070000 3.550053 # CG2R67
+pair_coeff 5 5 0.020000 4.053589 # CP1
+pair_coeff 6 6 0.055000 3.875409 # CP2
+pair_coeff 7 7 0.055000 3.875409 # CP3
+pair_coeff 8 8 0.032000 3.563595 # CT1
+pair_coeff 9 9 0.056000 3.581413 # CT2
+pair_coeff 10 10 0.056000 3.581413 # CT2A
+pair_coeff 11 11 0.078000 3.634867 # CT3
+pair_coeff 12 12 0.046000 0.400014 # H
+pair_coeff 13 13 0.034000 2.387609 # HA2
+pair_coeff 14 14 0.024000 2.387609 # HA3
+pair_coeff 15 15 0.022000 2.351973 # HB1
+pair_coeff 16 16 0.028000 2.387609 # HB2
+pair_coeff 17 17 0.046000 0.400014 # HC
+pair_coeff 18 18 0.030000 2.420037 # HP
+pair_coeff 19 19 0.200000 3.296325 # N
+pair_coeff 20 20 0.200000 3.296325 # NC2
+pair_coeff 21 21 0.200000 3.296325 # NH1
+pair_coeff 22 22 0.200000 3.296325 # NH2
+pair_coeff 23 23 0.200000 3.296325 # NH3
+pair_coeff 24 24 0.120000 3.029056 # O
+pair_coeff 25 25 0.120000 3.029056 # OC
+pair_coeff 26 26 0.152100 3.153781 # OH1
+pair_coeff 20 25 0.154919 3.240199 # NBFIX NC2-OC

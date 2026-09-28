@@ -1,0 +1,19 @@
+{
+    "comment": "CHARMM36m resilin network, 8 chains x 12 repeats (gels at seed 42), dry. Run with `topon protein --config demos/protein/charmm/config.json --output <dir>` or run.py (which also builds 35 wt% water).",
+    "sequence": "GGRPSDSYGAPGGGN",
+    "repeats": 12,
+    "chains": 8,
+    "model": "charmm",
+    "crosslink_residue": "Y",
+    "crosslink_method": "adjacent",
+    "snapshot": "gel_point",
+    "seed": 42,
+    "equil_steps": 20000,
+    "n_extra_snapshots": 2,
+    "snapshot_delta_conv": 0.05,
+    "water_content": 0.0,
+    "salt_conc": 0.15,
+    "target_density": 0.85,
+    "physical_backbone": true,
+    "output_dir": "runs/charmm_demo"
+}

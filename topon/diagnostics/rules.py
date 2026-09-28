@@ -143,7 +143,7 @@ def check_schema_gap_extras(cfg, raw) -> List[Issue]:
     `Pipeline(ToponConfig(...))` construction without `raw_config=...` ignores
     them silently.
 
-    `conformation` left this list in V54: it is a schema section now
+    `conformation` left this list in 0.2.0: it is a schema section now
     (:class:`~topon.config.schema.ConformationConfig`) and is validated like
     any other, though `load_config_full` still hands a copy back in the raw
     dict for the callers that have always read it from there.

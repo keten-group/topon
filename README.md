@@ -6,7 +6,8 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19672939.svg)](https://doi.org/10.5281/zenodo.19672939)
 
-topon generates polymer networks with a prescribed topology and writes them as LAMMPS input files.
+topon generates polymer networks with a prescribed topology and writes them as LAMMPS input files. It also builds
+crosslinked protein networks from an amino-acid sequence.
 
 The network is built as a graph first (i.e., which junctions connect, how long the strands are and what sits on them),
 and the chemistry is mapped onto it afterwards. The same graph can therefore be written as a coarse-grained or an
@@ -81,6 +82,39 @@ input scripts that relax it into an equilibrated melt with the same connectivity
 
 <sub>Two entangled strands (gold and violet) in the network and in a close-up, relaxing from the lattice.</sub>
 
+## Force fields
+
+Coarse-grained networks use the Kremer-Grest model, and atomistic networks use DREIDING by default. With
+`chemistry.force_field: "charmm"` an atomistic network is written with CHARMM parameters instead. Each monomer and
+junction names its residue in the RTF files you supply, and every term comes from the parameter files. A residue or
+term the files do not define stops the build with the full list, and nothing is filled in by default.
+[`demos/polymer/atomistic/charmm_peg/`](demos/polymer/atomistic/charmm_peg/) builds a PEG network with the bundled
+CHARMM ether parameters.
+
+## Protein networks
+
+`topon protein` builds a crosslinked protein network from an amino-acid sequence, in CHARMM36m (all-atom) or Martini 3
+(coarse-grained).
+
+```bash
+# Martini 3 (polyply chain topology), 30 wt% water with 0.15 M NaCl
+topon protein --sequence GRGDSPYAAAAAAAAA --repeats 12 --chains 8 \
+              --model martini --water-content 30 --output ./run_martini
+
+# the same network in CHARMM36m, all-atom
+topon protein --sequence GRGDSPYAAAAAAAAA --repeats 12 --chains 8 \
+              --model charmm --water-content 30 --output ./run_charmm
+```
+
+The chains are grown as self-avoiding walks on a cubic lattice (the bond-fluctuation model) and crosslinked at their
+tyrosines (dityrosine) or, with `--crosslink-residue C`, their cysteines (disulfide) up to the gel point. A build that
+does not gel stops and says so. In CHARMM36m the atoms are placed from the force field's internal-coordinate tables,
+each crosslink is the RTF's patch (`DITY` or `DISU`), and every term, including the 1-4 terms, NBFIX and the CMAP
+grids, comes from the parameter file. `--seed` pins the whole build, and `protein_network_summary.json` records what was
+built. Martini 3 represents tryptophan with a virtual site, which LAMMPS lacks, so the Martini model refuses it. A bond
+that the soft relaxation stage threads through a ring is detected and reported, not prevented. See
+[`demos/protein/`](demos/protein/) for both models.
+
 ## Installation
 
 ```bash
@@ -89,7 +123,8 @@ cd topon
 pip install -e .
 ```
 
-LAMMPS is needed only to run the generated inputs. The C generator is optional. Build it with
+LAMMPS is needed only to run the generated inputs. Martini 3 protein networks of a sequence other than the bundled
+resilin reference need polyply (`pip install -e ".[martini]"`). The C generator is optional. Build it with
 `gcc -O2 -o generator.exe generator.c -lm` in `topon/topology/csrc/` and set `topology.generator.exe_path` to the
 binary.
 
@@ -121,4 +156,5 @@ this repository"). The DOI above resolves to the latest release on Zenodo.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The bundled CHARMM and Martini force-field files keep their own licenses (MIT and
+Apache-2.0), listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

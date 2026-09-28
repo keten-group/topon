@@ -1,7 +1,7 @@
 """Network defects, injected after sculpting and before chemistry.
 
 Four classes of defect, with the vocabulary the polymer-network literature
-uses (topon called parallel edges "primary loops" until V53; see the
+uses (topon called parallel edges "primary loops" before 0.2.0; see the
 deprecation note at the bottom of this module):
 
 ``primary loop``
@@ -529,7 +529,7 @@ def inject_secondary_loops(
     pair class ``(a, b)`` it picks single strands whose endpoints are at
     effective degree ``(a - 1, b - 1)`` today, so that they read ``(a, b)``
     once the parallel strand is there. Without it, eligible pairs are
-    drawn at random, which is what distorted P(f) before V53 (on the DP-20
+    drawn at random, which is what distorted P(f) before 0.2.0 (on the DP-20
     reference: 79 too few f = 2, 134 too many f = 3).
 
     Returns the number of parallel strands added.
@@ -1038,7 +1038,7 @@ def analyze_defect_potential(G: nx.MultiGraph, max_degree: Optional[int] = None,
 
 
 # ---------------------------------------------------------------------------
-# Deprecated names (V53; kept for one release)
+# Deprecated names (0.2.0; kept for one release)
 # ---------------------------------------------------------------------------
 
 def inject_primary_loops(G: nx.MultiGraph, target: int, target_type: str = "count",

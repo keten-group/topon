@@ -32,7 +32,7 @@
  * KNOWN DIVERGENCES from the Python port (pre-existing, not fixed here):
  *   - The degree<=2 guard in the sculpting stages is gated on
  *     is_sc_lattice here, but applied unconditionally in Python.
- *   (Per-axis periodicity, once C-only, has been in Python since V47.)
+ *   (Per-axis periodicity, once C-only, has been in Python since 0.2.0.)
  *
  * SEARCHES: two, chosen by a named flag that may sit anywhere in argv.
  * --search=strict (the default, and what every existing eight- or

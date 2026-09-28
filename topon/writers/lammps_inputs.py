@@ -169,7 +169,7 @@ class LammpsInputGenerator:
         """Get run steps from experimental config."""
         return self.experimental.get(model_type, {}).get('dynamics', {}).get('run_steps', 10000)
 
-    def write_serial_soft_minimization(self, input_data="system_relaxed.data", groups_file="system.groups", settings_file="system.in.settings", model_type="atomistic"):
+    def write_serial_soft_minimization(self, input_data="system_relaxed.data", groups_file="system.groups", settings_file="system.in.settings", model_type="atomistic", force_field="dreiding"):
         """
         Stage 1 of the relaxation protocol.
 
@@ -182,6 +182,8 @@ class LammpsInputGenerator:
         """
         if model_type == 'cg' and self.protocol != 'soft_push':
             return self._write_cg_stage1(input_data, groups_file, settings_file)
+        if model_type != 'cg' and force_field == 'charmm':
+            return self._write_charmm_stage1(input_data, groups_file, settings_file)
 
         script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
 
@@ -693,12 +695,17 @@ print "=== PROTOCOL DONE ==="
 """)
         return script_path
 
-    def write_parallel_production(self, settings_file="system.in.settings", model_type="atomistic"):
+    def write_parallel_production(self, settings_file="system.in.settings", model_type="atomistic", force_field="dreiding", charmm_pair_style="lj/charmmfsw/coul/long"):
         """
         Parent function that generates the complete parallel minimization pipeline:
         1. minimize_2_parallel.in (Stage 2: Ramp)
         2. minimize_3_parallel.in (Stage 3: Tight Min + Equilibration)
         """
+        if model_type != 'cg' and force_field == 'charmm':
+            self._write_charmm_stage2(settings_file)
+            self._write_charmm_stage3(settings_file, charmm_pair_style)
+            print("Generated parallel minimization scripts (CHARMM stages 2 & 3).")
+            return
         if model_type == 'cg':
             if self.protocol == 'pushoff':
                 self._write_cg_pushoff_tail()
@@ -837,6 +844,144 @@ print "=== PROTOCOL DONE ==="
             
             f.write("write_data      system_equilibrated.data\n")
             f.write("print \"All Minimization Stages Complete.\"\n")
+
+    # ==================================================================
+    # Atomistic CHARMM (chemistry.force_field = "charmm")
+    # ==================================================================
+    #
+    # The same three stages and file names as the DREIDING route, with CHARMM
+    # styles. The 1-4 terms live in `dihedral_style charmm(fsw)`, which LAMMPS
+    # accepts only with an lj/charmm* pair style; so the soft stages include
+    # `<settings>.soft` (1-4 weights 0, plain charmm dihedrals), the epsilon
+    # ramp runs lj/cut/coul/long with `<settings>.lj` and CHARMM's arithmetic
+    # mixing (fix adapt cannot scale the lj/charmm* styles), and stage 3 runs
+    # the full CHARMM set.
+
+    def _charmm_paths(self, settings_file, groups_file="system.groups",
+                      input_data="system_relaxed.data"):
+        def rel(d, f):
+            return os.path.relpath(os.path.join(d, f), self.sim_dir).replace("\\", "/")
+        return {
+            "data": rel(self.conf_dir, input_data),
+            "groups": rel(self.chem_dir, groups_file),
+            "full": rel(self.chem_dir, settings_file),
+            "soft": rel(self.chem_dir, settings_file + ".soft"),
+            "lj": rel(self.chem_dir, settings_file + ".lj"),
+        }
+
+    @staticmethod
+    def _charmm_header(dihedral_style):
+        return ("units           real\n"
+                "atom_style      full\n"
+                "boundary        p p p\n"
+                "bond_style      harmonic\n"
+                "angle_style     charmm\n"
+                f"dihedral_style  {dihedral_style}\n"
+                "improper_style  harmonic\n"
+                "special_bonds   charmm\n")
+
+    def _write_charmm_stage1(self, input_data, groups_file, settings_file):
+        p = self._charmm_paths(settings_file, groups_file, input_data)
+        script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
+        with open(script_path, 'w') as f:
+            f.write("# LAMMPS Stage 1: Serial Soft Minimization (ATOMISTIC, CHARMM)\n")
+            f.write("# pair_style soft only; the .soft settings carry the bonded terms\n")
+            f.write("# with 1-4 weights 0 (CHARMM 1-4 terms need an lj/charmm pair style).\n\n")
+            f.write(self._charmm_header("charmm"))
+            f.write("pair_style      soft 1.0\n\n")
+            f.write(f"read_data       {p['data']}\n")
+            f.write(f"include         {p['soft']}\n")
+            f.write("pair_coeff      * * 0.0\n")
+            f.write(f"include         {p['groups']}\n\n")
+            f.write("neighbor        2.0 bin\n")
+            f.write("neigh_modify    every 1 delay 0 check yes\n")
+            # ghosts past any bond, not just the 3 A of pair soft + skin
+            f.write("comm_modify     mode single cutoff 12.0\n")
+            f.write("variable        prefactor equal ramp(0,30)\n")
+            f.write("thermo          100\n\n")
+            f.write("# --- Junctions held, everything else pushed apart ---\n")
+            f.write('if "$(is_defined(group,nodes))" then "fix freeze_nodes nodes setforce 0 0 0"\n')
+            f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
+            f.write("min_style cg\nminimize 1.0e-4 1.0e-6 1000 10000\nunfix soft_push\n")
+            f.write('if "$(is_defined(fix,freeze_nodes))" then "unfix freeze_nodes"\n\n')
+            f.write("# --- All atoms ---\n")
+            f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
+            f.write("minimize 1.0e-4 1.0e-6 1000 10000\nunfix soft_push\n\n")
+            f.write("reset_timestep 0\ntimestep 1.0\n")
+            f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
+            f.write("fix nve_limit all nve/limit 0.1\nrun 1000\nunfix nve_limit\nunfix soft_push\n")
+            f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
+            f.write("minimize 1.0e-4 1.0e-6 1000 10000\nunfix soft_push\n")
+            f.write("write_data system_after_soft.data nocoeff\n")
+            f.write("write_restart 1.restart\n")
+        return script_path
+
+    def _write_charmm_stage2(self, settings_file):
+        p = self._charmm_paths(settings_file)
+        run_steps = self._get_run_steps('atomistic')
+        script_path = os.path.join(self.sim_dir, "minimize_2_parallel.in")
+        with open(script_path, 'w') as f:
+            f.write("# LAMMPS Stage 2: Parallel Ramp (CHARMM)\n")
+            f.write("# CHARMM LJ (no 1-4) with arithmetic mixing and NBFIX, epsilon ramped\n")
+            f.write("# 0.001 -> 1 under nve/limit; stage 3 turns the full CHARMM set on.\n\n")
+            f.write(self._charmm_header("charmm"))
+            f.write("pair_style      soft 1.0\n\n")
+            f.write("read_data       system_after_soft.data\n")
+            f.write(f"include         {p['soft']}\n")
+            f.write("pair_coeff      * * 1.0\n\n")
+            f.write("neigh_modify    one 10000\n")
+            f.write("comm_modify     mode single cutoff 12.0\n\n")
+            f.write("min_style       cg\n")
+            f.write("minimize        1.0e-4 1.0e-6 1000 10000\n\n")
+            f.write("pair_style      lj/cut/coul/long 12.0\n")
+            f.write("pair_modify     mix arithmetic\n")
+            f.write("kspace_style    pppm 1.0e-4\n")
+            f.write(f"include         {p['lj']}\n\n")
+            f.write('variable        scale equal "ramp(0.001, 1.0)"\n')
+            f.write("timestep        1.0\n")
+            f.write("fix             1 all adapt 1 pair lj/cut/coul/long epsilon * * v_scale scale yes\n")
+            f.write("fix             fxnve all nve/limit 0.1\n")
+            f.write("thermo          1000\n")
+            f.write(f"run             {run_steps}\n")
+            f.write("unfix           fxnve\n")
+            f.write("unfix           1\n\n")
+            f.write("write_data      system_ramped.data nocoeff\n")
+
+    def _write_charmm_stage3(self, settings_file, pair_style):
+        p = self._charmm_paths(settings_file)
+        dihedral = "charmmfsw" if "charmmfsw" in pair_style else "charmm"
+        script_path = os.path.join(self.sim_dir, "minimize_3_parallel.in")
+        with open(script_path, 'w') as f:
+            f.write("# LAMMPS Stage 3: Parallel Equilibration (CHARMM)\n")
+            f.write("# Full CHARMM: 1-4 terms in the dihedrals, arithmetic mixing, NBFIX, PPPM.\n\n")
+            f.write(self._charmm_header(dihedral))
+            f.write(f"pair_style      {pair_style} 10.0 12.0\n\n")
+            f.write("read_data       system_ramped.data\n\n")
+            f.write("neigh_modify    one 10000\n")
+            f.write("pair_modify     mix arithmetic\n")
+            f.write("kspace_style    pppm 1.0e-4\n")
+            f.write(f"include         {p['full']}\n\n")
+            f.write("thermo          100\n")
+            f.write("thermo_style    custom step pe ke etotal evdwl ecoul epair ebond "
+                    "eangle edihed eimp press vol temp\n\n")
+            f.write("min_style       cg\n")
+            f.write("minimize        1.0e-6 1.0e-8 100000 1000000\n")
+            f.write("write_data      system_minimized_final.data\n\n")
+            f.write("reset_timestep  0\n")
+            f.write("variable        temp equal 300\n")
+            f.write("velocity        all create ${temp} 12345\n")
+            f.write("timestep        1.0\n\n")
+            f.write("# NVT (1000 steps)\n")
+            f.write("fix             1 all nvt temp ${temp} ${temp} 100.0\n")
+            f.write("run             1000\n")
+            f.write("unfix           1\n")
+            f.write("write_data      after_nvt_real.data\n\n")
+            f.write("# NPT (1000 steps)\n")
+            f.write("fix             1 all npt temp ${temp} ${temp} 100.0 iso 1.0 1.0 1000.0\n")
+            f.write("run             1000\n")
+            f.write("unfix           1\n\n")
+            f.write("write_data      system_equilibrated.data\n")
+            f.write('print "All Minimization Stages Complete."\n')
 
     def write_equilibration_sequence(self, settings_file="system.in.settings", model_type="atomistic"):
         """

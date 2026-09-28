@@ -1,0 +1,47 @@
+* Junction and end-cap residues for a tetra-PEG network built from the
+* CHARMM C35r ether force field (PEGM strands). Not part of C35r.
+*
+
+read rtf card append
+* PEJ, the tetrafunctional junction: a quaternary carbon bonded to the C1 or
+* C2 carbons of four PEGM strands (a pentaerythritol-type core), typed CC30A
+* with charge 0, as the quaternary carbon of the CHARMM alkanes.
+* PEGC, a methyl cap for a dangling strand end: the atoms and charges of
+* the C35r MET1 patch (CE CC33A -0.27, three HCA3A 0.09).
+*
+36 1
+
+RESI PEJ          0.00
+GROUP
+ATOM C    CC30A    0.00
+
+RESI PEGC         0.00
+GROUP
+ATOM C    CC33A   -0.27
+ATOM H1   HCA3A    0.09
+ATOM H2   HCA3A    0.09
+ATOM H3   HCA3A    0.09
+BOND C H1  C H2  C H3
+
+END
+
+read param card flex append
+* Terms C35r does not define around a CC30A carbon bonded to a PEGM
+* CH2-O. Parameters by analogy (not fitted), each copied from the C35r term
+* named beside it: the ether O-C-C angle and torsions with the quaternary
+* carbon in place of a CH2. Every other term of the network is C35r's own.
+*
+
+ANGLES
+CC30A    CC32A    OC30A     45.00    111.50  ! = OC30A CC32A CC32A (DEET)
+
+DIHEDRALS
+CC32A    CC30A    CC32A    OC30A     0.16    1   180.0  ! = OC30A CC32A CC32A CC32A (MPET)
+CC32A    CC30A    CC32A    OC30A     0.39    2     0.0  ! = OC30A CC32A CC32A CC32A (MPET)
+CC30A    CC32A    OC30A    CC32A     0.57    1     0.0  ! = CC32A CC32A OC30A CC32A (DME)
+CC30A    CC32A    OC30A    CC32A     0.29    2     0.0  ! = CC32A CC32A OC30A CC32A (DME)
+CC30A    CC32A    OC30A    CC32A     0.43    3     0.0  ! = CC32A CC32A OC30A CC32A (DME)
+
+END
+
+return

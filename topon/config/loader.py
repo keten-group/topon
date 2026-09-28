@@ -16,9 +16,9 @@ from topon.config.schema import ToponConfig
 # returned separately by load_config_full so callers can forward them
 # to Pipeline(..., raw_config=...).
 #
-# `conformation` joined the schema in V54. It is still handed back in the raw
+# `conformation` joined the schema in 0.2.0. It is still handed back in the raw
 # dict as well, because Pipeline and the two workflow modules read it from
-# there and a config written before V54 must keep working; the schema copy is
+# there and a config written before 0.2.0 must keep working; the schema copy is
 # what `topon generate` validates.
 #
 # Validating a key is not the same as acting on it. `Pipeline` uses the three
@@ -75,6 +75,17 @@ def load_config_full(
         default["mean"] = float(dp)
     if "bead_density" in chem:
         chem["target_density"] = float(chem.pop("bead_density"))
+    # CHARMM files named relative to the config are read from beside it, so
+    # a config runs the same from any working directory.
+    charmm = chem.get("charmm")
+    if isinstance(charmm, dict) and isinstance(charmm.get("files"), list):
+        here = config_path.resolve().parent
+        charmm["files"] = [
+            str(here / f) if (isinstance(f, str) and not f.startswith("bundled:")
+                              and not Path(f).is_absolute() and (here / f).exists())
+            else f
+            for f in charmm["files"]
+        ]
 
     schema_data = {k: v for k, v in config_data.items() if k in _SCHEMA_KEYS}
     raw_data = {k: v for k, v in config_data.items()

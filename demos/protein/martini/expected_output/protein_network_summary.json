@@ -1,0 +1,116 @@
+{
+  "settings": {
+    "sequence": "GGRPSDSYGAPGGGN",
+    "model": "martini",
+    "repeats": 18,
+    "chains": 8,
+    "crosslink_residue": "Y",
+    "crosslink_method": "adjacent",
+    "snapshot": "gel_point",
+    "allow_no_gel": false,
+    "seed": 42,
+    "output_dir": "demos/protein/martini/expected_output",
+    "segs_per_block": 2,
+    "residues_per_segment": null,
+    "equil_steps": 20000,
+    "target_packing": 0.45,
+    "n_extra_snapshots": 2,
+    "snapshot_delta_conv": 0.05,
+    "min_intrachain_sep": 2,
+    "water_content": 0.0,
+    "salt_conc": 0.15,
+    "target_density": 0.85,
+    "physical_backbone": true,
+    "xpro_cis_fraction": 0.0,
+    "charmm_files": [],
+    "martini_itp": null,
+    "water_bead": "W",
+    "hierarchical_stage1": true
+  },
+  "chain": {
+    "n_residues": 270,
+    "layout": "block",
+    "n_lattice_nodes": 37,
+    "crosslink_residue_indices": [
+      7,
+      22,
+      37,
+      52,
+      67,
+      82,
+      97,
+      112,
+      127,
+      142,
+      157,
+      172,
+      187,
+      202,
+      217,
+      232,
+      247,
+      262
+    ],
+    "terminal_sites_skipped": []
+  },
+  "snapshot": {
+    "label": "gel_point",
+    "conversion": 0.125,
+    "n_reactions": 9,
+    "n_clusters": 1,
+    "largest_cluster_chains": 8,
+    "n_chains": 8,
+    "lattice": [
+      9,
+      9,
+      9
+    ],
+    "lattice_packing": 0.406,
+    "fallback_note": null
+  },
+  "force_field": {
+    "model": "Martini 3 (Martini3-IDP bonded terms)",
+    "chain_topology": "vendored",
+    "files": [
+      "martini_v3_protein.itp",
+      "martini_v3_water.itp"
+    ]
+  },
+  "counts": {
+    "snapshot": "gel_point",
+    "conversion": 0.125,
+    "n_reactions": 9,
+    "n_protein_beads": 4032,
+    "n_beads": 4032,
+    "n_bonds": 3457,
+    "n_constraints": 864,
+    "n_angles": 5160,
+    "n_dihedrals": 10864,
+    "n_crosslink_bonds": 9,
+    "n_water_beads": 0,
+    "n_na": 0,
+    "n_cl": 0,
+    "protein_charge": 0.0,
+    "total_charge": 0.0,
+    "box": [
+      74.92234585297949,
+      74.92234585297949,
+      74.92234585297949
+    ],
+    "n_bonds_written": 4320,
+    "n_crosslinks_written": 8,
+    "n_crosslinks_dropped": 1,
+    "n_constraints_dropped": 0,
+    "threaded_bonds_as_built": 6
+  },
+  "files": {
+    "topology_json": "protein_network_topology.json",
+    "data": "protein_network.data",
+    "settings": "protein_network.in.settings",
+    "groups": "protein_network.in.groups",
+    "stage1": "relaxation/protein_network_stage1.in",
+    "stage2": "relaxation/protein_network_stage2.in",
+    "stage3": "relaxation/protein_network_stage3.in",
+    "chain_itp": "protein_network_chain.itp"
+  }
+}

@@ -1,0 +1,18 @@
+{
+    "comment": "Martini 3 resilin network, 8 chains x 18 repeats (the vendored polyply chain), dry. Run with `topon protein --config demos/protein/martini/config.json --output <dir>` or run.py.",
+    "sequence": "GGRPSDSYGAPGGGN",
+    "repeats": 18,
+    "chains": 8,
+    "model": "martini",
+    "crosslink_residue": "Y",
+    "crosslink_method": "adjacent",
+    "snapshot": "gel_point",
+    "seed": 42,
+    "equil_steps": 20000,
+    "n_extra_snapshots": 2,
+    "snapshot_delta_conv": 0.05,
+    "water_content": 0.0,
+    "target_density": 0.85,
+    "hierarchical_stage1": true,
+    "output_dir": "runs/martini_demo"
+}

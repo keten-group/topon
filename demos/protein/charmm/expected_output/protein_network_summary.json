@@ -1,0 +1,110 @@
+{
+  "settings": {
+    "sequence": "GGRPSDSYGAPGGGN",
+    "model": "charmm",
+    "repeats": 12,
+    "chains": 8,
+    "crosslink_residue": "Y",
+    "crosslink_method": "adjacent",
+    "snapshot": "gel_point",
+    "allow_no_gel": false,
+    "seed": 42,
+    "output_dir": "demos/protein/charmm/expected_output",
+    "segs_per_block": 2,
+    "residues_per_segment": null,
+    "equil_steps": 20000,
+    "target_packing": 0.45,
+    "n_extra_snapshots": 2,
+    "snapshot_delta_conv": 0.05,
+    "min_intrachain_sep": 2,
+    "water_content": 0.0,
+    "salt_conc": 0.15,
+    "target_density": 0.85,
+    "physical_backbone": true,
+    "xpro_cis_fraction": 0.0,
+    "charmm_files": [],
+    "martini_itp": null,
+    "water_bead": "W",
+    "hierarchical_stage1": true
+  },
+  "chain": {
+    "n_residues": 180,
+    "layout": "block",
+    "n_lattice_nodes": 25,
+    "crosslink_residue_indices": [
+      7,
+      22,
+      37,
+      52,
+      67,
+      82,
+      97,
+      112,
+      127,
+      142,
+      157,
+      172
+    ],
+    "terminal_sites_skipped": []
+  },
+  "snapshot": {
+    "label": "gel_point",
+    "conversion": 0.229167,
+    "n_reactions": 11,
+    "n_clusters": 1,
+    "largest_cluster_chains": 8,
+    "n_chains": 8,
+    "lattice": [
+      9,
+      9,
+      9
+    ],
+    "lattice_packing": 0.2743,
+    "fallback_note": null
+  },
+  "force_field": {
+    "model": "CHARMM36m",
+    "files": [
+      "par_all36m_prot_C2L.prm",
+      "top_all36m_prot_C2L.rtf"
+    ],
+    "cmap": "written from the PRM"
+  },
+  "counts": {
+    "n_atoms": 16610,
+    "n_protein_atoms": 16610,
+    "n_bonds": 16901,
+    "n_angles": 29976,
+    "n_dihedrals": 51084,
+    "n_impropers": 3640,
+    "n_crossterms": 1424,
+    "n_crosslinks": 11,
+    "n_crosslinks_dropped": 0,
+    "n_waters": 0,
+    "n_cations": 0,
+    "n_anions": 0,
+    "protein_charge": 0.0,
+    "total_charge": 0.0,
+    "wildcard_terms": {
+      "dihedral": 6192,
+      "improper": 10
+    },
+    "box": [
+      62.97385679022336,
+      62.97385679022336,
+      62.97385679022336
+    ],
+    "threaded_bonds_as_built": 165
+  },
+  "files": {
+    "data": "protein_network.data",
+    "settings": "protein_network.in.settings",
+    "settings_soft": "protein_network.in.settings.soft",
+    "settings_lj": "protein_network.in.settings.lj",
+    "groups": "protein_network.in.groups",
+    "stage1": "relaxation/protein_network_stage1.in",
+    "stage2": "relaxation/protein_network_stage2.in",
+    "stage3": "relaxation/protein_network_stage3.in",
+    "topology_json": "protein_network_topology.json"
+  }
+}

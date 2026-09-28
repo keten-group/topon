@@ -142,7 +142,14 @@ def _check_monomer_references(config: ToponConfig) -> list[str]:
                 f"Monomer '{edge_chem.monomer}' referenced by edge type '{edge_type}' "
                 f"is not defined in chemistry.monomers"
             )
-    
+
+    # In the coarse-grained model a copolymer or graft "monomer" is only the
+    # label of a bead type (the builder writes it as `bead_type`), so it has
+    # no chemistry to look up. Checking it here rejected every CG copolymer
+    # and graft config that did not also declare SMILES it never uses.
+    if config.chemistry.model_type == "coarse_grained":
+        return errors
+
     # Check graft references
     if config.assignment.grafts.enabled:
         for edge_type, graft_config in config.assignment.grafts.per_edge_type.items():
@@ -169,7 +176,7 @@ def _check_target_constraints(config: ToponConfig, max_possible: dict) -> list[s
     """Check that target values don't exceed max possible."""
     errors = []
     
-    # Loop defects. `count` is the current field; `target` is the pre-V53
+    # Loop defects. `count` is the current field; `target` is the 0.1.0
     # one and means a number of parallel edges whichever key carries it.
     for name in ("primary_loops", "secondary_loops"):
         cfg = getattr(config.assignment.defects, name)

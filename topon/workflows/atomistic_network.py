@@ -12,8 +12,8 @@ Four-stage pipeline
 4. Simulation — write LAMMPS input scripts (minimize / equilibrate)
 
 Supports optional assignments:
-  - Entanglements (kinked backbones, v21.1 N+2 logic)
-  - Grafts (PDMS side chains attached to backbone Si beads, v20 dynamic scaling)
+  - Entanglements (kinked backbones, N+2 logic)
+  - Grafts (PDMS side chains attached to backbone Si beads, dynamic scaling)
 
 Usage (Python)
 --------------

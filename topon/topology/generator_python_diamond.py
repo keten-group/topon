@@ -23,7 +23,7 @@ sculpting algorithm to throw away high-degree neighbors, so the
 "native" graph already satisfies max_func=4. With ``degree_distribution
 = ""`` the algorithm short-circuits and the raw lattice is returned.
 
-The candidate-edge range (``neighbour_cutoff``, V51) is not handled
+The candidate-edge range (``neighbour_cutoff``) is not handled
 here: the config path dispatches Diamond through
 ``PythonTopologyGenerator._create_lattice``, which builds the canonical
 lattice below and rebuilds its edges at a non-default cutoff. This

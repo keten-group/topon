@@ -62,7 +62,7 @@ def analyze_graph(
     
     # Edges that close a triangle (endpoints already share a neighbour)
     analysis["max_triangles"] = count_triangle_candidates(G)
-    # There is deliberately no "max_primary_loops" key: before V53 that name
+    # There is deliberately no "max_primary_loops" key: before 0.2.0 that name
     # meant this triangle count, and AssignmentManager.analyze() now fills
     # it with the self-loop capacity, which is a different quantity.
 
@@ -83,7 +83,7 @@ def count_triangle_candidates(G: nx.MultiGraph) -> int:
     Count edges whose two endpoints already share a neighbour, i.e. edges
     that sit on a triangle.
 
-    Before V53 this was called the primary-loop count; a primary loop is a
+    Before 0.2.0 this was called the primary-loop count; a primary loop is a
     strand returning to its own junction (a self-loop), which is counted by
     :func:`topon.assignment.defects.count_self_loops`.
     """
@@ -197,7 +197,7 @@ def print_analysis(analysis: dict) -> None:
 
 def count_primary_loop_candidates(G: nx.MultiGraph) -> int:
     """Deprecated alias of :func:`count_triangle_candidates` (its old
-    name; a primary loop is a self-loop as of V53)."""
+    name; a primary loop is a self-loop as of 0.2.0)."""
     import warnings
 
     warnings.warn(

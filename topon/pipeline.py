@@ -126,7 +126,7 @@ class Pipeline:
         Raw JSON dict for sections not yet covered by the Pydantic schema
         (keys: ``simulation``, ``execution``, ``experimental``). A copy of
         ``conformation`` is passed here too, though it is a schema section
-        since V54, because this class and both workflow modules have always
+        since 0.2.0, because this class and both workflow modules have always
         read it from here.
 
     Reproducibility
@@ -396,9 +396,14 @@ class Pipeline:
         if not (sec.enabled or tri.enabled or quad.enabled):
             return None, None
 
+        # The search is checked first: only an exact request pins every
+        # degree, and building the table from a partial distribution (the
+        # strict sculptor's usual input) raised KeyError on the first degree
+        # it did not list.
         targets, _ = parse_degree_distribution(gen_cfg.degree_distribution)
-        need = needs_from_targets(targets, gen_cfg.max_functionality) if targets else {}
-        if search != "exact" or not need:
+        need = (needs_from_targets(targets, gen_cfg.max_functionality)
+                if search == "exact" and targets else {})
+        if not need:
             print("  [note] secondary loops and higher-order defects are placed "
                   "by the exact search; with this topology they are left to the "
                   "defects stage, which injects them afterwards and reports the "
@@ -533,7 +538,7 @@ class Pipeline:
         single-atom Si junction has four bonds: RDKit rejects degree-5 and
         degree-6 Si and Gasteiger then emits NaN on the over-valent atom
         and its neighbours, leaving a net charge PPPM cannot tune. This is
-        the guard the defect injector carried hard-coded before V53.
+        the guard the defect injector carried hard-coded before 0.2.0.
         """
         ceiling = int(self.config.topology.generator.max_functionality)
         if self.config.chemistry.model_type == "atomistic":
@@ -690,13 +695,15 @@ class Pipeline:
                 convention=self.config.output.lammps_convention,
             )
             writer.write()
-            # Count-based volume for CG (matches v21 cg_network reference).
+            # Count-based volume for CG (matches the cg_network workflow).
             n_atoms = self.chemical_space.GetNumAtoms()
             vol = n_atoms / density
+        elif self.config.chemistry.force_field == "charmm":
+            mol_h, vol = self._write_charmm_chemistry(data_path, density)
         else:
             # Atomistic: mirror topon.workflows.atomistic_network's tail —
             # the canonical path that produces healthy LAMMPS stage 2/3
-            # output (v21/v43 reference). ChemistryBuilder.build() returns
+            # output. ChemistryBuilder.build() returns
             # a heavy-atom-only RWMol; we Sanitize -> AddHs -> Gasteiger so
             # the data file (a) has H_ atom-type rows DREIDING needs, and
             # (b) is charge-neutral so PPPM auto-gewald doesn't crash. AddHs
@@ -771,7 +778,7 @@ class Pipeline:
                           f"(delta = {delta:+.2e} e/atom)")
 
                 self.chemical_space = mol_h
-                # Mass-based volume (matches canonical workflow at v43).
+                # Mass-based volume (matches the canonical workflow).
                 mass = sum(a.GetMass() for a in mol_h.GetAtoms())
                 vol = (mass / density) * 1.66054  # A^3 / Da at g/cm^3
                 writer = DreidingWriter(mol_h, data_path, use_charges=True)
@@ -889,7 +896,7 @@ class Pipeline:
         else:
             # Atomistic: backbone + grafts + pendant + hydrogens. Backbone
             # path consults `entangled_with` on the (u, v, key) edge data
-            # for kinked-chain placement (v21.1 N+2 fix). graft_atom_map is
+            # for kinked-chain placement (N+2 fix). graft_atom_map is
             # currently only populated by ChemistryBuilder._build_chain_cg
             # — for atomistic it's empty, so system_grafts.displace will be
             # empty and graft side-chain atoms instead get coords from the
@@ -1006,6 +1013,53 @@ class Pipeline:
             with open(settings_path, "w") as fh:
                 fh.write("# Force field settings (auto-generated stub)\n")
         print()
+
+    def _write_charmm_chemistry(self, data_path: str, density: float):
+        """Type the network from its RTF residues and write the CHARMM files.
+
+        Charges come from the RTF (no Gasteiger, no redistribution: a
+        network of neutral residues is neutral term by term), every bonded
+        and nonbonded term from the parameter files, and the run manifest
+        records per-residue charges and the files read. A missing residue,
+        atom or parameter stops the stage with the full list.
+        """
+        from rdkit import Chem
+        from topon.chemistry.charmm import build_terms, load_parameters, type_network
+        from topon.core.manifest import record_stage
+        from topon.writers.lammps_charmm import CharmmWriter
+
+        chem = self.config.chemistry
+        if chem.charmm is None:
+            raise ValueError("chemistry.force_field is 'charmm' but chemistry.charmm "
+                             "(the RTF/PRM files) is missing")
+        ps = load_parameters(chem.charmm.files)
+        Chem.SanitizeMol(self.chemical_space)
+        mol_h = Chem.AddHs(self.chemical_space)
+        typing = type_network(mol_h, self._builder, chem, ps)
+        terms = build_terms(mol_h, typing, ps)
+        CharmmWriter(mol_h, typing, terms, data_path).write()
+
+        # float sum of the RTF charges (type_network has checked it is an
+        # integer); rounded past their last digit, and + 0.0 so a neutral
+        # network does not print as -0.000000
+        total = round(sum(typing.charge.values()), 9) + 0.0
+        # distinct net charges per residue name (+ 0.0 turns -0.0 into 0.0)
+        per_res = {name: sorted({round(q, 6) + 0.0 for q in qs})
+                   for name, qs in typing.residue_charges().items()}
+        print(f"  CHARMM: {len(typing.residues)} residues {per_res}, net charge "
+              f"{total:+.6f} e, {len(terms.dihedral_types)} dihedral types, "
+              f"wildcard terms {terms.wildcard_counts or 'none'}")
+        record_stage(self.output_dir, "chemistry", {
+            "force_field": "charmm",
+            "files": [Path(p).name for p in ps.sources],
+            "net_charge": total,
+            "residue_charges": per_res,
+            "n_residues": len(typing.residues),
+            "wildcard_terms": dict(terms.wildcard_counts),
+            "pair_style": chem.charmm.pair_style,
+        })
+        mass = sum(a.GetMass() for a in mol_h.GetAtoms())
+        return mol_h, (mass / density) * 1.66054
 
     def _record_defects(self) -> None:
         """Put the defects stage's record in the run manifest.
@@ -1144,13 +1198,20 @@ class Pipeline:
             config=sim_cfg,
             experimental=experimental,
         )
+        ff = self.config.chemistry.force_field
+        charmm_style = {}
+        if ff == "charmm" and self.config.chemistry.charmm is not None:
+            charmm_style = {"charmm_pair_style": self.config.chemistry.charmm.pair_style}
         gen.write_serial_soft_minimization(
             settings_file="system.in.settings",
             model_type=model,
+            force_field=ff,
         )
         gen.write_parallel_production(
             settings_file="system.in.settings",
             model_type=model,
+            force_field=ff,
+            **charmm_style,
         )
         print(f"  LAMMPS scripts written to: {self.output_dir / '04_Simulation'}")
         print()

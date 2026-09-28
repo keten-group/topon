@@ -79,6 +79,12 @@ class ChemistryBuilder:
         self.chain_mol = {}         # (u, v, key) -> molecule id
         self.sol_atom_map = []      # [[atom idxs], ...] for sol chains
         self._next_mol = 0
+
+        # Every heavy atom a node molecule placed (node_map keeps only the
+        # attachment atom), and the auto-bridge atoms. Read by the CHARMM
+        # typing, which assigns each atom to one RTF residue.
+        self.node_atoms = {}        # node_id -> [atom idxs]
+        self.bridge_atoms = []      # [atom idx, ...]
     
     def build(self):
         """
@@ -225,6 +231,7 @@ class ChemistryBuilder:
             atom = Chem.Atom(atom_symbol)
             idx = self.chemical_space.AddAtom(atom)
             self.node_map[node] = idx
+            self.node_atoms[node] = [idx]
         else:
             # It's a SMILES string
             mol = Chem.MolFromSmiles(atom_symbol)
@@ -237,10 +244,12 @@ class ChemistryBuilder:
                         b.GetBondType()
                     )
                 self.node_map[node] = idxs[0]  # Use first atom as attachment point
+                self.node_atoms[node] = idxs
             else:
                 # Fallback to Si
                 idx = self.chemical_space.AddAtom(Chem.Atom("Si"))
                 self.node_map[node] = idx
+                self.node_atoms[node] = [idx]
     
     def _place_end_cap(self, node: int, molecule: str):
         """Place an end-cap molecule.
@@ -272,6 +281,7 @@ class ChemistryBuilder:
                     idxs[b.GetEndAtomIdx()],
                     b.GetBondType()
                 )
+            self.node_atoms[node] = idxs
             # Find attachment point (usually Si)
             for i, a in enumerate(mol.GetAtoms()):
                 if a.GetSymbol() == "Si":
@@ -746,6 +756,7 @@ class ChemistryBuilder:
         if self.config.connection.auto_bridge and node_u_symbol == head_symbol:
             # Same atom type - need bridge
             bridge = self.chemical_space.AddAtom(Chem.Atom(self.config.connection.default_bridge_atom))
+            self.bridge_atoms.append(bridge)
             self.chemical_space.AddBond(att_u, bridge, Chem.BondType.SINGLE)
             self.chemical_space.AddBond(bridge, chain_head, Chem.BondType.SINGLE)
         else:
@@ -759,6 +770,7 @@ class ChemistryBuilder:
         if self.config.connection.auto_bridge and node_v_symbol == tail_symbol:
             # Same atom type - need bridge
             bridge = self.chemical_space.AddAtom(Chem.Atom(self.config.connection.default_bridge_atom))
+            self.bridge_atoms.append(bridge)
             self.chemical_space.AddBond(chain_tail, bridge, Chem.BondType.SINGLE)
             self.chemical_space.AddBond(bridge, att_v, Chem.BondType.SINGLE)
         else:

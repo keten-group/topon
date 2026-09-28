@@ -837,7 +837,7 @@ def build_exact_graph(
     A graph with forced double edges is a ``MultiGraph`` -- a simple
     graph cannot hold a parallel strand -- and the second edge of each
     pair carries ``is_secondary_loop=True``, which is what a parallel
-    strand is in polymer usage (V53 moved the name ``is_primary_loop`` to
+    strand is in polymer usage (0.2.0 moved the name ``is_primary_loop`` to
     the self-loops it belongs to). Without ``double_pairs`` the result is
     a plain ``Graph``, exactly what the strict sculptor hands back.
 

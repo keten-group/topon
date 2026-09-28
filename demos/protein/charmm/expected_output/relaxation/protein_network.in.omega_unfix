@@ -1,0 +1,3 @@
+# Release the omega/chirality restraints (see .in.omega).
+unfix           omega0
+unfix           omega1

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "topon"
-version = "0.2.1"
+version = "0.3.0"
 description = "A modular Python package for polymer network generation and LAMMPS input file creation"
 readme = "README.md"
 license = {text = "MIT"}
@@ -44,6 +44,17 @@ dev = [
     "black>=23.0",
     "ruff>=0.1.0",
 ]
+# Martini 3 chain topologies for any sequence (topon protein --model martini).
+# polyply 1.8 imports cgsmiles (and through it pysmiles) without declaring it.
+martini = [
+    "polyply>=1.8",
+    "cgsmiles>=1.0",
+]
+# OpenMM, for checking LAMMPS energies of the CHARMM output against an
+# independent CHARMM implementation
+validate = [
+    "openmm>=8.0",
+]
 
 [project.scripts]
 topon = "topon.cli:main"
@@ -57,15 +68,22 @@ where = ["."]
 include = ["topon*"]
 
 [tool.setuptools.package-data]
-# The DREIDING parameter files are read at run time, and topology/csrc holds
-# the C generator's source, which has no __init__.py and so is not picked up
-# as a package. Listing them here keeps them in a regular (non-editable) install.
+# The DREIDING parameter files are read at run time, the presets back
+# `topon init --preset`, and topology/csrc holds the C generator's source,
+# which has no __init__.py and so is not picked up as a package. Listing them
+# here keeps them in a regular (non-editable) install. The force-field files
+# of the CHARMM and Martini routes are data too (C35r ethers, CHARMM36m,
+# Martini 3), each folder with its licence.
 topon = [
     "data/*",
+    "presets/*.json",
     "forcefield/*.txt",
     "utils/*.txt",
     "topology/csrc/*.c",
     "topology/csrc/*.md",
+    "chemistry/charmm/data/*",
+    "protein_network/data/*",
+    "protein_network/charmm/data/*",
 ]
 
 [tool.black]

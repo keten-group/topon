@@ -160,7 +160,7 @@ class GeneratorConfig(BaseModel):
     def _accept_mix_cutoff_alias(cls, data):
         """Read the deprecated ``mix_cutoff`` key as ``neighbour_cutoff``.
 
-        ``mix_cutoff`` was the MIX-only cutoff until V51; the range is now
+        ``mix_cutoff`` was the MIX-only cutoff before 0.2.0; the range is now
         a parameter of every lattice under the new name. The old key keeps
         working, with a warning, so existing configs load unchanged. A
         config carrying both with different values is refused rather than
@@ -371,8 +371,8 @@ class PrimaryLoopsConfig(_DefectCountMixin):
     the other strands on that junction (or the DP distribution's mean when
     the junction has none).
 
-    .. deprecated:: V53
-       ``target`` / ``target_type`` are the pre-V53 fields, when this key
+    .. deprecated:: 0.2.0
+       ``target`` / ``target_type`` are the 0.1.0 fields, when this key
        injected *parallel edges* (secondary loops). A config that sets them
        still gets that old behaviour, with a warning. Use
        ``secondary_loops`` for parallel edges and ``count`` here for
@@ -388,7 +388,7 @@ class PrimaryLoopsConfig(_DefectCountMixin):
 
     @property
     def is_legacy_parallel_request(self) -> bool:
-        """True when this block is a pre-V53 parallel-edge request."""
+        """True when this block is a 0.1.0 parallel-edge request."""
         return self.enabled and self.count is None and self.target > 0
 
 
@@ -468,10 +468,10 @@ class EntanglementsConfig(BaseModel):
     #   * waypoint — the pair is drawn together: both chains are splines
     #     that spiral about their contact in antiphase, so the pair carries
     #     exactly `entanglement_count` windings by construction. Verified
-    #     with primitive-path analysis (V49/V50); the default.
+    #     with primitive-path analysis; the default.
     #   * kink — the legacy Gaussian bump aimed at the partner's midpoint.
     #     Each chain is drawn alone, so what survives relaxation is
-    #     statistical rather than prescribed. Kept for reproducing pre-V49
+    #     statistical rather than prescribed. Kept for reproducing 0.1.0
     #     systems.
     method: Literal["waypoint", "kink"] = Field(
         default="waypoint",
@@ -601,6 +601,15 @@ class NodeMoleculeConfig(BaseModel):
     """Configuration for a node type's molecule."""
     molecule: str = Field(description="SMILES or molecule name (e.g., 'Si', 'POSS')")
     is_end_cap: bool = Field(default=False, description="Whether this is an end-cap molecule")
+    charmm_residue: Optional[str] = Field(
+        default=None,
+        description="force_field 'charmm': the RTF residue (RESI) this node molecule is.",
+    )
+    charmm_atom_names: Optional[list[str]] = Field(
+        default=None,
+        description=("force_field 'charmm': RTF names of the molecule's heavy atoms in "
+                     "SMILES order; without it the atoms are matched by graph."),
+    )
 
 
 class MonomerConfig(BaseModel):
@@ -608,6 +617,43 @@ class MonomerConfig(BaseModel):
     smiles: str = Field(description="SMILES string for the repeating unit")
     chain_head: str = Field(default="Si", description="Atom type at chain head")
     chain_tail: str = Field(default="O", description="Atom type at chain tail")
+    charmm_residue: Optional[str] = Field(
+        default=None,
+        description="force_field 'charmm': the RTF residue (RESI) one repeat unit is.",
+    )
+    charmm_atom_names: Optional[list[str]] = Field(
+        default=None,
+        description=("force_field 'charmm': RTF names of the repeat unit's heavy atoms in "
+                     "SMILES order; without it the atoms are matched by graph."),
+    )
+
+
+class CharmmConfig(BaseModel):
+    """CHARMM files and styles for ``chemistry.force_field = "charmm"``.
+
+    topon types atoms from the RTF residues named on the monomers and node
+    molecules and takes every term from the parameter files. It never
+    substitutes a parameter; a term the files do not define stops the build
+    with the full list. CGenFF typing is not done here: run the CGenFF
+    program on a new monomer and pass its stream file.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[str] = Field(
+        default_factory=list,
+        description=("RTF, PRM and stream (.str) files, read in order. A name written "
+                     "'bundled:NAME' refers to topon/chemistry/charmm/data/NAME."),
+    )
+    bridge_residue: Optional[str] = Field(
+        default=None,
+        description="RTF residue for auto_bridge atoms (none: a bridge atom is an error).",
+    )
+    pair_style: Literal["lj/charmmfsw/coul/long", "lj/charmm/coul/long"] = Field(
+        default="lj/charmmfsw/coul/long",
+        description=("Production pair style (10-12 A switching, PPPM). The force-switched "
+                     "one pairs with dihedral_style charmmfsw, the other with charmm."),
+    )
 
 
 class EdgeChemistryConfig(BaseModel):
@@ -630,6 +676,14 @@ class ConnectionConfig(BaseModel):
 class ChemistryConfig(BaseModel):
     """Chemistry configuration."""
     model_type: Literal["atomistic", "coarse_grained"] = Field(default="coarse_grained")
+    force_field: Literal["dreiding", "charmm"] = Field(
+        default="dreiding",
+        description=("Atomistic force field. 'dreiding' (default) types atoms by element "
+                     "and hybridisation; 'charmm' takes types, charges and every term from "
+                     "the RTF/PRM files in `charmm`."),
+    )
+    charmm: Optional[CharmmConfig] = Field(
+        default=None, description="CHARMM files and styles (force_field 'charmm').")
     target_density: float = Field(default=0.9, gt=0, description="Target density in g/cm³")
     
     node_type_map: dict[str, NodeMoleculeConfig] = Field(
@@ -653,8 +707,16 @@ class ChemistryConfig(BaseModel):
         },
         description="Monomer library"
     )
-    
+
     connection: ConnectionConfig = Field(default_factory=ConnectionConfig)
+
+    @model_validator(mode="after")
+    def _charmm_is_atomistic(self):
+        """CHARMM types atoms, so it has no meaning for a bead model."""
+        if self.force_field == "charmm" and self.model_type != "atomistic":
+            raise ValueError("chemistry.force_field 'charmm' needs model_type 'atomistic' "
+                             "(the coarse-grained route is Kremer-Grest)")
+        return self
 
 
 # =============================================================================

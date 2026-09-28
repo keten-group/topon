@@ -13,14 +13,14 @@ Two constructions:
 :mod:`topon.conformation.entanglement.waypoints`: the two chains of a pair
 are drawn together as splines that spiral about their contact in antiphase,
 so the pair carries exactly ``entanglement_count`` windings by construction.
-Verified with primitive-path analysis (V49): the requested count is
+Verified with primitive-path analysis: the requested count is
 delivered through the full protocol, and nothing appears on pairs that were
 not asked.
 
 ``kink`` is the legacy Gaussian bump aimed at the partner's midpoint
 (:func:`topon.utils.network_helpers.calculate_entangled_kink`). Each chain
 is drawn alone, so what the pair carries after relaxation is statistical
-rather than prescribed. Kept for comparison with pre-V49 systems.
+rather than prescribed. Kept for comparison with systems built by 0.1.0.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def _kink_path(pos_u, mic, n_atoms, orient_vec, count, kink_params):
     kink_dict = calculate_entangled_kink(
         start_pos=np.zeros(3),
         end_pos=mic,
-        num_atoms=n_atoms + 2,          # N+2 fix (v21.1)
+        num_atoms=n_atoms + 2,          # N+2 fix
         params=kink_params,
         orientation_vec=orient_vec,
         z_phase=1.0,

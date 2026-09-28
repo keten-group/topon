@@ -1,0 +1,41 @@
+# CHARMM force-field coefficients (topon). Units real (kcal/mol, Angstrom).
+
+# pair_coeff i i  epsilon sigma epsilon_14 sigma_14  (lj/charmm*)
+pair_coeff 1 1 0.032000 3.563595 0.010000 3.385415 # CC30A
+pair_coeff 2 2 0.056000 3.581413 0.010000 3.385415 # CC32A
+pair_coeff 3 3 0.035000 2.387609 0.035000 2.387609 # HCA2A
+pair_coeff 4 4 0.100000 2.939966 0.100000 2.939966 # OC30A
+
+# bond_coeff  K  r0  (harmonic, E = K (r - r0)^2)
+bond_coeff 1 222.5 1.538 # CC30A-CC32A
+bond_coeff 2 222.5 1.53 # CC32A-CC32A
+bond_coeff 3 309 1.111 # CC32A-HCA2A
+bond_coeff 4 360 1.415 # CC32A-OC30A
+
+# angle_coeff  K  theta0  K_ub  r_ub  (charmm)
+angle_coeff 1 26.5 110.1 22.53 2.179 # CC30A-CC32A-HCA2A
+angle_coeff 2 45 111.5 0 0 # CC30A-CC32A-OC30A
+angle_coeff 3 58.35 113.5 11.16 2.561 # CC32A-CC30A-CC32A
+angle_coeff 4 26.5 110.1 22.53 2.179 # CC32A-CC32A-HCA2A
+angle_coeff 5 45 111.5 0 0 # CC32A-CC32A-OC30A
+angle_coeff 6 95 109.7 0 0 # CC32A-OC30A-CC32A
+angle_coeff 7 35.5 109 5.4 1.802 # HCA2A-CC32A-HCA2A
+angle_coeff 8 60 109.5 0 0 # HCA2A-CC32A-OC30A
+
+# dihedral_coeff  K  n  d  w  (charmm; w = 1-4 weight)
+dihedral_coeff 1 0.57 1 0 1 # CC30A-CC32A-OC30A-CC32A
+dihedral_coeff 2 0.29 2 0 0 # CC30A-CC32A-OC30A-CC32A
+dihedral_coeff 3 0.43 3 0 0 # CC30A-CC32A-OC30A-CC32A
+dihedral_coeff 4 0.2 3 0 1 # CC32A-CC30A-CC32A-HCA2A
+dihedral_coeff 5 0.16 1 180 1 # CC32A-CC30A-CC32A-OC30A
+dihedral_coeff 6 0.39 2 0 0 # CC32A-CC30A-CC32A-OC30A
+dihedral_coeff 7 0.57 1 0 1 # CC32A-CC32A-OC30A-CC32A
+dihedral_coeff 8 0.29 2 0 0 # CC32A-CC32A-OC30A-CC32A
+dihedral_coeff 9 0.43 3 0 0 # CC32A-CC32A-OC30A-CC32A
+dihedral_coeff 10 0.284 3 0 1 # CC32A-OC30A-CC32A-HCA2A
+dihedral_coeff 11 0.19 3 0 1 # HCA2A-CC32A-CC32A-HCA2A
+dihedral_coeff 12 0.19 3 0 1 # HCA2A-CC32A-CC32A-OC30A
+dihedral_coeff 13 0.59 1 180 1 # OC30A-CC32A-CC32A-OC30A
+dihedral_coeff 14 1.16 2 0 0 # OC30A-CC32A-CC32A-OC30A
+
+# improper_coeff  K  psi0  (harmonic)

@@ -1,0 +1,54 @@
+{
+    "study": {
+        "name": "charmm_peg",
+        "output_dir": "output_charmm_peg"
+    },
+    "topology": {
+        "source": "generate",
+        "generator": {
+            "lattice_type": "Diamond",
+            "lattice_size": "2x2x2",
+            "max_functionality": 4,
+            "degree_distribution": "0:0,1:0,2:0,3:0,4:64",
+            "search": "exact",
+            "min_giant_fraction": 1.0
+        }
+    },
+    "assignment": {
+        "dp_distribution": {"default": {"mean": 4}}
+    },
+    "chemistry": {
+        "model_type": "atomistic",
+        "force_field": "charmm",
+        "target_density": 1.0,
+        "charmm": {
+            "files": [
+                "bundled:top_all35_ethers.rtf",
+                "bundled:par_all35_ethers.prm",
+                "peg_junction.str"
+            ],
+            "pair_style": "lj/charmmfsw/coul/long"
+        },
+        "node_type_map": {
+            "A": {"molecule": "C", "charmm_residue": "PEJ"},
+            "end": {"molecule": "C", "is_end_cap": true, "charmm_residue": "PEGC"}
+        },
+        "edge_type_map": {
+            "A": {"monomer": "PEG"}
+        },
+        "monomers": {
+            "PEG": {
+                "smiles": "COC",
+                "chain_head": "C",
+                "chain_tail": "C",
+                "charmm_residue": "PEGM",
+                "charmm_atom_names": ["C1", "O1", "C2"]
+            }
+        },
+        "connection": {"auto_bridge": false}
+    },
+    "output": {
+        "visualization": false,
+        "analysis_report": false
+    }
+}

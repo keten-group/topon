@@ -47,10 +47,21 @@ class _SpatialGrid:
     def __init__(self, box_lengths: np.ndarray, cell_size: float):
         self.box = box_lengths.copy()
         self.cell_size = cell_size
-        self.n_cells = np.maximum(np.floor(self.box / cell_size).astype(int), 1)
+        if cell_size > 0.0:
+            self.n_cells = np.maximum(np.floor(self.box / cell_size).astype(int), 1)
+        else:
+            # cell_size comes from BoxPacker.min_dist, whose default is 0.0.
+            # any_overlap() short-circuits on min_dist <= 0, so the grid is
+            # populated but never queried. Collapse to a single cell instead
+            # of dividing by zero and casting the resulting inf to int, which
+            # is undefined and only produced a usable answer because the
+            # np.maximum below clamped the garbage back to 1.
+            self.n_cells = np.ones(3, dtype=int)
         self.grid: dict[tuple, list[np.ndarray]] = defaultdict(list)
 
     def _cell_index(self, pos: np.ndarray) -> tuple[int, int, int]:
+        if self.cell_size <= 0.0:
+            return (0, 0, 0)
         wrapped = pos % self.box
         ci = np.minimum(
             (wrapped / self.cell_size).astype(int),

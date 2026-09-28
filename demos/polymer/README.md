@@ -6,9 +6,9 @@ Each demo is one `config.json`. Run it from the repository root with
 topon generate demos/polymer/<atomistic|coarse_grained>/<demo>/config.json --output ./runs
 ```
 
-Every config generates a 5x5x5 simple cubic network with the Python generator (125 sites, about a fifth of them
-dangling ends, junction functionality up to 4), then builds the chemistry, places the strands and writes the LAMMPS files. The two
-resolutions share the same features, so pick whichever your LAMMPS workflow expects.
+Every config in the two tables below generates a 5x5x5 simple cubic network with the Python generator (125 sites,
+about a fifth of them dangling ends, junction functionality up to 4), then builds the chemistry, places the strands and
+writes the LAMMPS files. The two resolutions share the same features, so pick whichever your LAMMPS workflow expects.
 
 ## Atomistic (DREIDING, PDMS)
 
@@ -24,9 +24,9 @@ resolutions share the same features, so pick whichever your LAMMPS workflow expe
 ## Coarse-grained (Kremer-Grest)
 
 The same six demos with `chemistry.model_type = "coarse_grained"` and the Kremer-Grest simulation options
-(`include_angles`, `pair_style`). In the coarse-grained model the monomer names only label bead types, so the
-copolymer, graft and combined configs declare those labels in `chemistry.monomers` (the validator asks for them, and
-the SMILES there are not used).
+(`include_angles`, `pair_style`). In the coarse-grained model the monomer names only label bead types. The copolymer,
+graft and combined configs also declare those labels in `chemistry.monomers`, which the coarse-grained model does not
+need (the SMILES there are not used).
 
 | Demo | What it shows |
 |---|---|
@@ -36,6 +36,12 @@ the SMILES there are not used).
 | [`coarse_grained/graft/`](coarse_grained/graft/) | Grafted side chains (bead type B). |
 | [`coarse_grained/defect/`](coarse_grained/defect/) | Five secondary loops. |
 | [`coarse_grained/combined/`](coarse_grained/combined/) | Entanglements and grafts together. |
+
+## Atomistic with CHARMM
+
+[`atomistic/charmm_peg/`](atomistic/charmm_peg/) builds a tetra-PEG network on a 2x2x2 diamond lattice and writes it
+with CHARMM parameters (`chemistry.force_field = "charmm"`, the bundled C35r ether force field and a stream file for
+the junction) instead of DREIDING. Its README explains the residue matching and the three LAMMPS stages.
 
 ## Where each feature lives in the config
 

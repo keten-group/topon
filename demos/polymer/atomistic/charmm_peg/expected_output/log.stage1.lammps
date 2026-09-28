@@ -1,0 +1,332 @@
+LAMMPS (2 Apr 2025)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:99)
+  using 1 OpenMP thread(s) per MPI task
+Loaded 1 plugins from <LAMMPS install>/plugins
+package omp 4
+set 4 OpenMP thread(s) per MPI task
+using multi-threaded neighbor list subroutines
+# LAMMPS Stage 1: Serial Soft Minimization (ATOMISTIC, CHARMM)
+# pair_style soft only; the .soft settings carry the bonded terms
+# with 1-4 weights 0 (CHARMM 1-4 terms need an lj/charmm pair style).
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     charmm
+dihedral_style  charmm
+improper_style  harmonic
+special_bonds   charmm
+pair_style      soft 1.0
+
+read_data       ../03_Conformation/system_relaxed.data
+Reading data file ...
+  orthogonal box = (0 0 0) to (33.833724 33.833724 33.833724)
+  1 by 1 by 1 MPI processor grid
+  reading atoms ...
+  3648 atoms
+  scanning bonds ...
+  4 = max bonds/atom
+  scanning angles ...
+  6 = max angles/atom
+  scanning dihedrals ...
+  48 = max dihedrals/atom
+  orthogonal box = (0 0 0) to (33.833724 33.833724 33.833724)
+  1 by 1 by 1 MPI processor grid
+  reading bonds ...
+  3712 bonds
+  reading angles ...
+  7040 angles
+  reading dihedrals ...
+  12032 dihedrals
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        0        0       
+  special bond factors coul:  0        0        0       
+     4 = max # of 1-2 neighbors
+    12 = max # of 1-3 neighbors
+    16 = max # of 1-4 neighbors
+    20 = max # of special neighbors
+  special bonds CPU = 0.001 seconds
+  read_data CPU = 0.094 seconds
+include         ../02_Chemistry/system.in.settings.soft
+# CHARMM force-field coefficients (topon). Soft-stage variant: no pair coeffs, 1-4 weights 0.
+
+# bond_coeff  K  r0  (harmonic, E = K (r - r0)^2)
+bond_coeff 1 222.5000 1.5380 # CC30A-CC32A
+bond_coeff 2 222.5000 1.5300 # CC32A-CC32A
+bond_coeff 3 309.0000 1.1110 # CC32A-HCA2A
+bond_coeff 4 360.0000 1.4150 # CC32A-OC30A
+
+# angle_coeff  K  theta0  K_ub  r_ub  (charmm)
+angle_coeff 1 26.5000 110.1000 22.5300 2.1790 # CC30A-CC32A-HCA2A
+angle_coeff 2 45.0000 111.5000 0.0000 0.0000 # CC30A-CC32A-OC30A
+angle_coeff 3 58.3500 113.5000 11.1600 2.5610 # CC32A-CC30A-CC32A
+angle_coeff 4 26.5000 110.1000 22.5300 2.1790 # CC32A-CC32A-HCA2A
+angle_coeff 5 45.0000 111.5000 0.0000 0.0000 # CC32A-CC32A-OC30A
+angle_coeff 6 95.0000 109.7000 0.0000 0.0000 # CC32A-OC30A-CC32A
+angle_coeff 7 35.5000 109.0000 5.4000 1.8020 # HCA2A-CC32A-HCA2A
+angle_coeff 8 60.0000 109.5000 0.0000 0.0000 # HCA2A-CC32A-OC30A
+
+# dihedral_coeff  K  n  d  w  (charmm; w = 1-4 weight)
+dihedral_coeff 1 0.5700 1 0 0.0000 # CC30A-CC32A-OC30A-CC32A
+dihedral_coeff 2 0.2900 2 0 0.0000 # CC30A-CC32A-OC30A-CC32A
+dihedral_coeff 3 0.4300 3 0 0.0000 # CC30A-CC32A-OC30A-CC32A
+dihedral_coeff 4 0.2000 3 0 0.0000 # CC32A-CC30A-CC32A-HCA2A
+dihedral_coeff 5 0.1600 1 180 0.0000 # CC32A-CC30A-CC32A-OC30A
+dihedral_coeff 6 0.3900 2 0 0.0000 # CC32A-CC30A-CC32A-OC30A
+dihedral_coeff 7 0.5700 1 0 0.0000 # CC32A-CC32A-OC30A-CC32A
+dihedral_coeff 8 0.2900 2 0 0.0000 # CC32A-CC32A-OC30A-CC32A
+dihedral_coeff 9 0.4300 3 0 0.0000 # CC32A-CC32A-OC30A-CC32A
+dihedral_coeff 10 0.2840 3 0 0.0000 # CC32A-OC30A-CC32A-HCA2A
+dihedral_coeff 11 0.1900 3 0 0.0000 # HCA2A-CC32A-CC32A-HCA2A
+dihedral_coeff 12 0.1900 3 0 0.0000 # HCA2A-CC32A-CC32A-OC30A
+dihedral_coeff 13 0.5900 1 180 0.0000 # OC30A-CC32A-CC32A-OC30A
+dihedral_coeff 14 1.1600 2 0 0.0000 # OC30A-CC32A-CC32A-OC30A
+
+# improper_coeff  K  psi0  (harmonic)
+pair_coeff      * * 0.0
+include         ../02_Chemistry/system.groups
+# LAMMPS group definitions
+group nodes id 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64
+64 atoms in group nodes
+group beads subtract all nodes
+3584 atoms in group beads
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff 12.0
+variable        prefactor equal ramp(0,30)
+thermo          100
+
+# --- Junctions held, everything else pushed apart ---
+if "$(is_defined(group,nodes))" then "fix freeze_nodes nodes setforce 0 0 0"
+fix freeze_nodes nodes setforce 0 0 0
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+min_style cg
+minimize 1.0e-4 1.0e-6 1000 10000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Neighbor list info ...
+  update: every = 1 steps, delay = 0 steps, check = yes
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 3
+  ghost atom cutoff = 12
+  binsize = 1.5, bins = 23 23 23
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair soft/omp, perpetual
+      attributes: half, newton on, omp
+      pair build: half/bin/newton/omp
+      stencil: half/bin/3d
+      bin: standard
+WARNING: Inconsistent image flags
+For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
+Per MPI rank memory allocation (min/avg/max) = 55.54 | 55.54 | 55.54 Mbytes
+   Step          Temp          E_pair         E_mol          TotEng         Press     
+         0   0              0              1124717.2      1124717.2      568752.22    
+       100   0              0              27307.253      27307.253      17942.277    
+       200   0              0              7864.0397      7864.0397      5976.3129    
+       300   0              0              3719.2716      3719.2716      336.17892    
+       400   0              0              2708.0972      2708.0972     -7.1784218    
+       500   0              0              2407.8376      2407.8376     -54.021658    
+       600   0              0              2286.2543      2286.2543     -23.506359    
+       700   0              0              2232.0428      2232.0428      27.077835    
+       756   0              0              2212.5726      2212.5726      20.869618    
+Loop time of 1.15613 on 4 procs for 756 steps with 3648 atoms
+
+137.9% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = energy tolerance
+  Energy initial, next-to-last, final = 
+       1124717.1760175   2212.78345663442   2212.57263915916
+  Force two-norm initial, final = 1712424.8 16.141527
+  Force max component initial, final = 229415.48 1.9968905
+  Final line search alpha, max atom move = 0.0097699781 0.019509577
+  Iterations, force evaluations = 756 1267
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.16421    | 0.16421    | 0.16421    |   0.0 | 14.20
+Bond    | 0.71715    | 0.71715    | 0.71715    |   0.0 | 62.03
+Neigh   | 0.066785   | 0.066785   | 0.066785   |   0.0 |  5.78
+Comm    | 0.063056   | 0.063056   | 0.063056   |   0.0 |  5.45
+Output  | 0.000186   | 0.000186   | 0.000186   |   0.0 |  0.02
+Modify  | 0.085026   | 0.085026   | 0.085026   |   0.0 |  7.35
+Other   |            | 0.05973    |            |       |  5.17
+
+Nlocal:           3648 ave        3648 max        3648 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          14832 ave       14832 max       14832 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          20530 ave       20530 max       20530 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 20530
+Ave neighs/atom = 5.6277412
+Ave special neighs/atom = 10.736842
+Neighbor list builds = 37
+Dangerous builds = 0
+unfix soft_push
+if "$(is_defined(fix,freeze_nodes))" then "unfix freeze_nodes"
+unfix freeze_nodes
+
+# --- All atoms ---
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+minimize 1.0e-4 1.0e-6 1000 10000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Inconsistent image flags
+For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
+Per MPI rank memory allocation (min/avg/max) = 55.54 | 55.54 | 55.54 Mbytes
+   Step          Temp          E_pair         E_mol          TotEng         Press     
+       756   0              0              2212.5726      2212.5726      20.869618    
+       758   0              0              2212.0596      2212.0596      45.193677    
+Loop time of 0.003635 on 4 procs for 2 steps with 3648 atoms
+
+0.0% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = energy tolerance
+  Energy initial, next-to-last, final = 
+      2212.57263915916     2212.244271108    2212.0595851093
+  Force two-norm initial, final = 26.878891 14.815757
+  Force max component initial, final = 5.3541537 1.2737748
+  Final line search alpha, max atom move = 0.053016173 0.067530664
+  Iterations, force evaluations = 2 4
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.000577   | 0.000577   | 0.000577   |   0.0 | 15.87
+Bond    | 0.002375   | 0.002375   | 0.002375   |   0.0 | 65.34
+Neigh   | 0          | 0          | 0          |   0.0 |  0.00
+Comm    | 0.000206   | 0.000206   | 0.000206   |   0.0 |  5.67
+Output  | 0          | 0          | 0          |   0.0 |  0.00
+Modify  | 0.000297   | 0.000297   | 0.000297   |   0.0 |  8.17
+Other   |            | 0.00018    |            |       |  4.95
+
+Nlocal:           3648 ave        3648 max        3648 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          14807 ave       14807 max       14807 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          20483 ave       20483 max       20483 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 20483
+Ave neighs/atom = 5.6148575
+Ave special neighs/atom = 10.736842
+Neighbor list builds = 0
+Dangerous builds = 0
+unfix soft_push
+
+reset_timestep 0
+timestep 1.0
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+fix nve_limit all nve/limit 0.1
+run 1000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Inconsistent image flags
+For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
+Per MPI rank memory allocation (min/avg/max) = 53.29 | 53.29 | 53.29 Mbytes
+   Step          Temp          E_pair         E_mol          TotEng         Press     
+         0   0              0              2212.0596      2212.0596      45.193677    
+       100   24.778758      226.60995      2395.4935      2891.4737      681.15653    
+       200   30.605768      72.773567      2576.7818      2982.2711      561.75812    
+       300   32.02524       41.31257       2613.698       3003.1574      721.19061    
+       400   32.018044      21.430078      2642.1807      3011.6794      576.76363    
+       500   34.26139       16.547143      2626.8973      3015.9005      238.19774    
+       600   34.90121       15.914833      2623.5134      3018.8398      356.40064    
+       700   35.543399      13.078611      2621.4887      3020.9601      561.79958    
+       800   37.092151      9.9082456      2609.4307      3022.5683      448.90324    
+       900   37.068725      10.364022      2610.4026      3023.7413      332.27584    
+      1000   37.411424      6.7212147      2611.1471      3024.5684      469.06688    
+Loop time of 0.942146 on 4 procs for 1000 steps with 3648 atoms
+
+Performance: 91.706 ns/day, 0.262 hours/ns, 1061.407 timesteps/s, 3.872 Matom-step/s
+154.2% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.14053    | 0.14053    | 0.14053    |   0.0 | 14.92
+Bond    | 0.62518    | 0.62518    | 0.62518    |   0.0 | 66.36
+Neigh   | 0.029526   | 0.029526   | 0.029526   |   0.0 |  3.13
+Comm    | 0.047231   | 0.047231   | 0.047231   |   0.0 |  5.01
+Output  | 0.000211   | 0.000211   | 0.000211   |   0.0 |  0.02
+Modify  | 0.092687   | 0.092687   | 0.092687   |   0.0 |  9.84
+Other   |            | 0.006777   |            |       |  0.72
+
+Nlocal:           3648 ave        3648 max        3648 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          14798 ave       14798 max       14798 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          17109 ave       17109 max       17109 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 17109
+Ave neighs/atom = 4.6899671
+Ave special neighs/atom = 10.736842
+Neighbor list builds = 16
+Dangerous builds = 0
+unfix nve_limit
+unfix soft_push
+fix soft_push all adapt 1 pair soft a * * v_prefactor
+minimize 1.0e-4 1.0e-6 1000 10000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Inconsistent image flags
+For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
+Per MPI rank memory allocation (min/avg/max) = 55.54 | 55.54 | 55.54 Mbytes
+   Step          Temp          E_pair         E_mol          TotEng         Press     
+      1000   37.411424      6.7212147      2611.1471      3024.5684      469.06688    
+      1100   37.411424      2.0287457      2256.9717      2665.7005      446.62075    
+      1200   37.411424      1.7404245      2218.3469      2626.7875      538.91261    
+      1236   37.411424      1.8076751      2207.6868      2616.1946      543.33163    
+Loop time of 0.393829 on 4 procs for 236 steps with 3648 atoms
+
+166.6% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = energy tolerance
+  Energy initial, next-to-last, final = 
+        2617.868286256   2209.71468383539   2209.49444386421
+  Force two-norm initial, final = 304.88592 17.238317
+  Force max component initial, final = 22.104696 2.3243826
+  Final line search alpha, max atom move = 0.014253763 0.033131199
+  Iterations, force evaluations = 236 472
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.048769   | 0.048769   | 0.048769   |   0.0 | 12.38
+Bond    | 0.27386    | 0.27386    | 0.27386    |   0.0 | 69.54
+Neigh   | 0.003685   | 0.003685   | 0.003685   |   0.0 |  0.94
+Comm    | 0.020755   | 0.020755   | 0.020755   |   0.0 |  5.27
+Output  | 4.9e-05    | 4.9e-05    | 4.9e-05    |   0.0 |  0.01
+Modify  | 0.028084   | 0.028084   | 0.028084   |   0.0 |  7.13
+Other   |            | 0.01863    |            |       |  4.73
+
+Nlocal:           3648 ave        3648 max        3648 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          14813 ave       14813 max       14813 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          17474 ave       17474 max       17474 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 17474
+Ave neighs/atom = 4.7900219
+Ave special neighs/atom = 10.736842
+Neighbor list builds = 2
+Dangerous builds = 0
+unfix soft_push
+write_data system_after_soft.data nocoeff
+System init for write_data ...
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+write_restart 1.restart
+System init for write_restart ...
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Total wall time: 0:00:02

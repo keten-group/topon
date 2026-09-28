@@ -14,6 +14,8 @@ pip install -e .
 
 The runtime dependencies (installed from `pyproject.toml`) are `numpy`, `networkx`, `pandas`, `rdkit`, `pydantic`, `click`, `plotly` and `scipy`. LAMMPS (`lmp`) needs to be on `PATH` only to *run* the generated systems. Generation does not need it.
 
+Two optional extras exist. `martini` installs polyply, which `topon protein --model martini` needs for any sequence other than the bundled resilin reference, together with cgsmiles, which polyply 1.8 needs but does not declare (`pip install -e ".[martini]"`). `validate` installs OpenMM, for comparing the CHARMM energies of the output with an independent CHARMM implementation.
+
 ---
 
 ## 2. Quick start
@@ -72,7 +74,7 @@ cd ./runs/<study.name>/04_Simulation/
 lmp -in minimize_1_serial.in
 ```
 
-Ready-to-use configs are in `demos/templates/` (`minimal.json`, `full.json`) and in the demo folders `demos/polymer/` and `demos/poss/`. [`demos/README.md`](../demos/README.md) lists them all.
+Ready-to-use configs are in `demos/templates/` (`minimal.json`, `full.json`) and in the demo folders `demos/polymer/`, `demos/poss/` and `demos/protein/`. [`demos/README.md`](../demos/README.md) lists them all.
 
 ---
 
@@ -125,7 +127,7 @@ topon init --interactive                # prompt-driven walk through 6 knobs
 | Option | Default | Description |
 |---|---|---|
 | `--output`, `-o` | `config.json` | Path for the new config file |
-| `--preset` | `atomistic_pdms` | One of `atomistic_pdms`, `cg_kg`, `poss`. Each copies a demo `config.json` from the source tree (`demos/polymer/atomistic/basic/`, `demos/polymer/coarse_grained/basic/`, `demos/poss/`), which `topon init` finds by walking up from the installed package, so the presets need the editable install of §1. |
+| `--preset` | `atomistic_pdms` | One of `atomistic_pdms`, `cg_kg`, `poss`. Each copies a demo `config.json` (`demos/polymer/atomistic/basic/`, `demos/polymer/coarse_grained/basic/`, `demos/poss/`). The copies ship inside the package as `topon/presets/<name>.json`, so the presets also work from a regular install. |
 | `--interactive`, `-i` | off | Prompt for the 5-6 settings that usually vary (study name, output dir, model type, lattice type+size, max functionality, DP, density) and write the result. |
 
 The non-interactive default copies `demos/polymer/atomistic/basic/config.json`. Every preset-produced file passes `topon validate` as written.
@@ -199,7 +201,7 @@ manifest only loses detail in the summary. In Python, read it with
 topon recipes
 ```
 
-The command prints a short table that maps common tasks to commands for all sub-systems (polymer networks through Pipeline, simbox, single-chain, the batch topology demo, `inspect` and `analyze`). The rows are defined in `topon/cli.py:recipes()`.
+The command prints a short table that maps common tasks to commands for all sub-systems (polymer networks through Pipeline, protein networks, simbox, single-chain, the batch topology demo, `inspect` and `analyze`). The rows are defined in `topon/cli.py:recipes()`.
 
 ### 3.4 `topon simbox` (pack a crosslink box)
 
@@ -324,6 +326,25 @@ topon analyze network.gpickle --format json
 ```
 
 The CLI calls `topon.analysis.report.analyze_graph()` and prints the degree distribution, connectivity and topology statistics. The same function can be imported in Python.
+
+### 3.7 `topon protein` (protein network from a sequence)
+
+```bash
+topon protein [--config CONFIG_PATH] [--sequence SEQ] [--repeats N] [--chains N] [--model charmm|martini]
+              [--output DIR] [options]
+```
+
+The sequence comes from `--sequence` or from the config file. The command builds a crosslinked protein network from an amino-acid sequence, in CHARMM36m (all-atom) or Martini 3 (coarse-grained). It lays the chains on a lattice with a crosslinkable node at every crosslink residue, grows and crosslinks the network, builds it in the chosen model and writes the data file, the coefficient includes, the groups and three relaxation scripts. It does not run LAMMPS. §4.3 lists every option and the output.
+
+```bash
+topon protein --sequence GGRPSDSYGAPGGGN --repeats 18 --chains 8 \
+              --model martini --seed 42 --output runs/resilin_martini
+topon protein --sequence GGRPSDSYGAPGGGN --repeats 12 --chains 8 \
+              --model charmm --water-content 35 --seed 42 --output runs/resilin_charmm
+topon protein --config demos/protein/charmm/config.json --output runs/charmm
+```
+
+`python -m topon.protein_network build ...` is the same command.
 
 ### Global options
 
@@ -463,6 +484,143 @@ chain_workflow(
 )
 ```
 
+### 4.3 Protein networks (`topon protein`)
+
+`topon protein` (or `build_protein_network` in Python) builds a protein network from a one-letter sequence. The sequence is either a repeat block (with `--repeats`) or a whole chain (`--repeats 1`). The network is built in one of two models.
+
+- `--model charmm` builds CHARMM36m all-atom chains from the bundled RTF and PRM files and applies each crosslink as its RTF patch (`DITY` for dityrosine, `DISU` for a disulfide). A hydrated build adds TIP3P water and NaCl, and `fix shake` holds the water rigid in the stage-3 MD. The CMAP grids are written from the parameter file. `topon/protein_network/charmm/data/README.md` lists the bundled files and their sources. Every term is looked up by `topon.forcefield.charmm`, and a missing one stops the build.
+- `--model martini` builds Martini 3 chains with the Martini3-IDP bonded terms. The chain topology is the bundled polyply ITP for the resilin reference, and for any other sequence it is generated with `polyply gen_params -lib martini3` (polyply is the optional `martini` extra). Tryptophan is refused, because Martini 3 represents it with a virtual site, which LAMMPS lacks.
+
+The chains are grown on a cubic lattice with the bond-fluctuation model (`bfm.py`), as self-avoiding walks with excluded volume that Monte Carlo moves then equilibrate. Crosslink residues on neighboring lattice sites then react in random order, one bond at a time. The build keeps a snapshot at the gel point, where one cluster first holds every chain, and a few snapshots beyond it. Crosslinks are dityrosine (`--crosslink-residue Y`) or disulfide (`C`) bonds and nothing else.
+
+The crosslink residue sets the lattice layout. A block with one crosslink residue away from its ends puts one crosslink node on the lattice per block. Any other sequence (two sites per block, a site at a block end, a chain without repeats) gets one lattice node per crosslink residue, with the chain ends as the other anchors. The build is deterministic for a given `--seed` (lattice, Monte Carlo, placement, water and ions).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--sequence` | required | One-letter sequence (the block, or the whole chain) |
+| `--repeats` | `1` | Copies of the sequence per chain |
+| `--chains` | `8` | Number of chains |
+| `--model` | `martini` | `charmm` (CHARMM36m all-atom) or `martini` (Martini 3) |
+| `--crosslink-residue` | `Y` | `Y` (dityrosine) or `C` (disulfide) |
+| `--crosslink-method` | `adjacent` | `adjacent`, `winding_safe` (no crosslink that closes a cycle around the periodic box), `distance`, or `none` (an uncrosslinked melt, to crosslink during the simulation, e.g., with `fix bond/react`) |
+| `--snapshot` | `gel_point` | Snapshot to build (`gel_point`, `post_gel_N` or an index). If it was not reached, the build stops and says how many clusters the chains form. |
+| `--allow-no-gel` | off | Build the last snapshot instead of stopping when the one asked for was not reached. The summary then notes it. |
+| `--seed` | `42` | Seed of every random step |
+| `--output` | `protein_network` | Output directory |
+| `--water-content` | `0` | Water as a weight percent of the system |
+| `--salt-conc` | `0.15` | NaCl in the water (mol/L). Counter-ions are always added to neutralize the protein. |
+| `--target-density` | `0.85` | Initial density used to size the box (g/cm³) |
+| `--equil-steps` | `20000` | Monte Carlo steps on the lattice |
+| `--target-packing` | `0.45` | Packing fraction of the lattice |
+| `--segs-per-block`, `--residues-per-segment` | `2`, auto | Lattice steps per block, and residues per lattice step for the anchor layout |
+| `--n-extra-snapshots`, `--snapshot-delta-conv` | `2`, `0.05` | Snapshots kept past the gel point, and their spacing in conversion |
+| `--min-intrachain-sep` | `2` | Smallest gap between two crosslink sites of one chain that may react |
+| `--no-physical-backbone` | off | CHARMM only. Place atoms by jitter instead of from the RTF internal coordinates. |
+| `--xpro-cis-fraction` | `0` | CHARMM only. Fraction of X-Pro peptide bonds seeded cis. |
+| `--charmm-files` | bundled | CHARMM only. RTF, PRM, stream and CMAP files to use instead of the bundled CHARMM36m. They are the whole force field, and nothing bundled is read with them. |
+| `--martini-itp` | polyply | Martini only. A chain ITP to use instead of polyply's. |
+| `--water-bead` | `W` | Martini only. Water bead type (`W`, `SW` or `TW`). |
+| `--config` | none | JSON file with any of the settings (the keys of `ProteinNetworkSettings`). Flags override it. |
+| `--quiet` | off | Print less |
+
+The output folder holds the data file, the coefficient includes, `protein_network.in.groups`, `relaxation/protein_network_stage{1,2,3}.in`, the lattice snapshots (`protein_network_topology.json`) and `protein_network_summary.json`. The summary records the inputs, the snapshot used (with the number of clusters the chains form, the largest one and the lattice packing), the atom and term counts, the net charge and the files. CHARMM adds `charmm36m.cmap` and two more includes (`.in.settings.soft` for the soft stage and `.in.settings.lj` for the LJ ramp). Martini adds `protein_network_chain.itp`, the chain topology used.
+
+Short chains gel less often than long ones. With one crosslink site per repeat, 8 chains of 12 repeats gel at the default seed where 8 chains of 8 do not, and the lattice edge (at least 9 sites, odd) keeps small systems below the target packing.
+
+The three stages run in order from `relaxation/`.
+
+```bash
+cd runs/resilin_charmm/relaxation
+lmp -in protein_network_stage1.in    # soft overlap removal
+lmp -in protein_network_stage2.in    # LJ epsilon ramp under nve/limit
+lmp -in protein_network_stage3.in    # minimization and MD -> ../system_equilibrated.data
+```
+
+Bonds can be threaded through rings. The soft stage can leave a strand through a ring (a proline or tyrosine ring in CHARMM, a three-bead ring in Martini), and the full force field then holds the bond and the ring stretched. topon detects this but does not prevent it. The summary counts the bonds that already pass through a ring as built (`threaded_bonds_as_built`, most of which the soft stage clears). After the run, `check-bonds` lists the bonds longer than 1.25 r0 and those that pass through a ring, with atom names from the as-built file. It writes `system_equilibrated_bond_check.json` and adds the counts to the summary.
+
+```bash
+python -m topon.protein_network check-bonds runs/resilin_charmm/system_equilibrated.data
+```
+
+In the CHARMM resilin demo (8 chains of 12 repeats) 32 of 16,901 bonds stayed stretched, all at six places where a bond went through a ring.
+
+The same build from Python is below.
+
+```python
+from topon.protein_network.network import build_protein_network
+
+summary = build_protein_network(sequence="GGRPSDSYGAPGGGN", repeats=12, chains=8,
+                                model="charmm", water_content=35.0, seed=42,
+                                output_dir="runs/resilin_charmm")
+print(summary["counts"]["n_atoms"], summary["counts"]["total_charge"])
+```
+
+The demos in `demos/protein/{charmm,martini}/` run this entry point on a `config.json`.
+
+#### CHARMM36m
+
+The terms come from the shared CHARMM reader `topon.forcefield.charmm`. It matches parameters as CHARMM does (exact types before `X` wildcards, and the four improper patterns in order), writes the 1-4 LJ columns and the NBFIX pairs (e.g., Arg-Asp `NC2`-`OC`), and sets each dihedral's 1-4 weight so that every 1-4 pair counts once (0.5 in aromatic rings, 0 in the proline ring and on extra Fourier terms). It keeps the peptide-plane impropers that name the neighboring residue and stops on any term the files lack instead of writing a default. The `fix cmap` grid file is written from the CMAP section of the PRM, so it is CHARMM36m too. During development, LAMMPS single-point energies of these files were compared term by term with OpenMM's CHARMM implementation reading the same RTF and PRM, and they agreed to 4e-10 relative or better in the bonded and CMAP terms and to 5e-6 in the nonbonded terms.
+
+The styles are the CHARMM-GUI set for LAMMPS. Stage 3 runs `lj/charmmfsw/coul/long 10 12` with `pair_modify mix arithmetic`, PPPM, `dihedral_style charmmfsw`, `angle_style charmm` (Urey-Bradley), `improper_style harmonic`, `special_bonds charmm` and `fix cmap`. Stage 1 runs `pair_style soft` with the `.in.settings.soft` include, which sets the 1-4 weights to 0 and uses `dihedral_style charmm`, because LAMMPS accepts a 1-4 weight only with an `lj/charmm*` pair style. Stage 2 ramps epsilon with `fix adapt` under `lj/cut/coul/long` and the `.in.settings.lj` include, which keeps CHARMM's arithmetic mixing and NBFIX (the `lj/charmm*` styles do not support `fix adapt`), so stage 3 starts without a jump in the mixing rule.
+
+`pair_style soft 1.0` alone would give stage 1 a ghost cutoff of 3 Å, shorter than the longest as-built bond (about 7 Å for a crosslink). A bond across the box edge or a domain boundary would then act on the wrong image of its partner, even on one rank, so stage 1 sets `comm_modify cutoff 14` as stage 2 does.
+
+By default the atoms are placed from the internal-coordinate tables of the RTF (real bond lengths and angles, planar impropers, real rotamers and L chirality), and the backbone is coiled to about 3.8 Å between consecutive CA atoms. The stage scripts hold omega trans (apart from the `--xpro-cis-fraction` share of X-Pro bonds) and the CA chirality at L with `fix restrain`, and release both before the dynamics of each stage. With `--no-physical-backbone` every residue's atoms are dropped at its lattice site with a small random jitter instead. Minimization then leaves cis and trans to chance behind the omega barrier (about 12 % of the non-proline peptide bonds came out cis in a test, against under 0.1 % in real proteins) and about half of the CA atoms D.
+
+A crosslink that closes a cycle around the periodic box cannot be made short by any image flags. The builder removes such a reaction before patching, so its two residues stay unpatched, and the summary counts them. Water and ions go on free grid sites at least 2.4 Å from the protein.
+
+#### Martini 3
+
+The port of the GROMACS force field to LAMMPS makes these approximations. None of them changes the topology.
+
+1. GROMACS reaction-field electrostatics (`epsilon_r = 15`) becomes `pair_style lj/cut/coul/cut` with `dielectric 15.0`, which drops the reaction-field correction term.
+2. The restricted-bending angle of the Martini 3 IDP backbone (GROMACS `funct=10`) becomes `angle_style cosine/squared`, which drops the `1/sin²θ` factor. This is adequate for disordered chains and should be reviewed for folded ones.
+3. Each term of a multi-term proper dihedral (GROMACS `funct=9`) becomes its own `dihedral_style charmm` coefficient set on the same atoms, which is exact.
+4. Constraints become very stiff harmonic bonds (`K = 1e6 kJ/mol/nm²`, the reference's `FLEXIBLE` setting).
+5. The scripts use `special_bonds lj 0.0 1.0 1.0 coul 0.0 1.0 1.0`, which excludes bonded pairs only (the reference's `nrexcl=1`). The extra ring exclusions of the ITP are not written.
+
+Virtual sites (and so Martini 3 tryptophan and folded-protein models with Go contacts) and elastic networks are not supported. The stage-3 script minimizes and runs a short NVT at 310 K. The bundled Martini files, their sources and the papers to cite are in `topon/protein_network/data/README.md`.
+
+`python -m topon.protein_network` has the sub-commands `build` (the same as `topon protein`) and `check-bonds`. Its `generate`, `sweep` and `topology` sub-commands and `python -m topon.protein_network.charmm.build_systems` are older entry points that start from a repeat block or a lattice topology file. `topon protein` covers what they do.
+
+### 4.4 CHARMM for polymer networks (`chemistry.force_field = "charmm"`)
+
+The atomistic pipeline writes DREIDING by default, and its DREIDING output does not change with this option. With `force_field: "charmm"` it writes CHARMM instead, from RTF, PRM and stream files you supply. Every repeat unit, node molecule and bridge atom names the RTF residue it is. Its atoms take their types and charges from that residue, and every bonded and nonbonded term comes from the parameter files. Nothing is substituted. A residue, atom or parameter the files do not define stops the chemistry stage with the complete list, which is the list to fill (e.g., with parameters by analogy, as CGenFF does).
+
+topon does not type new molecules. CGenFF atom typing needs the CGenFF program, so run it (or write the residue by hand) and pass its stream file.
+
+```json
+"chemistry": {
+  "model_type": "atomistic",
+  "force_field": "charmm",
+  "charmm": {
+    "files": ["bundled:top_all35_ethers.rtf", "bundled:par_all35_ethers.prm",
+              "peg_junction.str"],
+    "pair_style": "lj/charmmfsw/coul/long"
+  },
+  "node_type_map": {"A": {"molecule": "C", "charmm_residue": "PEJ"}},
+  "edge_type_map": {"A": {"monomer": "PEG"}},
+  "monomers": {
+    "PEG": {"smiles": "COC", "chain_head": "C", "chain_tail": "C",
+            "charmm_residue": "PEGM", "charmm_atom_names": ["C1", "O1", "C2"]}
+  },
+  "connection": {"auto_bridge": false}
+}
+```
+
+The chain is the monomer SMILES repeated `dp` times, so each repeat unit is a known set of heavy atoms, and each node molecule and bridge atom is another set. With `charmm_atom_names` (the unit's heavy atoms in SMILES order) the names are taken as given and checked against the RTF (element, hydrogen count and bonds). Without it the unit is matched to the residue by graph isomorphism on element, hydrogen count and, for residues that link through `+`/`-` atoms, the number of bonds leaving the unit. If two matches would give an atom a different type or charge, topon asks for the names instead of choosing. Hydrogens follow their heavy atom. RTF impropers are kept, including those that name the previous or next unit of the chain. At a strand end such a `+`/`-` atom is looked up in the junction (or bridge) residue the unit is bonded to, and the build stops if that residue has no atom of that name. The atom charges of each residue must add up to the charge on its RESI line, and the charge of the whole network must be an integer.
+
+Relative file paths are read from the config's folder, and `bundled:NAME` is `topon/chemistry/charmm/data/NAME`. That folder holds the C35r ether force field (`top_all35_ethers.rtf` and `par_all35_ethers.prm`, unchanged from the MacKerell lab's CHARMM36 release, MIT). Its `PEGM` residue is the PEG repeat unit. Cite Vorobyov et al., J. Chem. Theory Comput. 3, 1120 (2007) and Lee et al., Biophys. J. 95, 1590 (2008) when you use it.
+
+`02_Chemistry/system.data` has the DREIDING layout, so the conformation stage is unchanged, with RTF charges and CHARMM types. Three includes sit beside it (`system.in.settings`, `.soft` and `.lj`). `04_Simulation/` holds the same three stages as the DREIDING route with CHARMM styles (`bond harmonic`, `angle charmm`, `dihedral charmmfsw` with 1-4 weights, `improper harmonic`, `special_bonds charmm`, and `lj/charmmfsw/coul/long 10 12` with arithmetic mixing and PPPM in stage 3). Stages 1 and 2 differ from stage 3 for the reasons given in §4.3. The run manifest records the files read, the net charge of every residue kind and how many terms matched a wildcard.
+
+POSS nodes, grafts and sol chains are refused with `force_field: "charmm"`, and so are residues with NOANG/NODIH or CMAP lines and `model_type: "coarse_grained"`. RTF patches other than whole residues are not applied to polymer units. Every refusal, and every missing parameter, ends `topon generate` with a message that names what to add.
+
+```bash
+cd demos/polymer/atomistic/charmm_peg
+topon generate config.json
+```
+
 ---
 
 ## 5. Recipes
@@ -570,6 +728,37 @@ lmp -in 3_npt.in
 lmp -in 4b_crosslink.in
 ```
 
+### 5.5 Protein network from any sequence, both models
+
+```bash
+# An elastin-like block with Lys, Glu and two Tyr per block (Martini 3 via polyply)
+topon protein --sequence GVGVPGKGVPGYGVPGEGYG --repeats 10 --chains 8 \
+              --model martini --water-content 30 --seed 7 --output runs/elp_martini
+
+# The same network, CHARMM36m all-atom
+topon protein --sequence GVGVPGKGVPGYGVPGEGYG --repeats 10 --chains 8 \
+              --model charmm --water-content 30 --seed 7 --output runs/elp_charmm
+
+# Cys-Cys disulfide crosslinks instead of dityrosine
+topon protein --sequence GSGCGAPGSG --repeats 12 --chains 8 \
+              --model charmm --crosslink-residue C --seed 42 --output runs/disulfide
+```
+
+The Martini build of a sequence other than the resilin reference needs polyply (the `martini` extra).
+
+### 5.6 PEG network with CHARMM parameters
+
+```bash
+cd demos/polymer/atomistic/charmm_peg
+topon generate config.json          # C35r PEG strands on a diamond lattice
+cd output_charmm_peg/charmm_peg/04_Simulation
+lmp -in minimize_1_serial.in
+lmp -in minimize_2_parallel.in
+lmp -in minimize_3_parallel.in
+```
+
+Remove `peg_junction.str` from `chemistry.charmm.files` to see the list of what C35r does not define at the junction.
+
 ---
 
 ## 6. Python API (alternative to CLI)
@@ -599,6 +788,11 @@ from topon.singlechain.workflow import run_workflow as chain_workflow
 chain_workflow("chain_output", chain_smiles="[Si](C)(C)O", dp=20,
                solvent_smiles="Cc1ccccc1", n_solvent=200,
                density=0.85, seed=42)
+
+# topon protein equivalent
+from topon.protein_network.network import build_protein_network
+build_protein_network(sequence="GGRPSDSYGAPGGGN", repeats=12, chains=8,
+                      model="charmm", seed=42, output_dir="runs/resilin_charmm")
 ```
 
 To call individual stages, see ARCHITECTURE.md §2, where each stage names the module that drives it.
@@ -615,6 +809,8 @@ To call individual stages, see ARCHITECTURE.md §2, where each stage names the m
 | `demos/topology/end_linking/python/run.py` | Generates a 6x6x6 SC topology with the pure-Python generator |
 | `demos/topology/end_linking/c/run.py` | The same topology through the compiled C generator (set `TOPON_GENERATOR_EXE` to the binary) |
 | `demos/workflows/batch_polymer_topology/run.py` | Generates 25 seeded lattice graphs, exports each as `.nodes`/`.edges`, GraphML and NPZ, and writes one CSV of per-graph properties |
+| `demos/protein/charmm/run.py` | Builds the CHARMM36m resilin network of its `config.json`, dry and at 35 wt% water |
+| `demos/protein/martini/run.py` | Builds the Martini 3 resilin network of its `config.json` |
 
 ---
 
@@ -1312,7 +1508,13 @@ shells up is allowed but does not give more entanglements there.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `model_type` | `"coarse_grained"` \| `"atomistic"` | `"coarse_grained"` | Force-field resolution |
+| `force_field` | `"dreiding"` \| `"charmm"` | `"dreiding"` | Atomistic force field (§4.4) |
+| `charmm.files` | list of str | `[]` | RTF, PRM and `.str` files, read in order (`bundled:NAME` for the bundled C35r ethers) |
+| `charmm.bridge_residue` | str | none | RTF residue of the `auto_bridge` atoms |
+| `charmm.pair_style` | `"lj/charmmfsw/coul/long"` \| `"lj/charmm/coul/long"` | `"lj/charmmfsw/coul/long"` | Stage-3 pair style (with `dihedral_style charmmfsw` or `charmm`) |
 | `target_density` | float | `0.9` | Target density, in g/cm³ on the atomistic route and beads per sigma³ on the coarse-grained one (the build box is sized from it) |
+
+With `force_field: "charmm"`, a node type and a monomer each take `charmm_residue` (the RTF `RESI` name) and, optionally, `charmm_atom_names` (the RTF names of the heavy atoms in SMILES order).
 
 #### `chemistry.node_type_map`
 

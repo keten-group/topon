@@ -1,0 +1,54 @@
+# Stage 2: LJ epsilon ramped 0.001 -> 1 under nve/limit (parallel-safe)
+# fix adapt cannot scale epsilon in the lj/charmm* styles, so the ramp runs
+# lj/cut/coul/long with CHARMM's LJ, arithmetic mixing (as CHARMM mixes) and
+# the NBFIX pairs; the 1-4 terms stay off here and stage 3 turns the full
+# CHARMM36m set on. Run from this relaxation/ directory.
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     charmm
+dihedral_style  charmm
+improper_style  harmonic
+special_bonds   charmm
+pair_style      soft 1.0
+
+fix             cmap all cmap ../charmm36m.cmap
+fix_modify      cmap energy yes
+read_data       system_after_soft.data fix cmap crossterm CMAP
+include         ../protein_network.in.settings.soft
+pair_coeff      * * 1.0
+include         ../protein_network.in.groups
+
+# Restrain peptide omega and CA chirality while overlaps are removed (physical backbone).
+include         protein_network.in.omega
+
+neigh_modify    one 10000
+comm_modify     mode single cutoff 14.0
+
+# Soft pre-minimisation
+min_style       cg
+minimize        1.0e-4 1.0e-6 1000 10000
+
+# CHARMM LJ (no 1-4) + Coulomb with PPPM
+pair_style      lj/cut/coul/long 12.0
+pair_modify     mix arithmetic
+kspace_style    pppm 1.0e-4
+include         ../protein_network.in.settings.lj
+
+variable        scale equal ramp(0.001,1.0)
+timestep        1.0
+thermo          1000
+thermo_style    custom step pe ke etotal evdwl ecoul epair ebond eangle edihed eimp press vol temp
+
+fix             1 all adapt 1 pair lj/cut/coul/long epsilon * * v_scale scale yes
+fix             fxnve all nve/limit 0.1
+run             20000
+unfix           fxnve
+unfix           1
+unfix           omega0
+unfix           omega1
+
+write_data      system_ramped.data nocoeff
+write_restart   2.restart

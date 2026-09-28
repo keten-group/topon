@@ -1,0 +1,59 @@
+# Stage 1: soft overlap removal (serial), CHARMM36m protein network (topon)
+# pair_style soft only; the soft settings carry the bonded terms with
+# 1-4 weights 0 (the CHARMM 1-4 terms need an lj/charmm pair style).
+# Run from this relaxation/ directory.
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     charmm
+dihedral_style  charmm
+improper_style  harmonic
+special_bonds   charmm
+pair_style      soft 1.0
+
+fix             cmap all cmap ../charmm36m.cmap
+fix_modify      cmap energy yes
+read_data       ../protein_network.data fix cmap crossterm CMAP
+include         ../protein_network.in.settings.soft
+pair_coeff      * * 0.0
+include         ../protein_network.in.groups
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+# Ghosts must reach past the longest as-built bond (the soft pair alone
+# gives 3 A), or a bond across the box edge acts on the far image.
+comm_modify     mode single cutoff 14.0
+
+# Restrain peptide omega and CA chirality while overlaps are removed (physical backbone).
+include         protein_network.in.omega
+
+variable        prefactor equal ramp(0,60)
+thermo          100
+thermo_style    custom step pe ke etotal evdwl ecoul epair ebond eangle edihed eimp press vol temp
+
+# Stage A: ramped soft push
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+min_style       cg
+minimize        1.0e-4 1.0e-6 1000 10000
+unfix           soft_push
+write_data      min_stage_A.data
+
+# Stage B: nve/limit dynamics under the soft potential
+reset_timestep  0
+timestep        1.0
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+fix             nve_limit all nve/limit 0.1
+run             1000
+unfix           nve_limit
+unfix           soft_push
+
+# Stage C: final soft minimisation
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+minimize        1.0e-4 1.0e-6 1000 10000
+unfix           soft_push
+unfix           omega0
+unfix           omega1
+
+write_data      system_after_soft.data nocoeff
+write_restart   1.restart

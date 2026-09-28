@@ -130,7 +130,7 @@ def _conformation_summary(d: Path) -> StageReport:
 
 #: The last checkpoint of each protocol that says a run got that far, newest
 #: stage first. Both families are listed because a run directory may have been
-#: produced by either: the push-off (V55, the coarse-grained default) writes
+#: produced by either: the push-off (the coarse-grained default since 0.2.0) writes
 #: the stage-named files the end-linked validation scripts read, and the two
 #: minimiser decks write the historic names.
 _FURTHEST_STAGE = (

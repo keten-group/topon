@@ -1,0 +1,474 @@
+LAMMPS (2 Apr 2025)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:99)
+  using 1 OpenMP thread(s) per MPI task
+Loaded 1 plugins from <LAMMPS install>/plugins
+package omp 4
+set 4 OpenMP thread(s) per MPI task
+using multi-threaded neighbor list subroutines
+# Stage 1 -- Hierarchical soft-push (topon.protein_network, MARTINI 3).
+# Mirrors core topon's progressive freeze/unfreeze pattern from
+# topon/writers/lammps_inputs.py:write_serial_soft_minimization, adapted so
+# the dityrosine crosslink atoms (TN6, initially at r=0 with their partner)
+# can separate before LJ engagement in stage 2.
+# Run from this relaxation/ directory.
+
+units           real
+boundary        p p p
+atom_style      full
+bond_style      harmonic
+angle_style     cosine/squared
+dihedral_style  charmm
+improper_style  harmonic
+
+pair_style      lj/cut/coul/cut 12.0
+pair_modify     shift yes
+special_bonds   lj 0.0 1.0 1.0 coul 0.0 1.0 1.0
+dielectric      15.0
+
+read_data       ../protein_network.data
+Reading data file ...
+  orthogonal box = (0 0 0) to (74.922346 74.922346 74.922346)
+  1 by 1 by 1 MPI processor grid
+  reading atoms ...
+  4032 atoms
+  scanning bonds ...
+  2 = max bonds/atom
+  scanning angles ...
+  3 = max angles/atom
+  scanning dihedrals ...
+  6 = max dihedrals/atom
+  scanning impropers ...
+  1 = max impropers/atom
+  orthogonal box = (0 0 0) to (74.922346 74.922346 74.922346)
+  1 by 1 by 1 MPI processor grid
+  reading bonds ...
+  4320 bonds
+  reading angles ...
+  5160 angles
+  reading dihedrals ...
+  9432 dihedrals
+  reading impropers ...
+  1432 impropers
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        1        1       
+  special bond factors coul:  0        1        1       
+     3 = max # of 1-2 neighbors
+     3 = max # of special neighbors
+  special bonds CPU = 0.001 seconds
+  read_data CPU = 0.139 seconds
+include         ../protein_network.in.settings
+# pair_coeff: explicit MARTINI 3 nonbond_params (LAMMPS units real).
+pair_coeff 1 1 1.541587 4.700000  # Q5-Q5
+pair_coeff 1 2 1.101577 4.300000  # Q5-SP1
+pair_coeff 1 3 1.292543 4.700000  # Q5-P2
+pair_coeff 1 4 0.349665 4.730000  # Q5-SC3
+pair_coeff 1 5 1.278681 4.375000  # Q5-SQ3p
+pair_coeff 1 6 1.157983 4.300000  # Q5-SP2a
+pair_coeff 1 7 0.962476 3.950000  # Q5-TP1
+pair_coeff 1 8 1.438815 4.375000  # Q5-SQ5n
+pair_coeff 1 9 0.245220 4.040000  # Q5-TC4
+pair_coeff 1 10 0.290631 4.010000  # Q5-TC5
+pair_coeff 1 11 0.961042 3.950000  # Q5-TN6
+pair_coeff 1 12 1.157983 4.300000  # Q5-SP2
+pair_coeff 1 13 0.196463 4.650000  # Q5-TC3
+pair_coeff 1 14 1.233509 4.300000  # Q5-SP5
+pair_coeff 2 2 0.733748 4.100000  # SP1-SP1
+pair_coeff 2 3 0.858031 4.300000  # SP1-P2
+pair_coeff 2 4 0.418260 4.100000  # SP1-SC3
+pair_coeff 2 5 1.344646 4.100000  # SP1-SQ3p
+pair_coeff 2 6 0.733748 4.100000  # SP1-SP2a
+pair_coeff 2 7 0.614245 3.650000  # SP1-TP1
+pair_coeff 2 8 1.499044 4.100000  # SP1-SQ5n
+pair_coeff 2 9 0.346558 3.780000  # SP1-TC4
+pair_coeff 2 10 0.382409 3.660000  # SP1-TC5
+pair_coeff 2 11 0.614245 3.650000  # SP1-TN6
+pair_coeff 2 12 0.733748 4.100000  # SP1-SP2
+pair_coeff 2 13 0.308317 3.940000  # SP1-TC3
+pair_coeff 2 14 0.733748 4.100000  # SP1-SP5
+pair_coeff 3 3 0.970363 4.700000  # P2-P2
+pair_coeff 3 4 0.516252 4.300000  # P2-SC3
+pair_coeff 3 5 1.532027 4.300000  # P2-SQ3p
+pair_coeff 3 6 0.901052 4.300000  # P2-SP2a
+pair_coeff 3 7 0.702677 3.950000  # P2-TP1
+pair_coeff 3 8 1.711042 4.300000  # P2-SQ5n
+pair_coeff 3 9 0.399140 3.950000  # P2-TC4
+pair_coeff 3 10 0.442161 3.950000  # P2-TC5
+pair_coeff 3 11 0.702677 3.950000  # P2-TN6
+pair_coeff 3 12 0.901052 4.300000  # P2-SP2
+pair_coeff 3 13 0.346558 3.980000  # P2-TC3
+pair_coeff 3 14 0.901052 4.300000  # P2-SP5
+pair_coeff 4 4 0.561663 4.100000  # SC3-SC3
+pair_coeff 4 5 0.776769 4.100000  # SC3-SQ3p
+pair_coeff 4 6 0.418260 4.100000  # SC3-SP2a
+pair_coeff 4 7 0.308317 3.940000  # SC3-TP1
+pair_coeff 4 8 0.496654 4.530000  # SC3-SQ5n
+pair_coeff 4 9 0.456501 3.650000  # SC3-TC4
+pair_coeff 4 10 0.418260 3.650000  # SC3-TC5
+pair_coeff 4 11 0.346558 3.780000  # SC3-TN6
+pair_coeff 4 12 0.418260 4.100000  # SC3-SP2
+pair_coeff 4 13 0.456501 3.650000  # SC3-TC3
+pair_coeff 4 14 0.372849 4.140000  # SC3-SP5
+pair_coeff 5 5 0.791109 4.100000  # SQ3p-SQ3p
+pair_coeff 5 6 1.523662 4.100000  # SQ3p-SP2a
+pair_coeff 5 7 1.177820 3.650000  # SQ3p-TP1
+pair_coeff 5 8 0.920172 4.100000  # SQ3p-SQ5n
+pair_coeff 5 9 0.748327 3.660000  # SQ3p-TC4
+pair_coeff 5 10 0.817639 3.650000  # SQ3p-TC5
+pair_coeff 5 11 1.173518 3.650000  # SQ3p-TN6
+pair_coeff 5 12 1.406549 4.100000  # SQ3p-SP2
+pair_coeff 5 13 0.648901 3.780000  # SQ3p-TC3
+pair_coeff 5 14 1.497371 4.100000  # SQ3p-SP5
+pair_coeff 6 6 0.733748 4.100000  # SP2a-SP2a
+pair_coeff 6 7 0.614245 3.650000  # SP2a-TP1
+pair_coeff 6 8 1.453394 4.100000  # SP2a-SQ5n
+pair_coeff 6 9 0.346558 3.780000  # SP2a-TC4
+pair_coeff 6 10 0.382409 3.660000  # SP2a-TC5
+pair_coeff 6 11 0.614245 3.650000  # SP2a-TN6
+pair_coeff 6 12 0.791109 4.100000  # SP2a-SP2
+pair_coeff 6 13 0.308317 3.940000  # SP2a-TC3
+pair_coeff 6 14 0.791109 4.100000  # SP2a-SP5
+pair_coeff 7 7 0.544933 3.400000  # TP1-TP1
+pair_coeff 7 8 1.338193 3.650000  # TP1-SQ5n
+pair_coeff 7 9 0.223470 3.660000  # TP1-TC4
+pair_coeff 7 10 0.250956 3.520000  # TP1-TC5
+pair_coeff 7 11 0.544933 3.400000  # TP1-TN6
+pair_coeff 7 12 0.614245 3.650000  # TP1-SP2
+pair_coeff 7 13 0.204350 3.850000  # TP1-TC3
+pair_coeff 7 14 0.614245 3.650000  # TP1-SP5
+pair_coeff 8 8 0.975143 4.100000  # SQ5n-SQ5n
+pair_coeff 8 9 0.460803 4.230000  # SQ5n-TC4
+pair_coeff 8 10 0.534895 4.090000  # SQ5n-TC5
+pair_coeff 8 11 1.330306 3.650000  # SQ5n-TN6
+pair_coeff 8 12 1.565727 4.100000  # SQ5n-SP2
+pair_coeff 8 13 0.351099 4.840000  # SQ5n-TC3
+pair_coeff 8 14 1.671367 4.100000  # SQ5n-SP5
+pair_coeff 9 9 0.360899 3.400000  # TC4-TC4
+pair_coeff 9 10 0.360899 3.400000  # TC4-TC5
+pair_coeff 9 11 0.250956 3.520000  # TC4-TN6
+pair_coeff 9 12 0.346558 3.780000  # TC4-SP2
+pair_coeff 9 13 0.360899 3.400000  # TC4-TC3
+pair_coeff 9 14 0.308317 3.940000  # TC4-SP5
+pair_coeff 10 10 0.360899 3.400000  # TC5-TC5
+pair_coeff 10 11 0.293977 3.400000  # TC5-TN6
+pair_coeff 10 12 0.382409 3.660000  # TC5-SP2
+pair_coeff 10 13 0.293977 3.400000  # TC5-TC3
+pair_coeff 10 14 0.346558 3.780000  # TC5-SP5
+pair_coeff 11 11 0.544933 3.400000  # TN6-TN6
+pair_coeff 11 12 0.614245 3.650000  # TN6-SP2
+pair_coeff 11 13 0.223470 3.660000  # TN6-TC3
+pair_coeff 11 14 0.559273 3.650000  # TN6-SP5
+pair_coeff 12 12 0.791109 4.100000  # SP2-SP2
+pair_coeff 12 13 0.308317 3.940000  # SP2-TC3
+pair_coeff 12 14 0.791109 4.100000  # SP2-SP5
+pair_coeff 13 13 0.360899 3.400000  # TC3-TC3
+pair_coeff 13 14 0.270076 4.040000  # TC3-SP5
+pair_coeff 14 14 0.913002 4.100000  # SP5-SP5
+
+# bond_coeff: harmonic for real bonds + constraint bonds (ULTRA stiff).
+bond_coeff 1 9.560229 3.600000  # funct 1 K=8000.0 kJ/mol/nm^2 r0=0.36 nm
+bond_coeff 2 11.950287 3.600000  # funct 1 K=10000.0 kJ/mol/nm^2 r0=0.36 nm
+bond_coeff 3 11.950287 3.050000  # funct 1 K=10000.0 kJ/mol/nm^2 r0=0.305 nm
+bond_coeff 4 5.975143 3.300000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.33 nm
+bond_coeff 5 5.975143 3.800000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.38 nm
+bond_coeff 6 8.962715 3.300000  # funct 1 K=7500.0 kJ/mol/nm^2 r0=0.33 nm
+bond_coeff 7 8.962715 2.870000  # funct 1 K=7500.0 kJ/mol/nm^2 r0=0.287 nm
+bond_coeff 8 8.962715 3.520000  # funct 1 K=7500.0 kJ/mol/nm^2 r0=0.352 nm
+bond_coeff 9 5.975143 3.250000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.325 nm
+bond_coeff 10 5.975143 3.520000  # funct 1 K=5000.0 kJ/mol/nm^2 r0=0.352 nm
+bond_coeff 11 9.560229 2.700000  # dityrosine crosslink
+bond_coeff 12 11.950287 3.000000  # constraint (rigid-stiff)
+bond_coeff 13 11.950287 2.850000  # constraint (rigid-stiff)
+bond_coeff 14 11.950287 2.700000  # constraint (rigid-stiff)
+
+# angle_coeff: cosine/squared (covers funct 2 and approximates funct 10).
+angle_coeff 1 2.987572 137.0000  # funct 10
+angle_coeff 2 1.792543 90.0000  # funct 10
+angle_coeff 3 11.950287 85.0000  # funct 10
+angle_coeff 4 1.792543 110.0000  # funct 10
+angle_coeff 5 1.792543 100.0000  # funct 10
+angle_coeff 6 3.585086 120.0000  # funct 10
+angle_coeff 7 1.792543 70.0000  # funct 10
+angle_coeff 8 1.792543 75.0000  # funct 10
+angle_coeff 9 2.987572 180.0000  # funct 2
+angle_coeff 10 7.170172 120.0000  # funct 2
+
+# dihedral_coeff: charmm style for funct 9 (proper, multi-term).
+dihedral_coeff 1 0.669216 1 60 0.0  # funct 9
+dihedral_coeff 2 -0.143403 1 150 0.0  # funct 9
+dihedral_coeff 3 -0.286807 2 130 0.0  # funct 9
+dihedral_coeff 4 0.191205 1 160 0.0  # funct 9
+dihedral_coeff 5 0.191205 1 -160 0.0  # funct 9
+dihedral_coeff 6 0.286807 2 0 0.0  # funct 9
+dihedral_coeff 7 0.191205 2 -80 0.0  # funct 9
+dihedral_coeff 8 0.478011 1 60 0.0  # funct 9
+dihedral_coeff 9 0.191205 1 -100 0.0  # funct 9
+dihedral_coeff 10 0.764818 1 -10 0.0  # funct 9
+dihedral_coeff 11 -0.310707 2 15 0.0  # funct 9
+dihedral_coeff 12 0.191205 1 -120 0.0  # funct 9
+dihedral_coeff 13 -0.334608 1 -130 0.0  # funct 9
+dihedral_coeff 14 -0.334608 2 100 0.0  # funct 9
+
+# improper_coeff: harmonic (funct 2 -- TYR ring planarity, etc.).
+improper_coeff 1 5.975143 180.0000  # funct 2
+improper_coeff 2 3.585086 -20.0000  # funct 2
+improper_coeff 3 9.560229 -10.0000  # funct 2
+improper_coeff 4 3.585086 -25.0000  # funct 2
+include         ../protein_network.in.groups
+group protein molecule 1:8
+4032 atoms in group protein
+# 8 protein chains, 0 W water beads
+
+# Hierarchical-relaxation per-class groups (used by stage 1)
+group bb type 1 2 3 6 12
+2160 atoms in group bb
+group sc type 4 5 7 8 9 10 13 14
+1728 atoms in group sc
+group crosslink type 11
+144 atoms in group crosslink
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes one 10000
+comm_modify     mode single cutoff 60.0
+
+# Switch to soft potential
+pair_style      soft 1.0
+pair_coeff      * * 0.0
+variable        prefactor equal ramp(0,60)
+
+thermo          100
+thermo_style    custom step pe ke etotal evdwl epair ebond eangle press vol
+
+# === Stage A: freeze backbone; sc + crosslink (+ water if present) relax ===
+# Backbone frozen so the BFM-derived chain skeleton is preserved while
+# sidechains and dityrosine crosslink atoms (initially overlapping) find space.
+fix             freeze_bb bb setforce 0 0 0
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+min_style       cg
+minimize        1.0e-4 1.0e-6 5000 50000
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Neighbor list info ...
+  update: every = 1 steps, delay = 0 steps, check = yes
+  max neighbors/atom: 10000, page size: 100000
+  master list distance cutoff = 3
+  ghost atom cutoff = 60
+  binsize = 1.5, bins = 50 50 50
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair soft/omp, perpetual
+      attributes: half, newton on, omp
+      pair build: half/bin/newton/omp
+      stencil: half/bin/3d
+      bin: standard
+WARNING: Bond/angle/dihedral extent > half of periodic box length (src/domain.cpp:1174)
+Per MPI rank memory allocation (min/avg/max) = 71.71 | 71.71 | 71.71 Mbytes
+   Step         PotEng         KinEng         TotEng         E_vdwl         E_pair         E_bond        E_angle         Press          Volume    
+         0   163614.58      0              163614.58      0              0              135012.96      1919.538       4506.6035      420565.95    
+       100   139353.28      0              139353.28      0              0              122235.82      1572.7266      6150.3262      420565.95    
+       200   127651.86      0              127651.86      0              0              122186.52      1435.7615      6326.5575      420565.95    
+       234   126785.78      0              126785.78      0              0              122179.63      1413.8219      6354.7554      420565.95    
+Loop time of 0.681609 on 4 procs for 234 steps with 4032 atoms
+
+128.4% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = energy tolerance
+  Energy initial, next-to-last, final = 
+      163614.577354103    126794.52917028   126785.784217182
+  Force two-norm initial, final = 1022.0028 32.659751
+  Force max component initial, final = 281.36109 6.9752013
+  Final line search alpha, max atom move = 0.0043653477 0.030449179
+  Iterations, force evaluations = 234 234
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.041059   | 0.041059   | 0.041059   |   0.0 |  6.02
+Bond    | 0.28572    | 0.28572    | 0.28572    |   0.0 | 41.92
+Neigh   | 0.15915    | 0.15915    | 0.15915    |   0.0 | 23.35
+Comm    | 0.10293    | 0.10293    | 0.10293    |   0.0 | 15.10
+Output  | 0.000126   | 0.000126   | 0.000126   |   0.0 |  0.02
+Modify  | 0.060139   | 0.060139   | 0.060139   |   0.0 |  8.82
+Other   |            | 0.03248    |            |       |  4.76
+
+Nlocal:           4032 ave        4032 max        4032 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          68350 ave       68350 max       68350 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:           4658 ave        4658 max        4658 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 4658
+Ave neighs/atom = 1.1552579
+Ave special neighs/atom = 2.1428571
+Neighbor list builds = 23
+Dangerous builds = 0
+unfix           soft_push
+unfix           freeze_bb
+write_data      min_stage_A.data
+System init for write_data ...
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
+
+# === Stage B: full soft minimisation (everything free) ===
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+minimize        1.0e-4 1.0e-6 5000 50000
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Per MPI rank memory allocation (min/avg/max) = 71.71 | 71.71 | 71.71 Mbytes
+   Step         PotEng         KinEng         TotEng         E_vdwl         E_pair         E_bond        E_angle         Press          Volume    
+       234   126785.78      0              126785.78      0              0              122179.63      1413.8219      6354.7554      420565.95    
+       300   14018.637      0              14018.637      0              0              1305.9411      11091.295      1506.8902      420565.95    
+       400   8923.1705      0              8923.1705      0              0              83.955124      8115.78        323.68806      420565.95    
+       409   8710.4658      0              8710.4658      0              0              83.876725      7923.3343      310.49526      420565.95    
+Loop time of 0.483328 on 4 procs for 175 steps with 4032 atoms
+
+158.4% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = energy tolerance
+  Energy initial, next-to-last, final = 
+      126785.784217182   8711.00307186683   8710.46576581119
+  Force two-norm initial, final = 6218.0154 264.53492
+  Force max component initial, final = 1237.0664 104.99438
+  Final line search alpha, max atom move = 1.203374e-05 0.0012634751
+  Iterations, force evaluations = 175 222
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.037717   | 0.037717   | 0.037717   |   0.0 |  7.80
+Bond    | 0.25072    | 0.25072    | 0.25072    |   0.0 | 51.87
+Neigh   | 0.05112    | 0.05112    | 0.05112    |   0.0 | 10.58
+Comm    | 0.07733    | 0.07733    | 0.07733    |   0.0 | 16.00
+Output  | 0.000128   | 0.000128   | 0.000128   |   0.0 |  0.03
+Modify  | 0.043753   | 0.043753   | 0.043753   |   0.0 |  9.05
+Other   |            | 0.02256    |            |       |  4.67
+
+Nlocal:           4032 ave        4032 max        4032 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          67546 ave       67546 max       67546 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:           3122 ave        3122 max        3122 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 3122
+Ave neighs/atom = 0.77430556
+Ave special neighs/atom = 2.1428571
+Neighbor list builds = 8
+Dangerous builds = 0
+unfix           soft_push
+
+# === Stage C: nve/limit dynamics + final min ===
+# CG minimize gets stuck at the r=0 saddle of the soft potential (gradient=0
+# at the cosine peak); brief NVE/limit dynamics nudges atoms off it. This is
+# the same pattern core topon uses for atomistic relaxation
+# (lammps_inputs.py:141-145).
+reset_timestep  0
+timestep        1.0
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+fix             nve_limit all nve/limit 0.1
+run             1000
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Per MPI rank memory allocation (min/avg/max) = 66.09 | 66.09 | 66.09 Mbytes
+   Step         PotEng         KinEng         TotEng         E_vdwl         E_pair         E_bond        E_angle         Press          Volume    
+         0   8710.4658      0              8710.4658      0              0              83.876725      7923.3343      310.49526      420565.95    
+       100   8871.5483      333.84237      9205.3907      238.2734       238.2734       114.52184      7839.0198      402.30441      420565.95    
+       200   8538.6769      752.39831      9291.0752      0.56239609     0.56239609     234.07972      7607.5684      398.42222      420565.95    
+       300   8114.4756      1188.0194      9302.495       0.76853197     0.76853197     153.53913      7255.2349      324.80282      420565.95    
+       400   7680.1268      1636.0617      9316.1886      2.6880526      2.6880526      185.26096      6796.4449      260.65066      420565.95    
+       500   7199.5544      2123.1314      9322.6858      4.6136386      4.6136386      206.27769      6278.5098      278.54696      420565.95    
+       600   6777.8849      2570.2118      9348.0967      4.3360607      4.3360607      238.34775      5800.9338      265.2241       420565.95    
+       700   6422.3577      2939.7852      9362.1429      6.5270037      6.5270037      268.73233      5379.7192      212.90753      420565.95    
+       800   6115.6516      3252.6927      9368.3443      7.2765256      7.2765256      300.93346      5023.5093      154.23689      420565.95    
+       900   5875.2977      3517.1315      9392.4292      3.6135533      3.6135533      330.72085      4705.3831      159.87337      420565.95    
+      1000   5667.4125      3734.5917      9402.0042      1.4146412      1.4146412      376.99808      4426.7111      157.01508      420565.95    
+Loop time of 2.29472 on 4 procs for 1000 steps with 4032 atoms
+
+Performance: 37.652 ns/day, 0.637 hours/ns, 435.783 timesteps/s, 1.757 Matom-step/s
+155.9% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.42874    | 0.42874    | 0.42874    |   0.0 | 18.68
+Bond    | 1.1745     | 1.1745     | 1.1745     |   0.0 | 51.18
+Neigh   | 0.064333   | 0.064333   | 0.064333   |   0.0 |  2.80
+Comm    | 0.32908    | 0.32908    | 0.32908    |   0.0 | 14.34
+Output  | 0.000473   | 0.000473   | 0.000473   |   0.0 |  0.02
+Modify  | 0.28495    | 0.28495    | 0.28495    |   0.0 | 12.42
+Other   |            | 0.01266    |            |       |  0.55
+
+Nlocal:           4032 ave        4032 max        4032 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          67271 ave       67271 max       67271 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:           2874 ave        2874 max        2874 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 2874
+Ave neighs/atom = 0.71279762
+Ave special neighs/atom = 2.1428571
+Neighbor list builds = 10
+Dangerous builds = 0
+unfix           nve_limit
+unfix           soft_push
+fix             soft_push all adapt 1 pair soft a * * v_prefactor
+minimize        1.0e-4 1.0e-6 5000 50000
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+Per MPI rank memory allocation (min/avg/max) = 71.71 | 71.71 | 71.71 Mbytes
+   Step         PotEng         KinEng         TotEng         E_vdwl         E_pair         E_bond        E_angle         Press          Volume    
+      1000   5667.4125      3734.5917      9402.0042      1.4146412      1.4146412      376.99808      4426.7111      157.01508      420565.95    
+      1070   4485.5458      3734.5917      8220.1374      0.071987943    0.071987943    35.890839      3932.8661      585.66162      420565.95    
+Loop time of 0.35064 on 4 procs for 70 steps with 4032 atoms
+
+129.2% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+Minimization stats:
+  Stopping criterion = energy tolerance
+  Energy initial, next-to-last, final = 
+      5667.41251671465   4485.82977876993   4485.54576028643
+  Force two-norm initial, final = 398.10285 186.26256
+  Force max component initial, final = 119.01481 24.596404
+  Final line search alpha, max atom move = 0.00026147638 0.0064313787
+  Iterations, force evaluations = 70 167
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.029697   | 0.029697   | 0.029697   |   0.0 |  8.47
+Bond    | 0.20748    | 0.20748    | 0.20748    |   0.0 | 59.17
+Neigh   | 0.007246   | 0.007246   | 0.007246   |   0.0 |  2.07
+Comm    | 0.056868   | 0.056868   | 0.056868   |   0.0 | 16.22
+Output  | 0          | 0          | 0          |   0.0 |  0.00
+Modify  | 0.037128   | 0.037128   | 0.037128   |   0.0 | 10.59
+Other   |            | 0.01223    |            |       |  3.49
+
+Nlocal:           4032 ave        4032 max        4032 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          67262 ave       67262 max       67262 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:           2852 ave        2852 max        2852 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 2852
+Ave neighs/atom = 0.70734127
+Ave special neighs/atom = 2.1428571
+Neighbor list builds = 1
+Dangerous builds = 0
+unfix           soft_push
+
+write_data      system_after_soft.data
+System init for write_data ...
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
+write_restart   1.restart
+System init for write_restart ...
+Generated 0 of 91 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style harmonic/omp
+print           "Stage 1 (hierarchical) done -> system_after_soft.data"
+Stage 1 (hierarchical) done -> system_after_soft.data
+Total wall time: 0:00:04
