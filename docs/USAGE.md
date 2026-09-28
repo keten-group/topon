@@ -708,7 +708,7 @@ of it. There are two, and they fail in opposite places.
 |---|---|---|
 | how | removes candidate edges one at a time until the graph matches | assigns the requested degrees to sites, then completes the degree sequence with augmenting paths |
 | needs | any subset of targets (`d:N`, `e:N`, or nothing) | a count for every degree from 0 to `max_functionality` |
-| samples | `max_trials` random trials | up to 6 seeds per network; in C (`exe_path` set) an explicit `max_trials` bounds the attempts instead |
+| samples | `max_trials` random trials | up to 6 seeds per network, then 6 fallback attempts when all six ended short; in C (`exe_path` set) an explicit `max_trials` bounds the attempts instead |
 | move history | yes, `G.graph["move_history"]` | no |
 | good at | loose targets, an edge budget, a ceiling well above the mean degree | near-complete tetrafunctional targets, dangling-end sites, high vacancy fractions |
 | bad at | exactly those (see below) | a scaffold with no spare candidate edge (Diamond at `max_functionality: 4`) |
@@ -744,7 +744,7 @@ must be chain ends. The exact search reaches the same targets in 0.1 to
                "degree_distribution": "0:43,1:217,2:356,3:153,4:1975" }
 ```
 
-Five things to know about the exact search:
+Six things to know about the exact search:
 
 - **The degree sum has to be even.** Every edge contributes 2, so an odd
   sum belongs to no graph at all and is refused outright rather than
@@ -776,15 +776,27 @@ Five things to know about the exact search:
   lands the same target in 0.01 s; note that the default 1.0 is the
   canonical-lattice sentinel rather than a range, so the wider setting is
   here the smaller number.
+- **A target the random deal cannot place gets a fallback.** SC, BCC and
+  Diamond at their first shell are bipartite, so every edge adds one to
+  each sublattice and the targets on the two must sum to the same number.
+  A random deal rarely balances, and a target with many dangling ends and
+  many sites at the lattice's own coordination (44 and 54 of 216 on SC)
+  then ends short on every attempt. After 6 attempts in a row end with
+  unfilled degree units, the search deals the targets balanced across the
+  sublattices and repairs by moving demand out of the region a failed
+  augmenting search reached, within one sublattice, keeping a move only
+  if it loses no edge. Connectivity failures do not count toward the
+  switch, and the attempts before it draw what they always drew, so any
+  target the random deal reaches comes out as before for the same seed.
 
 Both searches exist in both generators. With `exe_path` set, an exact
 request runs the C port in `topon/topology/csrc/` (`--search=exact`,
 passed by `run_generator`), with the same steps, constants and refusals
 and `min_giant_fraction` passed through. The C binary treats one trial as
 one attempt. Left at its default, `max_trials` becomes the Python budget
-of 6 attempts per network, so an infeasible request gives up after
-seconds on either route; set it explicitly to let the C search retry
-longer. The pipeline hands the binary a seed drawn from the global NumPy
+of 6 random and 6 fallback attempts per network, so an infeasible request
+gives up after seconds on either route; set it explicitly to let the C
+search retry longer. The pipeline hands the binary a seed drawn from the global NumPy
 stream, so `np.random.seed(n)` pins the C route as it pins the Python
 one, and the manifest records it with the requested and achieved counts.
 The one exception is an exact request that forces double edges or

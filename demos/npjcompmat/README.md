@@ -20,6 +20,7 @@ data/
   raw/                          raw simulation output (see data/raw/README.md)
 scripts/
   appendix_figures.py           Figs. 8 and 9 as a standalone script (same code as the notebook cell)
+  make_timing_table.py          Table 1 (Appendix B) from data/derived/generator_benchmark/ -> tables_checks/
   build_raw_data.py             how data/raw/ was packed from the simulation folders (a record, not needed to run)
   raw_data_analyses/            the scripts that made the derived data from raw simulation output
 figs/, figs_checks/, tables_checks/   outputs of the notebooks
@@ -75,6 +76,8 @@ marked `# CHANGE (v0.2.0)`.
   Benjamini-Hochberg q < 0.05 over the 55 Welch tests, and shows the same 10 descriptors in panels b and c.
 - The mock-data branches are removed.
 - Figs. 8 and 9 are new.
+- Since 0.2.1 the panel titles of Fig. 7 read "Signatures of Toughening" and "Signatures of Strengthening" (they read
+  "Drivers of ..." before).
 
 Each changed cell checks its numbers against the values quoted in the manuscript (quadrant sizes 128/35/35/129, 31 of
 55 marked cells, the Tg labels, the reference statistics tables in `data/derived/figure_stats/`) and stops if they

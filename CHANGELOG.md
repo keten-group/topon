@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1
+
+### Topology
+
+- The exact search gains a fallback for targets that its random assignment of degrees cannot complete. On lattices
+  whose bonds all join two sublattices (SC, BCC and Diamond with nearest neighbours), every network carries the same
+  degree total on both sublattices. After 6 attempts in a row end with unfilled degree units, the search assigns the
+  target degrees so that the two totals agree and then moves targets within a sublattice until every site is complete.
+  The fallback runs in the Python and in the C generator.
+- Networks of targets that the random assignment already reaches are unchanged for the same seed.
+- The Python search makes 6 fallback attempts after its 6 regular ones. In C the fallback continues until a network
+  is found or `max_trials` runs out, and a pipeline run that leaves `max_trials` at its default now gives the C route
+  12 attempts per network.
+
+### Paper companion
+
+- `demos/npjcompmat/data/derived/generator_benchmark/` holds the generation times behind Table 1 (Appendix B) and a
+  run of the exact search on every target of the coarse-grained ensemble, with a README of their columns.
+  `scripts/make_timing_table.py` rebuilds Table 1 from them.
+- The panel titles of Fig. 7 now read "Signatures of Toughening" and "Signatures of Strengthening".
+
 ## 0.2.0
 
 ### Topology

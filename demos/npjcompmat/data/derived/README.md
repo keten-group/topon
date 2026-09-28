@@ -81,6 +81,7 @@ these files.
 | File | Content | Provenance |
 |---|---|---|
 | `generator_benchmark/tables.md` | benchmark tables G1 (degree-distribution control) and G2 (infeasible requests) | runs of the topon generator (`make_tables.py`) |
+| `generator_benchmark/t8_final_summary.csv`, `t8_exact_v2w10_summary.csv`, `t8_exact_v2_327.csv` | generation times behind Table 1 (Appendix B) and the exact search on every target of the ensemble (columns in `generator_benchmark/README.md`) | timing runs of the topon generators in C and Python |
 | `software/software_seeds.csv` | rows of the software table (`section`, `item`, `value`, `source`; LaTeX cell text) | static record |
 
 The analysis scripts that produced the files above from raw simulation output are in `scripts/raw_data_analyses/` (see

@@ -52,9 +52,12 @@ and three shells, BCC, FCC, a mixture and Diamond) and compares site
 counts, mean degree, edge-length shells and the recorded box, and for the
 exact search the degree counts of every network on both sides. On
 2026-09-25, **43 agree** (17 of them edge for edge) and the other 5 ask
-for something neither can supply, which both refuse (two of them are the
-exact search's known refusals, target B on SC at one shell and Diamond
-at `max_func` 4 with dangling ends). A subset is then built through
+for something neither can supply, which both refuse (two of them were the
+exact search's known refusals then, target B on SC at one shell, which
+the fallback below now reaches, and Diamond at `max_func` 4 with dangling
+ends). With the fallback (2026-09-26) **44 agree** and 4 are refused by
+both, target B on SC at one shell now reaching its counts on every run on
+both sides. A subset is then built through
 the pipeline to a LAMMPS stage-1 minimize, which all six complete:
 SC/BCC/FCC pruned to `max_func=4`, a 0.2/0.4/0.4 mixture, a non-cubic
 3x4x5, and an `e:200` edge-count target.
@@ -127,6 +130,26 @@ former partners are drained in edge-list order here and in
 set-iteration order there. About 16 000 attempts compared on SC and FCC
 showed no effect of either.
 
+**The fallback.** SC, BCC and Diamond at their first shell are
+bipartite (every edge joins the two sublattices), so a degree sequence
+is realisable only if the targets on the two sublattices sum to the
+same number. A random deal almost never balances, and the repair swaps targets
+across the sublattices at random. Once 6 attempts in a row have ended
+with unfilled degree units, the attempts for that network switch to a
+balanced deal (targets swapped across the sublattices until the sums
+match) and a residual-driven repair (a target from the region a failed
+augmenting search reached, on the stuck site's sublattice, is swapped with
+a lower one outside it on the same sublattice, and the swap is kept only
+if no edge was lost). Attempts that fill every degree but fail on
+connectivity do not count toward the switch, and the random-deal attempts
+before it draw exactly what they drew before, so a target the random deal
+reaches gives the same network for the same seed. The Python search does
+the same (6 random attempts, then 6 fallback ones), and its module
+docstring is the specification. The manuscript's hardest target (44 dangling ends
+and 54 six-fold sites per 216) on SC at one shell, which the random deal
+reached 3 times in 100 at 216 sites and never on larger cells, lands on
+the first fallback attempt at 216 to 1 728 sites.
+
 The mix fractions ride inside the `lattice_type` argument rather than
 taking a ninth position, so scripts written against the original
 eight-argument CLI keep working unchanged. The optional ninth argument is
@@ -168,8 +191,9 @@ Python generator's own rule (`search: "exact"`, or `search` unset with
 every degree pinned), and the pipeline sends such a request here when
 `exe_path` is set. Two things keep that route in line with the Python
 one. A config that leaves `max_trials` at its default (a million, sized
-for the strict sculptor) gets the Python budget of 6 attempts per network
-instead, while an explicit `max_trials` is passed as given. And the
+for the strict sculptor) gets the Python budget of 6 random and 6
+fallback attempts per network instead, while an explicit `max_trials` is
+passed as given. And the
 pipeline hands the binary a `TOPON_SEED` drawn from the global NumPy
 stream, as the Python exact search draws its own, so `np.random.seed(n)`
 pins either route; the seed lands in the run manifest with the requested

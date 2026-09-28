@@ -1428,12 +1428,29 @@ static int simple_max_degree(const Graph* g) {
  * of CSR slots (a site never carries more than max_f + 1 of them, the +1
  * being the transient while a path is flipped). The BFS reuses one
  * visited-stamp array, one parent array and one queue across every call,
- * so nothing is allocated after exact_create. */
+ * so nothing is allocated after exact_create (the fallback's undo log
+ * grows by doubling, rarely).
+ *
+ * THE FALLBACK (degree_matching.py's module docstring is the spec). SC,
+ * BCC and Diamond at their first shell are bipartite: every edge joins the
+ * two sublattices, so a degree sequence is realisable only if the targets
+ * on the two sum to the same number. A random deal almost never balances,
+ * and the repair above swaps across the sublattices at random. Once
+ * EXACT_FALLBACK_AFTER attempts in a row end with unfilled degree units,
+ * the attempts switch to a balanced deal (targets swapped across the
+ * sublattices until the sums match) and a residual-driven repair (a
+ * target from the region a failed augmenting search reached, on the stuck
+ * site's sublattice, is swapped with a lower one outside it on the same
+ * sublattice; the swap is kept only if no edge was lost, else undone from
+ * a log). Nothing before the switch draws differently, so what the random
+ * deal reaches comes out the same for the same seed. */
 
 #define EXACT_MAX_AUGMENT_ROUNDS 6
 #define EXACT_MAX_REPAIR_STEPS 20000
 #define EXACT_DEFAULT_MIN_GIANT_FRACTION 0.99
 #define EXACT_PINNED_SHARE 0.5
+#define EXACT_FALLBACK_AFTER 6
+#define EXACT_BALANCE_TRIES_PER_SITE 100
 
 typedef struct ExactSearch {
     int n;                  /* sites */
@@ -1462,6 +1479,16 @@ typedef struct ExactSearch {
     double min_giant;
     long long augmentations;
     long long swaps;
+    /* the fallback */
+    signed char* colour;    /* sublattice 0/1 of each site */
+    int bipartite;          /* 1 if the scaffold is connected and bipartite */
+    long long n_edges;      /* edges in the subgraph */
+    int logging;            /* record edge changes for undo */
+    long long log_n, log_cap;
+    int* log_x;             /* site whose row holds the slot */
+    int* log_s;             /* the slot */
+    unsigned char* log_add; /* 1 for an add, 0 for a removal */
+    int* touched;           /* sites to drain after a fallback swap */
 } ExactSearch;
 
 typedef struct ExactOutcome {
@@ -1475,6 +1502,8 @@ typedef struct ExactOutcome {
     long long augmentations;
     long long swaps;
     double seconds;
+    int fallback;           /* the attempt used the fallback deal and repair */
+    long long imbalance;    /* sublattice imbalance left by the balanced deal */
 } ExactOutcome;
 
 static ExactSearch* exact_create(const Graph* base, int max_f, const int* need,
@@ -1536,6 +1565,38 @@ static ExactSearch* exact_create(const Graph* base, int max_f, const int* need,
     w->list2 = (int*)malloc(nn * sizeof(int));
     w->cand = (int*)malloc((size_t)scratch * sizeof(int));
     w->partners = (int*)malloc((size_t)(w->cap + 1) * sizeof(int));
+    w->touched = (int*)malloc((size_t)(2 * w->cap + 4) * sizeof(int));
+    w->log_cap = 4096;
+    w->log_x = (int*)malloc((size_t)w->log_cap * sizeof(int));
+    w->log_s = (int*)malloc((size_t)w->log_cap * sizeof(int));
+    w->log_add = (unsigned char*)malloc((size_t)w->log_cap);
+
+    /* Two-colour the scaffold breadth-first from site 0 (Python's
+     * two_colouring): bipartite only if no edge joins two sites of one
+     * colour and every site was reached. */
+    w->colour = (signed char*)malloc(nn);
+    for (int i = 0; i < n; ++i) w->colour[i] = -1;
+    w->bipartite = n > 0;
+    if (n > 0) {
+        int head = 0, tail = 0, reached = 1;
+        w->colour[0] = 0;
+        w->queue[tail++] = 0;
+        while (head < tail && w->bipartite) {
+            int x = w->queue[head++];
+            for (int q = w->nb_off[x]; q < w->nb_off[x + 1]; ++q) {
+                int y = w->nb[q];
+                if (w->colour[y] < 0) {
+                    w->colour[y] = (signed char)(1 - w->colour[x]);
+                    w->queue[tail++] = y;
+                    reached++;
+                } else if (w->colour[y] == w->colour[x]) {
+                    w->bipartite = 0;
+                    break;
+                }
+            }
+        }
+        if (reached < n) w->bipartite = 0;
+    }
     return w;
 }
 
@@ -1545,8 +1606,22 @@ static void exact_free(ExactSearch* w) {
     free(w->t); free(w->deg); free(w->adj); free(w->stamp);
     free(w->par_node); free(w->par_slot); free(w->par_add);
     free(w->queue); free(w->list); free(w->list2); free(w->cand);
-    free(w->partners);
+    free(w->partners); free(w->touched); free(w->colour);
+    free(w->log_x); free(w->log_s); free(w->log_add);
     free(w);
+}
+
+static void exact_log(ExactSearch* w, int x, int s, int is_add) {
+    if (w->log_n == w->log_cap) {
+        w->log_cap *= 2;
+        w->log_x = (int*)realloc(w->log_x, (size_t)w->log_cap * sizeof(int));
+        w->log_s = (int*)realloc(w->log_s, (size_t)w->log_cap * sizeof(int));
+        w->log_add = (unsigned char*)realloc(w->log_add, (size_t)w->log_cap);
+    }
+    w->log_x[w->log_n] = x;
+    w->log_s[w->log_n] = s;
+    w->log_add[w->log_n] = (unsigned char)is_add;
+    w->log_n++;
 }
 
 static unsigned int exact_new_stamp(ExactSearch* w) {
@@ -1572,6 +1647,8 @@ static void exact_add(ExactSearch* w, int x, int s) {
     w->present[r] = 1;
     w->adj[(size_t)x * w->cap + w->deg[x]++] = s;
     w->adj[(size_t)y * w->cap + w->deg[y]++] = r;
+    w->n_edges++;
+    if (w->logging) exact_log(w, x, s, 1);
 }
 
 static void exact_drop_slot(ExactSearch* w, int x, int s) {
@@ -1590,6 +1667,8 @@ static void exact_rem(ExactSearch* w, int x, int s) {
     w->present[r] = 0;
     exact_drop_slot(w, x, s);
     exact_drop_slot(w, y, r);
+    w->n_edges--;
+    if (w->logging) exact_log(w, x, s, 0);
 }
 
 /* Alternating BFS from a deficient site s. Moves alternate: add an absent
@@ -1646,11 +1725,13 @@ static int exact_augment(ExactSearch* w, int s) {
 
 /* Augment from s until it reaches its target or no path is left. Flipping
  * a path raises both end degrees by one and leaves every site between
- * them where it was. */
-static void exact_drain(ExactSearch* w, int s) {
+ * them where it was. Returns 1 when s is stuck, with the region the
+ * failed search reached marked by the current stamp, and 0 when s is
+ * filled. */
+static int exact_drain(ExactSearch* w, int s) {
     while (w->deg[s] < w->t[s]) {
         int y = exact_augment(w, s);
-        if (y < 0) return;
+        if (y < 0) return 1;
         while (w->par_node[y] >= 0) {
             int x = w->par_node[y];
             if (w->par_add[y]) exact_add(w, x, w->par_slot[y]);
@@ -1659,6 +1740,7 @@ static void exact_drain(ExactSearch* w, int s) {
         }
         w->augmentations++;
     }
+    return 0;
 }
 
 static int exact_collect_deficient(ExactSearch* w) {
@@ -1669,23 +1751,144 @@ static int exact_collect_deficient(ExactSearch* w) {
     return m;
 }
 
-/* One attempt, the equivalent of one sculpt_exact call. */
-static void exact_attempt(ExactSearch* w, ExactOutcome* out) {
+/* The fallback deal (Python's balance_targets): draw two sites; when they
+ * sit on opposite sublattices, swap the heavier side's target with the
+ * other if it is larger by no more than half the imbalance. Returns the
+ * imbalance left, 0 when balanced. */
+static long long exact_balance(ExactSearch* w) {
+    int n = w->n;
+    long long imbalance = 0;
+    for (int i = 0; i < n; ++i) imbalance += w->colour[i] == 0 ? w->t[i] : -w->t[i];
+    long long tries = (long long)EXACT_BALANCE_TRIES_PER_SITE * n;
+    for (long long k = 0; k < tries; ++k) {
+        if (imbalance == 0) break;
+        int i = (int)rng_below((uint64_t)n);
+        int j = (int)rng_below((uint64_t)n);
+        if (w->colour[i] == w->colour[j]) continue;
+        int heavy = imbalance > 0 ? 0 : 1;
+        int a = w->colour[i] == heavy ? i : j;
+        int b = a == i ? j : i;
+        long long delta = w->t[a] - w->t[b];
+        if (delta <= 0 || 2 * delta > (imbalance < 0 ? -imbalance : imbalance)) continue;
+        int tmp = w->t[a]; w->t[a] = w->t[b]; w->t[b] = tmp;
+        imbalance += heavy == 0 ? -2 * delta : 2 * delta;
+    }
+    return imbalance;
+}
+
+/* The fallback repair (Python's residual_repair): a deficient site whose
+ * augmenting search fails has reached every site it can, the region short
+ * of partners. A target of 2 or more from that region, on the site's own
+ * sublattice, is swapped with a lower one outside it on the same
+ * sublattice (a vacancy only if it has enough active neighbours), edges
+ * above a new target are dropped at random, and the touched sites are
+ * drained. The swap is kept if no edge was lost and undone otherwise.
+ * Returns the swaps kept. */
+static long long exact_residual_repair(ExactSearch* w) {
+    int n = w->n;
+    long long kept = 0;
+    for (int step = 0; step < EXACT_MAX_REPAIR_STEPS; ++step) {
+        int m = exact_collect_deficient(w);
+        if (!m) break;
+        int u = w->list[rng_below((uint64_t)m)];
+        if (w->t[u] == 1) {
+            /* A dangling end with no partner: take any neighbour with room. */
+            int done = 0;
+            for (int q = w->nb_off[u]; q < w->nb_off[u + 1]; ++q) {
+                int v = w->nb[q];
+                if (exact_eligible(w, u, v) && w->deg[v] < w->t[v]) {
+                    exact_add(w, u, q);
+                    done = 1;
+                    break;
+                }
+            }
+            if (done) continue;
+        }
+        if (!exact_drain(w, u)) continue;
+        unsigned int st = w->cur;              /* the region */
+        int ni = 0;
+        for (int i = 0; i < n; ++i) {
+            if (w->stamp[i] == st && w->t[i] >= 2
+                && (!w->bipartite || w->colour[i] == w->colour[u])) w->list[ni++] = i;
+        }
+        int src = ni ? w->list[rng_below((uint64_t)ni)] : u;
+        int np = 0;
+        for (int i = 0; i < n; ++i) {
+            if (w->stamp[i] == st || w->t[i] >= w->t[src]) continue;
+            if (w->bipartite && w->colour[i] != w->colour[src]) continue;
+            if (w->t[i] >= 2) {
+                w->list2[np++] = i;
+            } else if (w->t[i] == 0) {
+                int c = 0;
+                for (int q = w->nb_off[i]; q < w->nb_off[i + 1]; ++q) {
+                    int y = w->nb[q];
+                    if (w->t[y] > 0 && y != src) c++;
+                }
+                if (c >= w->t[src]) w->list2[np++] = i;
+            }
+        }
+        if (!np) continue;
+        int v = w->list2[rng_below((uint64_t)np)];
+        long long before = w->n_edges;
+        w->log_n = 0;
+        w->logging = 1;
+        int tmp = w->t[src]; w->t[src] = w->t[v]; w->t[v] = tmp;
+        int nt = 0;
+        w->touched[nt++] = v;
+        w->touched[nt++] = src;
+        int xs[2] = {src, v};
+        for (int k = 0; k < 2; ++k) {
+            int x = xs[k];
+            int extra = w->deg[x] - w->t[x];
+            if (extra <= 0) continue;
+            int d = w->deg[x];
+            const int* a = w->adj + (size_t)x * w->cap;
+            for (int j = 0; j < d; ++j) w->partners[j] = a[j];
+            for (int j = 0; j < extra; ++j) {
+                int r = j + (int)rng_below((uint64_t)(d - j));
+                int q = w->partners[r]; w->partners[r] = w->partners[j]; w->partners[j] = q;
+                w->touched[nt++] = w->nb[q];
+                exact_rem(w, x, q);
+            }
+        }
+        for (int k = 0; k < nt; ++k) exact_drain(w, w->touched[k]);
+        w->logging = 0;
+        if (w->n_edges < before) {
+            for (long long e = w->log_n - 1; e >= 0; --e) {
+                if (w->log_add[e]) exact_rem(w, w->log_x[e], w->log_s[e]);
+                else exact_add(w, w->log_x[e], w->log_s[e]);
+            }
+            tmp = w->t[src]; w->t[src] = w->t[v]; w->t[v] = tmp;
+        } else {
+            kept++;
+        }
+    }
+    return kept;
+}
+
+/* One attempt, the equivalent of one sculpt_exact call; with fallback set,
+ * one sculpt_exact(..., fallback=True) call. */
+static void exact_attempt(ExactSearch* w, ExactOutcome* out, int fallback) {
     clock_t t0 = clock();
     int n = w->n;
     memset(w->present, 0, (size_t)w->n_slots);
     memset(w->deg, 0, (size_t)n * sizeof(int));
     w->augmentations = 0;
     w->swaps = 0;
+    w->n_edges = 0;
+    w->logging = 0;
+    long long imbalance = 0;
 
     /* 1. Target degrees: the requested multiset, vacancies for the rest,
-     *    in random order. */
+     *    in random order (balanced across the sublattices in the
+     *    fallback). */
     int k = 0;
     for (int d = 1; d <= w->max_f; ++d) {
         for (int c = 0; c < w->need[d]; ++c) w->t[k++] = d;
     }
     while (k < n) w->t[k++] = 0;
     shuffle_array(w->t, (size_t)n);
+    if (fallback && w->bipartite) imbalance = exact_balance(w);
 
     /* 2. Greedy random fill. */
     int m = 0;
@@ -1715,8 +1918,10 @@ static void exact_attempt(ExactSearch* w, ExactOutcome* out) {
 
     /* 4. Repair a locally infeasible draw. The random assignment can put
      *    a high target where the scaffold cannot serve it (next to
-     *    vacancies, or in a corner the dangling-end rule has emptied). */
-    for (int step = 0; step < EXACT_MAX_REPAIR_STEPS; ++step) {
+     *    vacancies, or in a corner the dangling-end rule has emptied).
+     *    The fallback runs its own repair instead. */
+    if (fallback) w->swaps = exact_residual_repair(w);
+    for (int step = 0; step < (fallback ? 0 : EXACT_MAX_REPAIR_STEPS); ++step) {
         m = exact_collect_deficient(w);
         if (!m) break;
         int u = w->list[rng_below((uint64_t)m)];
@@ -1793,6 +1998,8 @@ static void exact_attempt(ExactSearch* w, ExactOutcome* out) {
     }
     out->augmentations = w->augmentations;
     out->swaps = w->swaps;
+    out->fallback = fallback;
+    out->imbalance = imbalance;
     if (out->residual == 0) {
         unsigned int st = exact_new_stamp(w);
         int largest = 0;
@@ -2376,7 +2583,10 @@ int main(int argc, char *argv[]) {
          * the bound here, so a large one keeps retrying until an attempt
          * lands or the run is killed. The one early stop is Python's: a
          * shortfall on a scaffold with no slack, where a fresh draw meets
-         * the same forced assignment. */
+         * the same forced assignment. After EXACT_FALLBACK_AFTER attempts
+         * in a row end with unfilled degree units, the attempts for that
+         * network use the fallback deal and repair; a network found resets
+         * the count. */
         ExactSearch* w = exact_create(base_graph, max_func, target_counts, min_giant);
         int no_slack = exact_no_slack(w);
         long long n_active = 0;
@@ -2385,17 +2595,20 @@ int main(int argc, char *argv[]) {
         ExactOutcome best;
         int have_best = 0;
         long long attempts = 0;
+        int short_in_a_row = 0, fallback = 0;
         memset(&best, 0, sizeof(best));
 
         for (long long trial = 0; trial < max_trials; ++trial) {
             if (success_count >= max_saves) break;
             ExactOutcome o;
-            exact_attempt(w, &o);
+            exact_attempt(w, &o, fallback);
             attempts++;
             if (o.ok) {
                 success_count++;
-                printf("  [exact] attempt %lld: reached in %.2fs (%lld augmentations, %lld repairs)\n",
-                       trial, o.seconds, o.augmentations, o.swaps);
+                printf("  [exact] attempt %lld%s: reached in %.2fs (%lld augmentations, %lld repairs)\n",
+                       trial, fallback ? " (fallback)" : "", o.seconds, o.augmentations, o.swaps);
+                short_in_a_row = 0;
+                fallback = 0;
                 Graph* g = exact_to_graph(w, base_graph);
                 print_distribution("Final Distribution", g, target_counts, trial, 0, max_func, extensive_logging);
                 printf("[Trial %lld | SUCCESS] Target distribution met!\n", trial);
@@ -2411,8 +2624,8 @@ int main(int argc, char *argv[]) {
             }
             char err[256];
             exact_describe_error(w, &o, err, sizeof(err));
-            printf("  [exact] attempt %lld: failed in %.2fs (%lld augmentations, %lld repairs) -- %s\n",
-                   trial, o.seconds, o.augmentations, o.swaps, err);
+            printf("  [exact] attempt %lld%s: failed in %.2fs (%lld augmentations, %lld repairs) -- %s\n",
+                   trial, fallback ? " (fallback)" : "", o.seconds, o.augmentations, o.swaps, err);
             printf("[Trial %lld | FAILED] Could not find a valid network.\n", trial);
             /* Keep the attempt Python's _failure_message would quote: the
              * smallest residual, then the largest giant component. */
@@ -2427,6 +2640,16 @@ int main(int argc, char *argv[]) {
                 printf("  [exact] stopping: the scaffold has no slack, so retrying cannot "
                        "find room that does not exist.\n");
                 break;
+            }
+            if (!fallback) {
+                /* Only a shortfall counts: an attempt that filled every
+                 * degree and failed on connectivity had a workable deal. */
+                short_in_a_row = o.residual ? short_in_a_row + 1 : 0;
+                if (short_in_a_row >= EXACT_FALLBACK_AFTER) {
+                    fallback = 1;
+                    printf("  [exact] %d attempts in a row ended short; switching to the "
+                           "balanced deal and the residual-driven repair\n", short_in_a_row);
+                }
             }
         }
 

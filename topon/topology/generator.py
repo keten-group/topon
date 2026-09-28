@@ -12,6 +12,7 @@ from typing import Optional, Union
 from topon.config.schema import GeneratorConfig
 from topon.topology.degree_matching import (
     DEFAULT_ATTEMPTS,
+    DEFAULT_FALLBACK_ATTEMPTS,
     DEFAULT_MIN_GIANT_FRACTION,
     parse_degree_distribution,
     resolve_search,
@@ -83,16 +84,18 @@ def format_generator_args(config: GeneratorConfig) -> list[str]:
 
     For the exact search one trial is one attempt. A config that leaves
     ``max_trials`` at its default (a million, sized for the strict
-    sculptor) gets the Python search's budget instead,
-    ``DEFAULT_ATTEMPTS`` attempts per network, so an infeasible request
-    gives up after seconds on either route rather than retrying for hours.
-    A ``max_trials`` the config sets explicitly is passed as it is.
+    sculptor) gets the Python search's budget instead, ``DEFAULT_ATTEMPTS``
+    random-deal attempts plus ``DEFAULT_FALLBACK_ATTEMPTS`` fallback ones
+    per network, so an infeasible request gives up after seconds on either
+    route rather than retrying for hours, and a hard one still reaches the
+    fallback. A ``max_trials`` the config sets explicitly is passed as it
+    is.
     """
     search = resolve_config_search(config)
     trials = config.max_trials
     if search == "exact" and "max_trials" not in getattr(config, "model_fields_set",
                                                           {"max_trials"}):
-        trials = DEFAULT_ATTEMPTS * max(1, int(config.max_saves))
+        trials = (DEFAULT_ATTEMPTS + DEFAULT_FALLBACK_ATTEMPTS) * max(1, int(config.max_saves))
     args = [
         config.lattice_size,
         config.periodicity,

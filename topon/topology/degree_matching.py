@@ -51,6 +51,37 @@ forced assignment, so :func:`build_exact_graph` says so instead.
 The exact search has no edge-removal history, so a graph it produces
 carries no ``move_history``: the sculpting animation in
 ``assets/gallery/`` needs ``search: "strict"``.
+
+The fallback
+------------
+Some targets defeat the random deal on a bipartite scaffold. SC, BCC and
+Diamond at their first shell only join sites of opposite sublattices, so
+every edge adds one to each side, and a degree sequence is realisable
+only if the targets on the two sublattices sum to the same number. A
+random deal almost never balances (the manuscript's hardest target puts
+44 dangling ends and 54 six-fold junctions on 216 SC sites; its deals are
+off by 29 degree units on average and balance 2.6 % of the time), and
+step 4 swaps targets across the sublattices at random, so it walks the
+imbalance around instead of removing it. Once :data:`FALLBACK_AFTER`
+attempts in a row have ended with unfilled degree units, the search
+switches to a fallback that changes the deal and the repair, and nothing
+else:
+
+- the deal is balanced: after the random permutation, targets are swapped
+  between the sublattices (heavier side down by a smaller-or-equal step)
+  until their sums match
+- the repair is driven by the residual: the failed augmenting search from
+  a deficient site marks the region that is short of partners, a target
+  from that region (on the site's own sublattice) is swapped with a lower
+  one outside it on the same sublattice, which keeps the balance, and the
+  swap is kept only if the subgraph did not lose an edge (otherwise it is
+  undone)
+
+On a scaffold that is not bipartite the balancing is skipped and the
+sublattice restriction does not apply. Attempts that fail on
+connectivity with every degree filled do not count toward the switch, and
+nothing in the random-deal path draws a different number, so a target
+the random deal reaches gives the same graph for the same seed as before.
 """
 from __future__ import annotations
 
@@ -77,6 +108,19 @@ DEFAULT_ATTEMPTS = 6
 #: study measured with; they only bound work, they do not shape results.
 MAX_AUGMENT_ROUNDS = 6
 MAX_REPAIR_STEPS = 20000
+
+#: Attempts in a row that must end with unfilled degree units before the
+#: fallback deal and repair take over, and the attempts the fallback then
+#: gets in :func:`build_exact_graph`. Measured on the generator benchmark
+#: (SC 6^3 and 12^3, one to three shells, targets A and T, 100 seeds), the
+#: random deal never ended short more than once in a row where it
+#: succeeds, so six leaves its results untouched.
+FALLBACK_AFTER = 6
+DEFAULT_FALLBACK_ATTEMPTS = 6
+
+#: Tries at balancing the two sublattices, per site, before the fallback
+#: deal gives up and lets the attempt fail on its residual.
+BALANCE_TRIES_PER_SITE = 100
 
 
 class ExactSculptError(RuntimeError):
@@ -199,6 +243,57 @@ def needs_from_targets(target_counts: Mapping[int, int], max_f: int) -> dict[int
 # The search
 # ---------------------------------------------------------------------------
 
+def two_colouring(nodes, nb) -> Optional[dict]:
+    """The sublattice of every site if the scaffold is bipartite, else None.
+
+    Breadth-first from the first site, in site order. ``None`` when an edge
+    joins two sites of the same colour (FCC, MIX, any second shell on SC,
+    an odd periodic axis) or when the scaffold falls apart into more than
+    one piece, where a single balance would not be the condition anyway.
+    """
+    if not nodes:
+        return None
+    colour = {nodes[0]: 0}
+    queue = collections.deque([nodes[0]])
+    while queue:
+        x = queue.popleft()
+        for y in nb[x]:
+            if y not in colour:
+                colour[y] = 1 - colour[x]
+                queue.append(y)
+            elif colour[y] == colour[x]:
+                return None
+    return colour if len(colour) == len(nodes) else None
+
+
+def balance_targets(nodes, t, colour, rng) -> int:
+    """Swap targets across the two sublattices until their sums match.
+
+    Draws two sites; when they sit on opposite sublattices, the target on
+    the heavier side is swapped with the other one if it is larger by no
+    more than half the imbalance, so the imbalance only ever shrinks. Gives
+    up after ``BALANCE_TRIES_PER_SITE`` draws per site and returns what is
+    left (0 when balanced), which the attempt then fails on.
+    """
+    n = len(nodes)
+    imbalance = sum(t[x] if colour[x] == 0 else -t[x] for x in nodes)
+    for _ in range(BALANCE_TRIES_PER_SITE * n):
+        if imbalance == 0:
+            break
+        i = nodes[rng.integers(n)]
+        j = nodes[rng.integers(n)]
+        if colour[i] == colour[j]:
+            continue
+        heavy = 0 if imbalance > 0 else 1
+        a, b = (i, j) if colour[i] == heavy else (j, i)
+        delta = t[a] - t[b]
+        if delta <= 0 or 2 * delta > abs(imbalance):
+            continue
+        t[a], t[b] = t[b], t[a]
+        imbalance += -2 * delta if heavy == 0 else 2 * delta
+    return imbalance
+
+
 def sculpt_exact(
     base,
     need: Mapping[int, int],
@@ -209,6 +304,7 @@ def sculpt_exact(
     min_giant_fraction: float = DEFAULT_MIN_GIANT_FRACTION,
     max_rounds: int = MAX_AUGMENT_ROUNDS,
     max_repair_steps: int = MAX_REPAIR_STEPS,
+    fallback: bool = False,
 ):
     """One attempt at a subgraph of ``base`` with exactly the degrees in ``need``.
 
@@ -232,6 +328,10 @@ def sculpt_exact(
         max_rounds: Augmentation rounds before the repair loop takes over.
         max_repair_steps: Target swaps and vacancy relocations before the
             attempt is abandoned.
+        fallback: Balance the deal across the sublattices of a bipartite
+            scaffold and run the residual-driven repair instead of step 4
+            (see the module docstring). :func:`build_exact_graph` turns it
+            on after :data:`FALLBACK_AFTER` short attempts in a row.
 
     Returns:
         ``(edges, degrees, record)``. ``edges`` is a set of ``(u, v)``
@@ -306,8 +406,14 @@ def sculpt_exact(
     pool += [0] * n_vacancies
     perm = rng.permutation(n_sites)
     t = {nodes[perm[i]]: pool[i] for i in range(n_sites)}
-    active = [n for n in nodes if t[n] > 0]
     base_nb = {n: list(base[n]) for n in nodes}
+    colour = None
+    imbalance = None
+    if fallback:
+        colour = two_colouring(nodes, base_nb)
+        if colour is not None:
+            imbalance = balance_targets(nodes, t, colour, rng)
+    active = [n for n in nodes if t[n] > 0]
 
     def eligible(n):
         """Candidate partners of ``n`` under the current targets.
@@ -324,12 +430,23 @@ def sculpt_exact(
     adj = {n: set() for n in nodes}
     deg = {n: 0 for n in nodes}
     fixed = set()          # pairs carrying a forced double edge
+    # Edge count, and a log of edge changes the fallback repair can undo.
+    # Neither draws a random number, so the random-deal path is unchanged.
+    n_edges = [0]
+    log = []
+    logging = [False]
 
     def add(u, v):
         adj[u].add(v); adj[v].add(u); deg[u] += 1; deg[v] += 1
+        n_edges[0] += 1
+        if logging[0]:
+            log.append((1, u, v))
 
     def rem(u, v):
         adj[u].discard(v); adj[v].discard(u); deg[u] -= 1; deg[v] -= 1
+        n_edges[0] -= 1
+        if logging[0]:
+            log.append((0, u, v))
 
     # --- forced double edges --------------------------------------------
     # A parallel strand between the same two junctions, with the endpoint
@@ -408,18 +525,24 @@ def sculpt_exact(
     n_aug = 0
 
     def drain(s):
-        """Augment from ``s`` until it reaches its target or gets stuck."""
+        """Augment from ``s`` until it reaches its target or gets stuck.
+
+        Returns the sites the failed search reached when ``s`` is stuck
+        (the region short of partners, which the fallback repair reads),
+        else None.
+        """
         nonlocal n_aug
         while deg[s] < t[s]:
             end, parent = augment(s)
             if end is None:
-                return
+                return parent
             y = end
             while parent[y] is not None:
                 x, kind = parent[y]
                 (add if kind == "add" else rem)(x, y)
                 y = x
             n_aug += 1
+        return None
 
     for _ in range(max_rounds):
         deficient = [n for n in active if deg[n] < t[n]]
@@ -436,8 +559,79 @@ def sculpt_exact(
     # giving the augmentation a fresh start: swap the target with a
     # saturated site of lower target, or move the vacancy to the deficient
     # site and hand its target to a vacancy with enough active neighbours.
-    n_swap = 0
-    for _ in range(max_repair_steps):
+    # The fallback runs its own repair instead (residual_repair below).
+    def residual_repair():
+        """The fallback repair: move demand out of the region short of partners.
+
+        A deficient site whose augmenting search fails has reached every
+        site it can; that region is short of partners. A target from the
+        region (on the site's own sublattice, 2 or more) is swapped with a
+        lower one outside it on the same sublattice, which keeps the two
+        sublattices balanced, edges above a new target are dropped at
+        random, and the touched sites are drained. The swap is kept if the
+        subgraph lost no edge and undone otherwise.
+        """
+        kept = 0
+        on_fixed = {x for pair in fixed for x in pair}
+
+        def same(a, b):
+            return colour is None or colour[a] == colour[b]
+
+        for _ in range(max_repair_steps):
+            deficient = [n for n in nodes if t[n] > 0 and deg[n] < t[n]]
+            if not deficient:
+                break
+            u = deficient[rng.integers(len(deficient))]
+            if t[u] == 1:
+                cands = [w for w in eligible(u) if deg[w] < t[w]]
+                if cands:
+                    add(u, cands[0])
+                    continue
+            if u in on_fixed:
+                others = [n for n in deficient if n not in on_fixed]
+                if not others:
+                    break
+                u = others[rng.integers(len(others))]
+            region = drain(u)
+            if region is None:
+                continue
+            inside = [x for x in nodes if x in region and t[x] >= 2
+                      and same(x, u) and x not in on_fixed]
+            src = inside[rng.integers(len(inside))] if inside else u
+            pool_w = [w for w in nodes
+                      if w not in region and t[w] < t[src] and same(w, src)
+                      and w not in on_fixed
+                      and (t[w] >= 2 or (t[w] == 0 and sum(
+                          1 for m in base_nb[w] if t[m] > 0 and m != src) >= t[src]))]
+            if not pool_w:
+                continue
+            w = pool_w[rng.integers(len(pool_w))]
+            before = n_edges[0]
+            log.clear()
+            logging[0] = True
+            t[src], t[w] = t[w], t[src]
+            touched = [w, src]
+            for x in (src, w):
+                extra = deg[x] - t[x]
+                if extra > 0:
+                    partners = list(adj[x])
+                    rng.shuffle(partners)
+                    for m in partners[:extra]:
+                        rem(x, m)
+                        touched.append(m)
+            for s in touched:
+                drain(s)
+            logging[0] = False
+            if n_edges[0] < before:
+                for kind, a, b in reversed(log):
+                    (rem if kind == 1 else add)(a, b)
+                t[src], t[w] = t[w], t[src]
+            else:
+                kept += 1
+        return kept
+
+    n_swap = residual_repair() if fallback else 0
+    for _ in range(0 if fallback else max_repair_steps):
         deficient = [n for n in active if deg[n] < t[n]]
         if not deficient:
             break
@@ -494,6 +688,10 @@ def sculpt_exact(
         doubles=sorted(fixed), n_double=n_double, residual=residual,
         counts={d: int(achieved.get(d, 0)) for d in range(0, max_f + 1)},
     )
+    if fallback:
+        rec["fallback"] = True
+        rec["bipartite"] = colour is not None
+        rec["imbalance"] = imbalance
     rec["counts"][0] = n_sites - len(active)
     rec["achieved"] = dict(rec["counts"])
     if residual != 0:
@@ -618,6 +816,7 @@ def build_exact_graph(
     double_pairs: Optional[Mapping[tuple[int, int], int]] = None,
     min_giant_fraction: float = DEFAULT_MIN_GIANT_FRACTION,
     attempts: int = DEFAULT_ATTEMPTS,
+    fallback_attempts: int = DEFAULT_FALLBACK_ATTEMPTS,
     label: str = "the lattice",
     verbose: bool = True,
 ):
@@ -642,6 +841,14 @@ def build_exact_graph(
     the self-loops it belongs to). Without ``double_pairs`` the result is
     a plain ``Graph``, exactly what the strict sculptor hands back.
 
+    Up to ``attempts`` attempts use the random deal. When
+    ``min(FALLBACK_AFTER, attempts)`` of them in a row end with unfilled
+    degree units, the rest (and ``fallback_attempts`` more) use the
+    fallback deal and repair (see the module docstring). Attempts that fill
+    every degree and fail on connectivity do not count toward the switch.
+    The attempts before the switch draw from the same seeds as they always
+    did, so a request the random deal reaches is unaffected.
+
     Raises:
         ExactSculptError: if no attempt reached the request. The message
             names the scaffold, the request, the best attempt's residual
@@ -649,21 +856,28 @@ def build_exact_graph(
             reason and what to change.
     """
     attempts = max(1, attempts)
+    fallback_attempts = max(0, fallback_attempts)
     root = np.random.SeedSequence(seed)
-    children = root.spawn(attempts)
+    # spawn() is indexed, so the first `attempts` children are the ones a
+    # plain spawn(attempts) gives: the random-deal attempts are unchanged.
+    children = root.spawn(attempts + fallback_attempts)
     records = []
-    for attempt in range(attempts):
+    short = 0            # random-deal attempts in a row that ended short
+    fallback = False
+    for attempt in range(attempts + fallback_attempts):
+        if attempt >= attempts and not fallback:
+            break
         rng = np.random.default_rng(children[attempt])
         edges, degrees, rec = sculpt_exact(
             base_graph, need, rng, max_f=max_f, double_pairs=double_pairs,
-            min_giant_fraction=min_giant_fraction,
+            min_giant_fraction=min_giant_fraction, fallback=fallback,
         )
         rec["attempt"] = attempt
         rec["seed"] = list(root.entropy) if isinstance(root.entropy, (list, tuple)) \
             else root.entropy
         records.append(rec)
         if verbose:
-            print(f"  [exact] attempt {attempt}: "
+            print(f"  [exact] attempt {attempt}{' (fallback)' if fallback else ''}: "
                   f"{'reached' if edges is not None else 'failed'} in "
                   f"{rec['seconds']:.2f}s "
                   f"({rec['augmentations']} augmentations, "
@@ -684,6 +898,14 @@ def build_exact_graph(
             break      # the request does not fit the scaffold at all
         if rec["residual"] and _no_slack(base_graph, need, max_f):
             break      # retrying cannot find room that does not exist
+        if not fallback:
+            short = short + 1 if rec["residual"] else 0
+            if short >= min(FALLBACK_AFTER, attempts) and fallback_attempts:
+                fallback = True
+                if verbose:
+                    print(f"  [exact] {short} attempts in a row ended short; "
+                          f"switching to the balanced deal and the "
+                          f"residual-driven repair")
     raise ExactSculptError(
         _failure_message(base_graph, need, max_f, records, label, len(records))
     )
