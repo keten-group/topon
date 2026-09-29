@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1
+
+### Paper companion
+
+- The paper companion now includes the threshold and cross-validation checks reported in the paper.
+  `demos/npjcompmat/scripts/checks/threshold_cv/` repeats the quadrant contrasts of Fig. 7 with the quadrants split at
+  other percentiles and predicts the UTS and toughness of held-out networks from the 11 descriptors with
+  cross-validated ridge regression. Its README gives the commands and the results, and `out/` holds the reference
+  outputs.
+- The companion's `requirements.txt` lists networkx, which `generate_checks.ipynb` imports.
+- The generator benchmark tables and the software record of the companion no longer name development builds.
+
+The package code is unchanged.
+
 ## 0.3.0
 
 ### CHARMM for polymer networks

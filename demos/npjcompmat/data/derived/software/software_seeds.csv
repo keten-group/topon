@@ -5,7 +5,7 @@ software,"Atomistic $T_g$, original histories",LAMMPS 3 Mar 2020 (Quest),log hea
 software,"Atomistic $T_g$, replicates, DP 10 and 30","LAMMPS 22 Jul 2025 (Update 1), CPU, double precision (Anvil)",replicate manifest
 software,"Atomistic $T_g$, replicates, DP 100","LAMMPS 22 Jul 2025 (Update 1), GPU package, mixed precision",replicate manifest
 software,Primitive-path analysis,"Z1+ (Kr\""oger et al., Comput.\ Phys.\ Commun.\ 2023)",entanglement analysis records
-software,Generator benchmark,"topon \texttt{main} at commit \texttt{573f2daf0b41e647b3ca}\allowbreak\texttt{ef95edea2fcdf8c84608}; repository C strict sculptor (V47, md5 \texttt{1d457129\ldots}); paper-era binary (built 2025-11-03, md5 \texttt{e2294a1f\ldots})","benchmark outputs, \texttt{t4\_versions.json}"
+software,Generator benchmark,"topon \texttt{main} at commit \texttt{573f2daf0b41e647b3ca}\allowbreak\texttt{ef95edea2fcdf8c84608}; repository C strict sculptor (md5 \texttt{1d457129\ldots}); paper-era binary (built 2025-11-03, md5 \texttt{e2294a1f\ldots})","benchmark outputs, \texttt{t4\_versions.json}"
 software,Analysis environment,"Python 3.12.10, numpy 2.5.2, scipy 1.15.2, pandas 2.2.3, networkx 3.4.2, pydantic 2.12.5; matplotlib 3.10.1 (figures)",\texttt{t4\_versions.json}; \texttt{sampling\_log.json}; analysis scripts
 seeds,CG anneal velocity seed,"4928459 (\texttt{velocity create 0.01}, all 327 networks)",\texttt{001\_Anneal.in}
 seeds,CG tensile velocity seeds,"4928459 (original), 7391052 (replicate 2), 2648317 (replicate 3), 9184735 (replicate 4)",tensile inputs; campaign records

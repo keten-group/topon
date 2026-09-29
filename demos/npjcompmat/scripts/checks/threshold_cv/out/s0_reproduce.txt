@@ -1,0 +1,13 @@
+quadrant sizes [128, 35, 35, 129] (reference 128/35/35/129)
+55 cells vs figure6_stats.csv: max|d diff| 0.0e+00  max|p diff| 0.0e+00  max|q diff| 0.0e+00
+BH-significant cells: 31 of 55 (reference 31)
+44 correlations vs figure6_continuous.csv: max |difference| 0.0e+00
+  e.g. max betweenness r(UTS) -0.384, mean eigenvector centrality r(UTS) +0.637
+dangling-end fraction range 0.000-0.222 (0 to 22% in the paper)
+r(dangling-end fraction, bridges) = 0.9933
+partial r(lambda_2, UTS | dangling-end fraction) = 0.5557 (0.56 in the paper)
+partial r(lambda_2_core, UTS | dangling-end fraction) = 0.5650 (0.56 in the paper)
+r(UTS, toughness) = 0.783
+reliability of the 12-pull mean, uts: axes fixed (new seeds) 0.9331; axes random (new loading directions) 0.4973
+reliability of the 12-pull mean, toughness: axes fixed (new seeds) 0.8045; axes random (new loading directions) 0.2070
+(table_variance.tex: axes fixed 0.93 / 0.80, axes random 0.50 / 0.21)

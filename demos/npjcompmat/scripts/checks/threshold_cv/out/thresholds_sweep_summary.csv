@@ -1,0 +1,10 @@
+percentile,sizes,bh_sig,orig_sig_kept_same_sign,orig_sig_sign_flipped,lost
+30,70/28/28/201,34,30,0,H Q1->Q3 (q=0.132)
+35,83/32/32/180,41,30,0,H Q1->Q3 (q=0.067)
+40,93/38/38/158,35,31,0,
+45,115/32/32/148,31,31,0,
+50,128/35/35/129,31,31,0,
+55,147/33/33/114,28,28,0,"lambda_2,core Q1->Q3 (q=0.142); lambda_2,core Q1->Q4 (q=0.068); sigma_k Q3->Q4 (q=0.067)"
+60,163/33/33/98,31,28,0,"lambda_2,core Q1->Q3 (q=0.058); lambda_2,core Q1->Q4 (q=0.057); max betweenness Q2->Q4 (q=0.051)"
+65,178/34/34/81,30,25,0,"lambda_2,core Q1->Q3 (q=0.269); lambda_2,core Q1->Q4 (q=0.395); bridges Q3->Q4 (q=0.095); D_bi Q3->Q4 (q=0.067); sigma_k Q3->Q4 (q=0.279); assortativity Q2->Q4 (q=0.269)"
+70,197/32/32/66,33,27,0,"lambda_2,core Q1->Q3 (q=0.475); lambda_2,core Q1->Q4 (q=0.810); sigma_k Q3->Q4 (q=0.382); assortativity Q2->Q4 (q=0.153)"

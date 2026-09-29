@@ -1,0 +1,386 @@
+scheme,key,metric,transition,tr,n_from,n_to,cohens_d,welch_p,bh_q,sig_bh
+"P50 (median, published)",lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,0.37553778738102694,0.036165891235270205,0.062160125560620665,False
+"P50 (median, published)",lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,0.28240595244288463,0.11793867923195689,0.17531425291236835,False
+"P50 (median, published)",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,1.1617123559306237,5.422713482589309e-09,2.98249241542412e-08,True
+"P50 (median, published)",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,1.101118673708012,1.0369606477244063e-07,4.0737739732030246e-07,True
+"P50 (median, published)",lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,128,129,1.4254706549630194,1.1675082705085083e-24,6.421295487796795e-23,True
+"P50 (median, published)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,128,35,0.2967300808598089,0.061904307576013354,0.09727819761944956,False
+"P50 (median, published)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.25488856405243265,0.298685726738891,0.38516347202991685,False
+"P50 (median, published)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,0.5193551900037356,0.014087213237649353,0.02499344284099079,True
+"P50 (median, published)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,0.0581165547001641,0.7562676882353272,0.7702726454248703,False
+"P50 (median, published)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,128,129,0.3685490467319289,0.003495948076881546,0.006867040865303036,True
+"P50 (median, published)",avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.31628094000278223,0.05909118175953917,0.09558867637572512,False
+"P50 (median, published)",avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,0.0049096188329965625,0.9812389976669758,0.9812389976669759,False
+"P50 (median, published)",avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-1.1648156443244921,7.319488717435047e-09,3.404944818347178e-08,True
+"P50 (median, published)",avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-1.1114958049586867,6.559706150852513e-07,2.1222578723346365e-06,True
+"P50 (median, published)",avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,128,129,-1.285786013045779,1.0009633209332787e-20,1.835099421711011e-19,True
+"P50 (median, published)",cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.21191835848194962,0.30871660932642087,0.3858957616580261,False
+"P50 (median, published)",cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.2800723339556578,0.15597443388306786,0.21865393371714678,False
+"P50 (median, published)",cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,0.1853139839735782,0.34996605545560455,0.42773629000129443,False
+"P50 (median, published)",cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,0.11438276000089578,0.5776945848339341,0.6354640433173275,False
+"P50 (median, published)",cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,128,129,-0.09851231532198992,0.4304490524860355,0.5037169763134458,False
+"P50 (median, published)",max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.28683883526912657,0.05070164330460421,0.08450273884100701,False
+"P50 (median, published)",max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,0.08889217140382101,0.6367291365696699,0.6734635098333046,False
+"P50 (median, published)",max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-0.6749313685771812,3.902802462116771e-05,0.0001073270677082112,True
+"P50 (median, published)",max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-0.44649690106056134,0.012530044721131988,0.022971748655408644,True
+"P50 (median, published)",max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,128,129,-0.6624630127779078,2.682273784736503e-07,9.22031613503173e-07,True
+"P50 (median, published)",num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.07869086263863793,0.6613089588832426,0.6862640139354405,False
+"P50 (median, published)",num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.5962851506998222,0.003234521756241586,0.006588840614566193,True
+"P50 (median, published)",num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-0.611740975193377,0.0036326567536695215,0.0068895214293732306,True
+"P50 (median, published)",num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-1.1494810055606681,7.42897051275748e-09,3.404944818347178e-08,True
+"P50 (median, published)",num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,128,129,-1.2218490768328263,1.9770858871802188e-19,2.7184930948728007e-18,True
+"P50 (median, published)",deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.10165178866071235,0.6049638531505375,0.6524119984956777,False
+"P50 (median, published)",deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.6753177207674147,0.0019204019540681606,0.004400921144739535,True
+"P50 (median, published)",deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-0.3833786405637696,0.11195633467224395,0.17104440019370604,False
+"P50 (median, published)",deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-0.9861051898318647,1.9278056129620168e-07,7.068620580860728e-07,True
+"P50 (median, published)",deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,128,129,-1.1486508043837524,1.5659741476436682e-17,1.435476302006696e-16,True
+"P50 (median, published)",deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.13872336150624504,0.42504341801715706,0.5037169763134458,False
+"P50 (median, published)",deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.5282517909792662,0.003025443001190178,0.006399975579440761,True
+"P50 (median, published)",deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-0.9127916112786256,0.0002688795693895547,0.0007042083960202623,True
+"P50 (median, published)",deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-1.1162232270532018,1.416735564389332e-13,9.740057005176658e-13,True
+"P50 (median, published)",deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,128,129,-1.3418774236831896,8.313151390343616e-22,2.2861166323444943e-20,True
+"P50 (median, published)",deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.12760321210756623,0.5361084160875551,0.6017543445880721,False
+"P50 (median, published)",deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.26499013100476704,0.15902104270337947,0.21865393371714678,False
+"P50 (median, published)",deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-0.8884867308059339,0.0028301868423243996,0.0062264110531136795,True
+"P50 (median, published)",deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-0.7975499364192339,3.960884439677484e-08,1.6757588014020124e-07,True
+"P50 (median, published)",deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,128,129,-1.0196612993965182,4.6225882950968273e-14,3.6320336604332214e-13,True
+"P50 (median, published)",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,0.21469288178205848,0.3011278054052077,0.38516347202991685,False
+"P50 (median, published)",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,0.22492266421946977,0.20011253510189192,0.26844364464887943,False
+"P50 (median, published)",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,1.0636136620938161,2.1582102351772314e-06,6.594531274152651e-06,True
+"P50 (median, published)",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,0.9156427558478865,3.6332323160954607e-06,1.0517251441328966e-05,True
+"P50 (median, published)",avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,128,129,1.1891525316937963,1.5951829131434359e-18,1.7547012044577794e-17,True
+"P50 (median, published)",assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,128,35,-0.22939951429176234,0.15359973413191047,0.21865393371714678,False
+"P50 (median, published)",assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,35,129,-0.14049016163358635,0.4620292573913837,0.5294085240942937,False
+"P50 (median, published)",assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,128,35,-0.617853908184819,0.0006969000900325224,0.001742250225081306,True
+"P50 (median, published)",assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,35,129,-0.6060380768327788,0.0008935365382127252,0.0021367178087695602,True
+"P50 (median, published)",assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,128,129,-0.773633416344061,2.377747039765298e-09,1.4530676354121263e-08,True
+P40,lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,0.4039037949202109,0.03384810994537392,0.05112050238353063,False
+P40,lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,0.4018569859527218,0.021368557363893637,0.03561426227315606,True
+P40,lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,1.1894553789039866,5.4001205159621414e-09,2.284666372137829e-08,True
+P40,lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,1.1843029842933301,1.0573164757035264e-08,4.153743297406711e-08,True
+P40,lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,93,158,1.5657259147486147,1.6083922110430683e-24,8.846157160736876e-23,True
+P40,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,93,38,0.2817860425058975,0.10414592813916357,0.13423293669537664,False
+P40,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.3168476639985094,0.18524746699690478,0.221491536626734,False
+P40,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,0.6217777086030917,0.003504479547416034,0.006646426727857996,True
+P40,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,0.16514581301644765,0.37209708249258466,0.4263612403560866,False
+P40,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,93,158,0.45767949510874184,0.0014515706559062296,0.0029569031879571345,True
+P40,avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.45632531035110996,0.01351944808802208,0.023460051545677783,True
+P40,avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.045378777961021306,0.8108876665774137,0.8108876665774137,False
+P40,avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-1.2792931419223668,2.408570658054127e-10,1.1039282182748082e-09,True
+P40,avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-1.037780632086738,1.9414698455052303e-06,5.620044289620403e-06,True
+P40,avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,93,158,-1.457319345429168,1.2481371178442946e-19,1.7161885370359052e-18,True
+P40,cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.09974233364678436,0.6309624057297655,0.6673640829834059,False
+P40,cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.43766054627065,0.013649484535667073,0.023460051545677783,True
+P40,cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,0.41659002245730936,0.0343901561489206,0.05112050238353063,False
+P40,cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,0.04808706205137102,0.8013840532869316,0.8108876665774137,False
+P40,cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,93,158,-0.04932013305821743,0.7001412687991095,0.7265616940368118,False
+P40,max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.2349995477917532,0.1375686680952036,0.1719608351190045,False
+P40,max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.1019160210427716,0.6057310689955426,0.653239388132448,False
+P40,max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-0.6253206887573554,0.00042493231058707206,0.0010161424818386506,True
+P40,max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-0.6845496295579858,0.00016828662435002857,0.00046278821696257855,True
+P40,max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,93,158,-0.8166627445536586,9.575619300142599e-08,3.5110604100522864e-07,True
+P40,num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.36979338091673314,0.04841121343741606,0.06827222407840727,False
+P40,num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.6561332307798412,0.0002365895103818372,0.0006196391938571927,True
+P40,num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-0.5788789397603472,0.004507627171800105,0.008263983148300192,True
+P40,num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-0.8709518416974495,2.647471557858454e-07,8.750016491686656e-07,True
+P40,num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,93,158,-1.2047292830291505,1.5628862034707171e-18,1.7191748238177888e-17,True
+P40,deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.3159137898429369,0.10494575050729447,0.13423293669537664,False
+P40,deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.645792515209222,0.0005830805250653881,0.0013362262032748477,True
+P40,deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-0.42637108165510246,0.06170981389842561,0.08485099411033521,False
+P40,deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-0.8008864086440989,2.7045505519758754e-07,8.750016491686656e-07,True
+P40,deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,93,158,-1.086403821252607,2.1193069341733388e-17,1.6651697339933377e-16,True
+P40,deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.1372845036263737,0.43671619887608004,0.49019165179968166,False
+P40,deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.5589543888100087,0.0006996941437939899,0.0015393271163467778,True
+P40,deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-0.8832768589091293,0.0003659341054778446,0.0009148352636946115,True
+P40,deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-1.098166265180005,1.1868193252004337e-17,1.0879177147670642e-16,True
+P40,deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,93,158,-1.2597551082392586,5.9872410317332546e-24,1.646491283726645e-22,True
+P40,deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,0.11016373596375231,0.5416161978794714,0.5957778176674186,False
+P40,deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.410228987346868,0.02585512507675598,0.040939719813489046,True
+P40,deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-0.6149380991987689,0.0260525489722203,0.040939719813489046,True
+P40,deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-0.911715000296943,1.9757743462206453e-15,1.2074176560237277e-14,True
+P40,deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,93,158,-0.9549566812852532,2.1713169545989719e-16,1.4927804062867932e-15,True
+P40,avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,0.20074933550646673,0.302109470829321,0.3535323594811203,False
+P40,avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,0.31547900494144926,0.07124258953029253,0.0955693274186851,False
+P40,avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,1.1494894698486728,1.7614526784928225e-06,5.382216517616958e-06,True
+P40,avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,1.11178821555686,7.326115595127216e-11,3.6630577975636074e-10,True
+P40,avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,93,158,1.3295354404116515,2.107667912857949e-23,3.864057840239574e-22,True
+P40,assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,93,38,-0.37482814664192515,0.04374648145852584,0.06331727579523476,False
+P40,assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,38,158,-0.2773110558508545,0.17446818911094822,0.21323889780227004,False
+P40,assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,93,38,-0.627426147641835,0.0032652733657532753,0.006413929825586791,True
+P40,assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,38,158,-0.6015492948626825,0.0008135306864899911,0.0017209302983442118,True
+P40,assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,93,158,-0.9548593606477142,1.0453425292548608e-11,5.7493839109017344e-11,True
+P60,lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,0.5809134159374685,0.0006213381444346668,0.001485808606256812,True
+P60,lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,0.19076368847782132,0.3028234248518348,0.37852928106479344,False
+P60,lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,1.2377630059296116,5.316403982867425e-10,3.655027738221355e-09,True
+P60,lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,0.8909400224654133,5.265093224686254e-06,1.8843365956624832e-05,True
+P60,lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,163,98,1.3971005878825316,1.0915782612016701e-22,3.001840218304593e-21,True
+P60,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,163,33,0.1861493730902144,0.1997009725459423,0.2615131783339721,False
+P60,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.22751632800116278,0.33412515728654113,0.39949747066869046,False
+P60,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,0.4274980008081537,0.03660736614320825,0.057525861082184396,False
+P60,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,0.07821080335108087,0.6692805166745355,0.7217731062176364,False
+P60,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,163,98,0.25476072595751686,0.03547226896542316,0.05738161156171393,False
+P60,avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.47511018228586127,0.001545818175726981,0.003542499986040998,True
+P60,avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.11303783531042173,0.5849995467603162,0.6566321443228039,False
+P60,avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-1.0705681479876872,7.030521543094329e-09,3.866786848701881e-08,True
+P60,avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-0.9452439678940583,6.1749332470317815e-06,1.9977725210985175e-05,True
+P60,avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,163,98,-1.2306704340652028,2.0947616170421064e-21,3.193131399517778e-20,True
+P60,cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,0.038081032799254115,0.8531987980277397,0.8531987980277397,False
+P60,cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.10855864663967861,0.5838201988300289,0.6566321443228039,False
+P60,cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,0.08734157990388074,0.6488145921732884,0.7136960513906172,False
+P60,cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-0.05982881919001935,0.7745996637617895,0.8192881059018927,False
+P60,cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,163,98,-0.024128196528683234,0.8519288787108898,0.8531987980277397,False
+P60,max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.26542351157171645,0.05935283863390398,0.08370272115037741,False
+P60,max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,0.050348197361338304,0.7914341976119293,0.8212996390312475,False
+P60,max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-0.6057374438020617,0.00015064887150165993,0.0003945565682186331,True
+P60,max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-0.39185975784155747,0.030622061407338343,0.051036769012230566,False
+P60,max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,163,98,-0.585719475980453,1.9996208593401602e-06,7.8556533759792e-06,True
+P60,num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.38146976265199517,0.030096312869632415,0.051036769012230566,False
+P60,num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.5895421669155425,0.007267762716547673,0.01427596247893293,True
+P60,num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-0.8292942666791462,0.00019536075855298635,0.0004884018963824658,True
+P60,num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-1.1141498080347234,8.953242897239249e-08,3.7879104565242977e-07,True
+P60,num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,163,98,-1.4485193102611025,2.330756697167944e-23,1.2819161834423692e-21,True
+P60,deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.5362209131474422,0.0056526543080002555,0.011514666182963484,True
+P60,deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.6845364092984573,0.0037857290507656203,0.008008272992004196,True
+P60,deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-0.5451617390973256,0.03893787381565182,0.059488418329468065,False
+P60,deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-0.8348699516445476,1.025171367088003e-05,3.132468066102231e-05,True
+P60,deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,163,98,-1.381955394714947,1.9562135589649245e-19,2.151834914861417e-18,True
+P60,deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.39056136227368254,0.051810732969736366,0.07498921877198685,False
+P60,deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.493417479215581,0.01136033508239688,0.02082728098439428,True
+P60,deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-1.1764583035901868,2.1782614989210865e-05,5.9902191220329884e-05,True
+P60,deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-1.1042979751250284,1.026647390848613e-09,6.27395627740819e-09,True
+P60,deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,163,98,-1.6155637844986814,2.3222773814674748e-21,3.193131399517778e-20,True
+P60,deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.13759674398048263,0.5348424187159406,0.6258794261569518,False
+P60,deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.32060473966990033,0.11883313385060758,0.16339555904458541,False
+P60,deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-0.9980156186725909,0.0019115131133853362,0.00420532884944774,True
+P60,deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-0.9325184589977,6.5796502912886e-08,3.015673050173942e-07,True
+P60,deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,163,98,-1.2801085011652131,3.2343318108858116e-14,2.5412607085531375e-13,True
+P60,avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,0.22089168697347075,0.30990899340268135,0.3787776586032772,False
+P60,avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,0.20403001187024836,0.2936019222279848,0.3755373423846317,False
+P60,avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,1.101579524087907,5.4817064601090425e-06,1.8843365956624832e-05,True
+P60,avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,0.9234408790260977,1.4016375759436593e-05,4.057371930363225e-05,True
+P60,avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,163,98,1.2497838057301505,1.3039564818514093e-16,1.1952934416971253e-15,True
+P60,assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,163,33,-0.32581700603345937,0.051521466346574084,0.07498921877198685,False
+P60,assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,33,98,-0.27980160418882805,0.16328403606892486,0.21903956058026505,False
+P60,assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,163,33,-0.47510696415911274,0.009224289360614698,0.017494341890820976,True
+P60,assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,33,98,-0.4571790340512832,0.01785670448063824,0.03168124988500333,True
+P60,assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,163,98,-0.7432049191573784,1.0248229875430154e-08,5.124114937715077e-08,True
+"tercile (both axes, middle dropped)",lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,79,75,1.9139229181944495,2.088931439177356e-23,1.148912291547546e-22,True
+"tercile (both axes, middle dropped)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,79,75,0.5085232504024727,0.0018253433504965215,0.0020078776855461736,True
+"tercile (both axes, middle dropped)",avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,79,75,-1.8649696120735284,2.193151706155976e-22,8.041556255905245e-22,True
+"tercile (both axes, middle dropped)",cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,79,75,0.0436528453870474,0.7875189617668078,0.7875189617668078,False
+"tercile (both axes, middle dropped)",max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,79,75,-0.9370814052913569,3.121404946902145e-08,3.815050490658177e-08,True
+"tercile (both axes, middle dropped)",num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,79,75,-2.0279105335544396,2.7349106121746798e-25,3.008401673392148e-24,True
+"tercile (both axes, middle dropped)",deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,79,75,-1.7687013600651011,4.5973506789178433e-20,8.428476244682712e-20,True
+"tercile (both axes, middle dropped)",deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,79,75,-2.0176740017117107,8.415621651009538e-22,2.314295954027623e-21,True
+"tercile (both axes, middle dropped)",deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,79,75,-1.4868406376202314,3.782602002983103e-14,5.944088861830591e-14,True
+"tercile (both axes, middle dropped)",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,79,75,1.852529175100061,3.910545523512488e-21,8.603200151727474e-21,True
+"tercile (both axes, middle dropped)",assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,79,1,,,,False
+"tercile (both axes, middle dropped)",assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,2,75,,,,False
+"tercile (both axes, middle dropped)",assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,79,2,,,,False
+"tercile (both axes, middle dropped)",assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,1,75,,,,False
+"tercile (both axes, middle dropped)",assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,79,75,-1.043214211788981,1.3119574965145615e-09,1.803941557707522e-09,True
+tercile within halves,lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,0.6382038402167418,0.001252470841495971,0.0021526842588212003,True
+tercile within halves,lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,0.4218825601772364,0.029078648892421996,0.042087518133768674,True
+tercile within halves,lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,1.6131375431344634,2.4879134578165884e-13,1.0525787706147105e-12,True
+tercile within halves,lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,1.6981849875054649,1.4335643152997188e-14,8.760670815720504e-14,True
+tercile within halves,lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,79,75,1.9139229181944495,2.088931439177356e-23,5.744561457737729e-22,True
+tercile within halves,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,54,54,0.3932862627399122,0.04367373719744434,0.05858672063071802,False
+tercile within halves,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.4091500272994434,0.03425200189319407,0.04709650260314185,True
+tercile within halves,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,0.7193233846301492,0.00030353303256021275,0.0005962255996718465,True
+tercile within halves,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-0.008591846672809446,0.9641459856896484,0.9641459856896484,False
+tercile within halves,lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,79,75,0.5085232504024727,0.0018253433504965215,0.003042238917494202,True
+tercile within halves,avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.6502878767296033,0.0010521197057849023,0.0019126232682411429,True
+tercile within halves,avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.10283033818495192,0.5908302130008714,0.6249165714432293,False
+tercile within halves,avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-1.6658528374921562,6.622183559642668e-14,3.035167464836223e-13,True
+tercile within halves,avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-1.3137375489043088,3.9812580092059454e-10,1.2880540618019234e-09,True
+tercile within halves,avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,79,75,-1.8649696120735284,2.193151706155976e-22,4.020778127952623e-21,True
+tercile within halves,cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.15251778095533158,0.429890214945998,0.4728792364405978,False
+tercile within halves,cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.17840423689206572,0.3515888338169443,0.39464052775371294,False
+tercile within halves,cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,0.2970924878357949,0.12570020612378416,0.1571252576547302,False
+tercile within halves,cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-0.05875425346845505,0.7585934290867926,0.7872195962221433,False
+tercile within halves,cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,79,75,0.0436528453870474,0.7875189617668078,0.8021026462439709,False
+tercile within halves,max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.2576876612636571,0.1839263637599146,0.21991195666946312,False
+tercile within halves,max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,0.146188788533882,0.44498033869339393,0.4798807574144444,False
+tercile within halves,max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-0.959918899353384,2.7862278054912644e-06,7.297263300096168e-06,True
+tercile within halves,max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-0.5507386922228921,0.004694516436649272,0.00759407070634441,True
+tercile within halves,max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,79,75,-0.9370814052913569,3.121404946902145e-08,9.035645898927262e-08,True
+tercile within halves,num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.4196581633947837,0.031423881436905735,0.04431573023153373,True
+tercile within halves,num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.7520948026499206,0.0001432739344873861,0.0003152026558722494,True
+tercile within halves,num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-0.8029954235008245,6.336879237548384e-05,0.00014522014919381713,True
+tercile within halves,num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-2.0955788889630798,2.968186180771799e-19,2.332146284892128e-18,True
+tercile within halves,num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,79,75,-2.0279105335544396,2.7349106121746798e-25,1.5042008366960737e-23,True
+tercile within halves,deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.43442765002927775,0.026094497752035425,0.03880920415628702,True
+tercile within halves,deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.8510395523748994,2.0202958135480065e-05,5.050739533870017e-05,True
+tercile within halves,deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-0.689201751799747,0.0005567614115159986,0.0010559268149441354,True
+tercile within halves,deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-1.6655964356076773,4.017764268888755e-14,2.0088821344443772e-13,True
+tercile within halves,deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,79,75,-1.7687013600651011,4.5973506789178433e-20,4.214238122341357e-19,True
+tercile within halves,deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.37030246762307767,0.057037282241173444,0.07295466333173348,False
+tercile within halves,deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.6413725589187146,0.001078024023917735,0.0019126232682411429,True
+tercile within halves,deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-1.1198236565767954,1.355568748952076e-07,3.727814059618209e-07,True
+tercile within halves,deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-2.0987168425637277,1.4705669255647093e-18,1.0110147613257377e-17,True
+tercile within halves,deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,79,75,-2.0176740017117107,8.415621651009538e-22,1.1571479770138114e-20,True
+tercile within halves,deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.23379848325562608,0.22737871956369646,0.2660814803404959,False
+tercile within halves,deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.3823575645036546,0.047478408145258943,0.06217410590450576,False
+tercile within halves,deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-0.764510162337546,0.00017946066788779584,0.00036556802717884336,True
+tercile within halves,deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-1.6354776104453876,3.6527419692075163e-13,1.4350057736172385e-12,True
+tercile within halves,deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,79,75,-1.4868406376202314,3.782602002983103e-14,2.0088821344443772e-13,True
+tercile within halves,avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,0.4576538904606642,0.019277437059996436,0.030293115379994403,True
+tercile within halves,avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,0.2814486698103789,0.1430271024601576,0.17481090300685928,False
+tercile within halves,avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,1.5872567487793854,1.4475138983450428e-12,5.30755096059849e-12,True
+tercile within halves,avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,1.4413812325878945,1.4421687513924271e-11,4.957455082911468e-11,True
+tercile within halves,avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,79,75,1.852529175100061,3.910545523512488e-21,4.3016000758637367e-20,True
+tercile within halves,assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,54,54,-0.4343031837807527,0.026108010068774903,0.03880920415628702,True
+tercile within halves,assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,55,55,-0.17882604083700251,0.35055514755291817,0.39464052775371294,False
+tercile within halves,assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,54,54,-0.8220034586033532,4.370774617400038e-05,0.00010451852345956613,True
+tercile within halves,assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,55,55,-0.7439173036630647,0.00017065772760146533,0.0003610067314646382,True
+tercile within halves,assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,79,75,-1.043214211788981,1.3119574965145615e-09,4.0087590171278266e-09,True
+"mixed: UTS P40, T P60",lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,0.3197434544402859,0.27745726142204113,0.33055273386631234,False
+"mixed: UTS P40, T P60",lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,0.42959565065950406,0.0031901755775226373,0.006498505806064632,True
+"mixed: UTS P40, T P60",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,1.1627662695452023,6.37152575702175e-14,4.380423957952453e-13,True
+"mixed: UTS P40, T P60",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,1.2486316122725458,0.001187128739117543,0.002611683226058594,True
+"mixed: UTS P40, T P60",lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,121,121,1.536092312818022,4.020354538175179e-26,2.2111949959963485e-24,True
+"mixed: UTS P40, T P60",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,121,10,0.30913069097328566,0.12055697016949095,0.16576583398305006,False
+"mixed: UTS P40, T P60",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.17314052098025093,0.2691919849632566,0.3290124260662025,False
+"mixed: UTS P40, T P60",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,0.4891173411353777,0.0010917843403195266,0.0025020057798989153,True
+"mixed: UTS P40, T P60",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,0.050490584262443475,0.8296154971644631,0.8466544895224563,False
+"mixed: UTS P40, T P60",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,121,121,0.3795815614155321,0.00348585499716888,0.0068472151730103,True
+"mixed: UTS P40, T P60",avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.5429803455143503,0.08477632975578955,0.12601886855590338,False
+"mixed: UTS P40, T P60",avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.2570620165157416,0.09047441660456317,0.1309498135066046,False
+"mixed: UTS P40, T P60",avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-1.1219795447958887,2.0878008178852898e-13,1.275878277596566e-12,True
+"mixed: UTS P40, T P60",avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.9501220485350178,0.02628462959782328,0.043807715996372135,True
+"mixed: UTS P40, T P60",avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,121,121,-1.4233211757091273,5.523359107098549e-23,1.0126158363014007e-21,True
+"mixed: UTS P40, T P60",cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,0.15768888365170045,0.7045433402797745,0.7598016414781882,False
+"mixed: UTS P40, T P60",cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.12738044721347663,0.38493811763312125,0.43207339734329936,False
+"mixed: UTS P40, T P60",cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,0.159872796048929,0.28247233621303053,0.33055273386631234,False
+"mixed: UTS P40, T P60",cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.12342402646204531,0.7548729991514779,0.79842336448714,False
+"mixed: UTS P40, T P60",cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,121,121,0.027425178838811407,0.8312607715311389,0.8466544895224563,False
+"mixed: UTS P40, T P60",max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.2512522290604609,0.19844164130262898,0.25986405408677604,False
+"mixed: UTS P40, T P60",max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,0.011451372487743174,0.9374087797945196,0.9374087797945196,False
+"mixed: UTS P40, T P60",max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-0.717354680816263,3.4865159178710467e-07,1.2783891698860506e-06,True
+"mixed: UTS P40, T P60",max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.5437472622043199,0.040244681594460846,0.06510169081456901,False
+"mixed: UTS P40, T P60",max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,121,121,-0.7256830372007783,5.064650617563809e-08,2.1427367997385345e-07,True
+"mixed: UTS P40, T P60",num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.513789360959949,0.0982709071632328,0.13858717676866164,False
+"mixed: UTS P40, T P60",num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.6436495910121263,2.8009828763107948e-05,8.108108326162827e-05,True
+"mixed: UTS P40, T P60",num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-0.6384366812923418,5.535419050582654e-05,0.000152224023891023,True
+"mixed: UTS P40, T P60",num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.830961365667957,0.007171087664982213,0.01314699405246739,True
+"mixed: UTS P40, T P60",num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,121,121,-1.3433296500588296,2.964124596774153e-21,4.0756713205644605e-20,True
+"mixed: UTS P40, T P60",deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.7248260826229993,0.013966941356575606,0.024005680456614324,True
+"mixed: UTS P40, T P60",deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.6795367417810892,1.0538624076947604e-05,3.622652026450739e-05,True
+"mixed: UTS P40, T P60",deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-0.5027222140779464,0.0022128004970012787,0.004680924128271936,True
+"mixed: UTS P40, T P60",deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.6363250407683463,0.004854213122829773,0.009206266267435776,True
+"mixed: UTS P40, T P60",deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,121,121,-1.299495636184176,6.216727558591125e-20,5.698666928708532e-19,True
+"mixed: UTS P40, T P60",deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.4052389555965323,0.08248255488715568,0.1260150144109323,False
+"mixed: UTS P40, T P60",deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.5787499172429007,6.016896889700068e-05,0.00015758539473023988,True
+"mixed: UTS P40, T P60",deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-0.9650292613954856,5.892684336996819e-08,2.3149831323916076e-07,True
+"mixed: UTS P40, T P60",deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-1.0016764155753441,1.3871590280345559e-08,6.357812211825048e-08,True
+"mixed: UTS P40, T P60",deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,121,121,-1.4778231093642271,4.352233989093816e-23,1.0126158363014007e-21,True
+"mixed: UTS P40, T P60",deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.40916043287938003,0.35133438364585545,0.40257064792754266,False
+"mixed: UTS P40, T P60",deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.3835396696033451,0.007748965337748942,0.013748164308909412,True
+"mixed: UTS P40, T P60",deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-0.7947212458751419,1.792574179305401e-05,5.477309992322059e-05,True
+"mixed: UTS P40, T P60",deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.7214548718909857,0.000643269964297112,0.00160817491074278,True
+"mixed: UTS P40, T P60",deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,121,121,-1.1300314630841466,3.577471056409798e-15,2.8108701157505552e-14,True
+"mixed: UTS P40, T P60",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.16767217346611663,0.6871073687888469,0.7558181056677316,False
+"mixed: UTS P40, T P60",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,0.2555669536978572,0.07231085998059014,0.11363135139807023,False
+"mixed: UTS P40, T P60",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,1.2100280142557134,1.9393929878147434e-12,1.0666661432981089e-11,True
+"mixed: UTS P40, T P60",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,1.2626014355413873,0.00098843247030737,0.002363642863778493,True
+"mixed: UTS P40, T P60",avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,121,121,1.338072744883022,1.0559357321028037e-20,1.1615293053130841e-19,True
+"mixed: UTS P40, T P60",assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,121,10,-0.4070337723173601,0.2643679447512349,0.3290124260662025,False
+"mixed: UTS P40, T P60",assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,75,121,-0.19013665156932213,0.21224603156816002,0.2714774822383442,False
+"mixed: UTS P40, T P60",assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,121,75,-0.6752752282040504,1.5894598880343788e-05,5.142370225993579e-05,True
+"mixed: UTS P40, T P60",assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,10,121,-0.503979080553987,0.17970291329446053,0.24106488368769094,False
+"mixed: UTS P40, T P60",assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,121,121,-0.9145278444094543,1.2972158958623098e-11,6.48607947931155e-11,True
+"mixed: UTS P60, T P40",lambda_2,Algebraic connectivity (lambda_2),"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,0.5506219706404364,0.00014606908815880082,0.0004228315709860023,True
+"mixed: UTS P60, T P40",lambda_2,Algebraic connectivity (lambda_2),"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,0.246501065090004,0.35495535573343695,0.4067196784445632,False
+"mixed: UTS P60, T P40",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,1.2666517858464361,5.288393907864122e-05,0.00017109509701913336,True
+"mixed: UTS P60, T P40",lambda_2,Algebraic connectivity (lambda_2),"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,1.0478042302432489,1.0699982403878124e-11,5.2477022650339275e-11,True
+"mixed: UTS P60, T P40",lambda_2,Algebraic connectivity (lambda_2),Total (Q1->Q4),Q1->Q4,116,116,1.5306941767547682,5.915786781846701e-25,3.2536827300156853e-23,True
+"mixed: UTS P60, T P40",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (weak, Q1->Q2)",Q1->Q2,116,80,0.2684692842337964,0.04978296395081338,0.07605730603596489,False
+"mixed: UTS P60, T P40",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-0.6692000163568961,0.1020887532272919,0.1439713186538732,False
+"mixed: UTS P60, T P40",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,0.7928857895542744,0.0193459222240702,0.03325080382262066,True
+"mixed: UTS P60, T P40",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)","Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,0.05285888766323356,0.7128578326401049,0.7539842460616495,False
+"mixed: UTS P60, T P40",lambda_2_core,"Algebraic connectivity excl. dangling ends (lambda_2,core)",Total (Q1->Q4),Q1->Q4,116,116,0.3137527914543944,0.017750149112540404,0.03149220003837813,True
+"mixed: UTS P60, T P40",avg_path_len,Mean shortest path length (L),"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.4429156650664281,0.0016569834353049374,0.003962351693120502,True
+"mixed: UTS P60, T P40",avg_path_len,Mean shortest path length (L),"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,0.05004449800059667,0.8774752075722607,0.8937247484532285,False
+"mixed: UTS P60, T P40",avg_path_len,Mean shortest path length (L),"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-1.2025818505073458,6.773917778168443e-05,0.0002069808209995913,True
+"mixed: UTS P60, T P40",avg_path_len,Mean shortest path length (L),"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-1.0250218604298331,1.245549280047098e-10,4.893229314470743e-10,True
+"mixed: UTS P60, T P40",avg_path_len,Mean shortest path length (L),Total (Q1->Q4),Q1->Q4,116,116,-1.3379391453475253,5.740148414813227e-20,6.31416325629455e-19,True
+"mixed: UTS P60, T P40",cycle_rank,Cycle rank,"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.16396742435400075,0.27369653568494223,0.3421206696061778,False
+"mixed: UTS P60, T P40",cycle_rank,Cycle rank,"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-0.4205113536069367,0.1560277020123859,0.20081034001099834,False
+"mixed: UTS P60, T P40",cycle_rank,Cycle rank,"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,0.3209498413579248,0.2972367503989476,0.35539176678135037,False
+"mixed: UTS P60, T P40",cycle_rank,Cycle rank,"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,0.044194563156763136,0.7648297261001595,0.7936912251982788,False
+"mixed: UTS P60, T P40",cycle_rank,Cycle rank,Total (Q1->Q4),Q1->Q4,116,116,-0.12185810787408978,0.35436195291553263,0.4067196784445632,False
+"mixed: UTS P60, T P40",max_betweenness,Max. betweenness centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.3893772369832739,0.0040075015652023755,0.009183857753588777,True
+"mixed: UTS P60, T P40",max_betweenness,Max. betweenness centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,0.1699786853878406,0.5127861227103059,0.5530046421385652,False
+"mixed: UTS P60, T P40",max_betweenness,Max. betweenness centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-0.736858489850849,0.0009965234585426906,0.002723734219261413,True
+"mixed: UTS P60, T P40",max_betweenness,Max. betweenness centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-0.3837530809955895,0.007375727488935254,0.015024630070053294,True
+"mixed: UTS P60, T P40",max_betweenness,Max. betweenness centrality,Total (Q1->Q4),Q1->Q4,116,116,-0.6857876753552706,4.2815033413414215e-07,1.4717667735861137e-06,True
+"mixed: UTS P60, T P40",num_bridges,Bridges,"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.30759393714144495,0.0343809640882939,0.05478515900323746,False
+"mixed: UTS P60, T P40",num_bridges,Bridges,"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-0.9990897952540483,0.0015891422518758524,0.003962351693120502,True
+"mixed: UTS P60, T P40",num_bridges,Bridges,"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-0.4660785434235956,0.10659215340642456,0.14651996691035013,False
+"mixed: UTS P60, T P40",num_bridges,Bridges,"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-1.1854787112115692,3.409822398017075e-14,2.083780354343768e-13,True
+"mixed: UTS P60, T P40",num_bridges,Bridges,Total (Q1->Q4),Q1->Q4,116,116,-1.468826956917037,1.7785013656642918e-23,3.2605858370512013e-22,True
+"mixed: UTS P60, T P40",deg_bimodality,Degree bimodality (D_bi),"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.2618437481896775,0.07907722848876862,0.11754723153735877,False
+"mixed: UTS P60, T P40",deg_bimodality,Degree bimodality (D_bi),"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-1.1051599047710627,0.004414283199337123,0.00971142303854167,True
+"mixed: UTS P60, T P40",deg_bimodality,Degree bimodality (D_bi),"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-0.020183314915753335,0.961456937941465,0.961456937941465,False
+"mixed: UTS P60, T P40",deg_bimodality,Degree bimodality (D_bi),"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-1.0185263640641655,1.1449532214619477e-11,5.2477022650339275e-11,True
+"mixed: UTS P60, T P40",deg_bimodality,Degree bimodality (D_bi),Total (Q1->Q4),Q1->Q4,116,116,-1.311031233203084,1.6236613801963181e-19,1.4883562651799584e-18,True
+"mixed: UTS P60, T P40",deg_std,Degree heterogeneity (sigma_k),"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.2357581632262909,0.10922397533317009,0.14651996691035013,False
+"mixed: UTS P60, T P40",deg_std,Degree heterogeneity (sigma_k),"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-0.7316223346163931,0.008110801575136013,0.01593193166544574,True
+"mixed: UTS P60, T P40",deg_std,Degree heterogeneity (sigma_k),"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-0.8295844685760366,0.0348632830020602,0.05478515900323746,False
+"mixed: UTS P60, T P40",deg_std,Degree heterogeneity (sigma_k),"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-1.2768366026197084,8.808615277791772e-18,6.921054861122106e-17,True
+"mixed: UTS P60, T P40",deg_std,Degree heterogeneity (sigma_k),Total (Q1->Q4),Q1->Q4,116,116,-1.5181355134923977,8.730038927699558e-24,2.4007607051173784e-22,True
+"mixed: UTS P60, T P40",deg_entropy,Degree entropy (H),"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.16377525421605565,0.2847674807751566,0.34804914316963587,False
+"mixed: UTS P60, T P40",deg_entropy,Degree entropy (H),"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-0.2976090359751492,0.3806289918360939,0.4186918910197033,False
+"mixed: UTS P60, T P40",deg_entropy,Degree entropy (H),"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-1.0237327074272056,0.08314379493135331,0.12033970319011664,False
+"mixed: UTS P60, T P40",deg_entropy,Degree entropy (H),"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-0.9756237237320734,6.475461735686039e-12,3.561503954627321e-11,True
+"mixed: UTS P60, T P40",deg_entropy,Degree entropy (H),Total (Q1->Q4),Q1->Q4,116,116,-1.187499916589815,4.624752165050747e-16,3.1795171134723884e-15,True
+"mixed: UTS P60, T P40",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,0.34105809854693947,0.02143889541201385,0.03573149235335642,True
+"mixed: UTS P60, T P40",avg_eigenvector_cent,Mean eigenvector centrality,"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,0.4340162266087885,0.15699717491768964,0.20081034001099834,False
+"mixed: UTS P60, T P40",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,0.9125457933614041,0.017340304430271392,0.03149220003837813,True
+"mixed: UTS P60, T P40",avg_eigenvector_cent,Mean eigenvector centrality,"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,0.9810672971455677,6.38176091711524e-11,2.699975772625678e-10,True
+"mixed: UTS P60, T P40",avg_eigenvector_cent,Mean eigenvector centrality,Total (Q1->Q4),Q1->Q4,116,116,1.3293807701254359,4.934805876581426e-20,6.31416325629455e-19,True
+"mixed: UTS P60, T P40",assortativity,Assortativity (r),"Toughening (weak, Q1->Q2)",Q1->Q2,116,80,-0.4686109268897447,0.0010399712473543577,0.002723734219261413,True
+"mixed: UTS P60, T P40",assortativity,Assortativity (r),"Toughening (strong, Q3->Q4)",Q3->Q4,15,116,-0.21520057386642213,0.3785861236442549,0.4186918910197033,False
+"mixed: UTS P60, T P40",assortativity,Assortativity (r),"Strengthening (brittle, Q1->Q3)",Q1->Q3,116,15,-0.6162145811319669,0.011378779896902494,0.021580444632056453,True
+"mixed: UTS P60, T P40",assortativity,Assortativity (r),"Strengthening (tough, Q2->Q4)",Q2->Q4,80,116,-0.40384094563717743,0.005321221555311839,0.01125643021315966,True
+"mixed: UTS P60, T P40",assortativity,Assortativity (r),Total (Q1->Q4),Q1->Q4,116,116,-0.8313580182723296,1.2776415015230602e-09,4.6846855055845545e-09,True

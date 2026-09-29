@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "topon"
-version = "0.3.0"
+version = "0.3.1"
 description = "A modular Python package for polymer network generation and LAMMPS input file creation"
 readme = "README.md"
 license = {text = "MIT"}

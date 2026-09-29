@@ -21,6 +21,8 @@ data/
 scripts/
   appendix_figures.py           Figs. 8 and 9 as a standalone script (same code as the notebook cell)
   make_timing_table.py          Table 1 (Appendix B) from data/derived/generator_benchmark/ -> tables_checks/
+  checks/threshold_cv/          threshold and cross-validation checks of the quadrant analysis (Figs. 6 and 7),
+                                with its own README and reference outputs in out/
   build_raw_data.py             how data/raw/ was packed from the simulation folders (a record, not needed to run)
   raw_data_analyses/            the scripts that made the derived data from raw simulation output
 figs/, figs_checks/, tables_checks/   outputs of the notebooks
@@ -90,6 +92,10 @@ the lattice imprint on strand orientation, true versus nominal stress, the four-
 statistics behind Figs. 6 and 7, Tg per cooling history (with the MSD lag scan), the chain statistics of the atomistic
 networks and the generator benchmark tables. The table at the top of the notebook lists every cell and its output
 files.
+
+The scripts in `scripts/checks/threshold_cv/` repeat the quadrant contrasts of Fig. 7 with other thresholds (e.g., the
+40th and 60th percentiles) and predict the UTS and toughness of held-out networks from the 11 descriptors with
+cross-validated ridge regression. Their README gives the commands and the results.
 
 ## Data provenance
 

@@ -1,0 +1,29 @@
+uts: var(3-axis mean) 0.1893; mean covariance between two axes 0.09414 -> axes-random reliability 0.497; fixed-axes reliability 0.933
+   CV R^2 of the 11 descriptors for the 3-axis mean 0.678; after removing the prediction, residual covariance between axes -0.03444 (mean correlation -0.138)
+   single axis (4-seed mean): CV R^2 0.321; axes-random reliability 0.248; fixed 0.900
+toughness: var(3-axis mean) 10.71; mean covariance between two axes 2.218 -> axes-random reliability 0.207; fixed-axes reliability 0.804
+   CV R^2 of the 11 descriptors for the 3-axis mean 0.357; after removing the prediction, residual covariance between axes -1.621 (mean correlation -0.068)
+   single axis (4-seed mean): CV R^2 0.121; axes-random reliability 0.080; fixed 0.773
+
+within-network axis correlations (data/derived/cg_structure/task1_within_network_axis_correlations.csv, panel f of the orientation check):
+                                      x                y  r_within  p_perm   n
+                      Q_aa strands (eq)            UTS_a     0.102   0.010 981
+                      Q_aa strands (eq)              T_a     0.039   0.324 981
+                Q_aa strands (MD start)            UTS_a     0.124   0.002 981
+                Q_aa strands (MD start)              T_a     0.086   0.027 981
+               scaffold strands along a            UTS_a     0.178   0.000 981
+               scaffold strands along a              T_a     0.165   0.000 981
+                 2-core strands along a            UTS_a     0.255   0.000 981
+                 2-core strands along a              T_a     0.199   0.000 981
+                min plane count along a            UTS_a     0.575   0.000 981
+                min plane count along a              T_a     0.541   0.000 981
+         2-core min plane count along a            UTS_a     0.659   0.000 981
+         2-core min plane count along a              T_a     0.616   0.000 981
+                  box length L_a/L (eq)            UTS_a     0.210   0.000 981
+                  box length L_a/L (eq)              T_a    -0.004   0.910 981
+box length L_a/L at pull start (seed 1)            UTS_a     0.199   0.000 981
+box length L_a/L at pull start (seed 1)              T_a    -0.048   0.235 981
+               scaffold strands along a       L_a/L (eq)    -0.310   0.000 981
+               scaffold strands along a        Q_aa (eq)    -0.031   0.423 981
+                             L_a/L (eq) L_a/L pull start     0.695   0.000 981
+                             L_a/L (eq)        Q_aa (eq)     0.513   0.000 981
