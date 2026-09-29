@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+### Paper companion
+
+- The paper companion now includes the as-built and equilibrated atomistic systems (LAMMPS data and DREIDING parameter
+  files) of the six glass-transition systems. `demos/npjcompmat/data/raw/atomistic_systems.tar.xz` holds the data,
+  coefficient and group files and the crosslink node and strand lists as built, and `atomistic_equilibrated.tar.xz`
+  the equilibrated data files the cooling runs start from. Unpacked next to `tg_cooling.tar.xz`, they give the layout
+  the cooling inputs read, and `data/raw/README.md` says how to run them.
+
+The package code is unchanged.
+
 ## 0.3.1
 
 ### Paper companion

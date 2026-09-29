@@ -17,7 +17,8 @@ data/
   npj_style_v1.py               plotting style
   convert_pkl_to_csv.py         builds csv/ from dataset.pkl
   derived/                      derived data read by the notebooks (data dictionary in data/derived/README.md)
-  raw/                          raw simulation output (see data/raw/README.md)
+  raw/                          raw simulation output and the atomistic systems of the cooling runs, as built
+                                and equilibrated (see data/raw/README.md)
 scripts/
   appendix_figures.py           Figs. 8 and 9 as a standalone script (same code as the notebook cell)
   make_timing_table.py          Table 1 (Appendix B) from data/derived/generator_benchmark/ -> tables_checks/
@@ -104,8 +105,9 @@ unchanged. `data/derived/` holds
 derived data only (per-pull mechanics, MSD per temperature and cooling history, statistics tables and compact subsets
 of the structure-analysis cache). `data/derived/README.md` gives the columns, units and origin of every file, and
 `data/derived/MANIFEST.csv` its source and SHA-256. The raw simulation output behind them is in `data/raw/` (the
-stress-strain files of all 3,924 pulls, the MSD files and inputs of the three cooling histories, and the LAMMPS inputs
-and generator settings of every coarse-grained network). Trajectories, restart files and logs are not included.
+stress-strain files of all 3,924 pulls, the MSD files and inputs of the three cooling histories with the as-built and
+equilibrated atomistic systems they start from, and the LAMMPS inputs and generator settings of every coarse-grained
+network). Trajectories, restart files and logs are not included.
 
 ## What is not regenerated here
 

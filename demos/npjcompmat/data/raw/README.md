@@ -1,10 +1,11 @@
 # `data/raw/`: raw simulation output
 
-The files behind the derived data in `data/derived/`, as written by LAMMPS and by the generator. `MANIFEST_raw.csv`
-lists every archived file with its size, SHA-256 and original path. `scripts/build_raw_data.py` assembled this folder
-and checked, before writing, that the peak stress of every archived stress-strain file equals the `uts` column of
-`data/derived/mechanics/mechanics_pulls_4seeds.csv` (all 3,924 pulls, exact). Unpack with `tar -xJf <file>` or
-Python's `tarfile`. Trajectories, restart files and logs are not included.
+The files behind the derived data in `data/derived/`, as written by LAMMPS and by the generator, and the atomistic
+systems the cooling runs start from. `MANIFEST_raw.csv` lists every archived file with its size, SHA-256 and original
+path. `scripts/build_raw_data.py` assembled this folder and checked, before writing, that the peak stress of every
+archived stress-strain file equals the `uts` column of `data/derived/mechanics/mechanics_pulls_4seeds.csv` (all 3,924
+pulls, exact). Unpack with `tar -xJf <file>` or Python's `tarfile`. Trajectories, restart files and logs are not
+included.
 
 ## Coarse-grained networks (Lennard-Jones units)
 
@@ -22,3 +23,32 @@ Python's `tarfile`. Trajectories, restart files and logs are not included.
 | File | Content |
 |---|---|
 | `tg_cooling.tar.xz` | `<system>/DP<n>/<history>/msd.dat` and the per-temperature inputs `simulation_<T>K.lmp` for the three cooling histories (`original`, `replicate2`, `replicate3`), plus `simulation_template.lmp`, which regenerates the original inputs. `msd.dat` columns: `Temp` (K), `Time` (fs), `MSD_all`, `MSD_allcm`, `MSD_node`, `MSD_nodecm` (Å²), `Density` (g cm⁻³) and `CohesiveEnergy`, one row per ps. PMTFPS is called FPDMS in the original folders. PMTFPS DP 10 at 280 K was run twice, and its `msd.dat` holds both runs (all 20 windows are used). |
+| `atomistic_systems.tar.xz` | `<system>/DP<n>/02_Chemistry/`, the six systems as built by topon, before the atoms are placed. `system.data` holds the atoms with their types and charges (all coordinates are still zero), and the bonds, angles and dihedrals. `system.in.settings` holds the DREIDING pair, bond, angle and dihedral coefficients, and `system.groups` the group `nodes` (see the note below). `system_node_info.txt` lists every crosslink node with its degree and atom ID, and `system_edge_info.txt` every strand with its two nodes and the IDs of its atoms. |
+| `atomistic_equilibrated.tar.xz` | `<system>/DP<n>/05_ExtendedSampling/ready2deform.data`, the six systems at the end of the equilibration described in the paper (an anneal from 1000 K to 400 K, then 25 ns at 300 K and 1 atm), with coordinates, image flags and velocities. The first step (305 K) of every cooling history starts from this file, and the replicate histories draw new velocities (their seeds are in their inputs). |
+
+The folder names are those the cooling inputs refer to. Seen from `<system>/DP<n>/<history>/`, the first step
+(`simulation_305K.lmp`) reads `../05_ExtendedSampling/ready2deform.data` and includes `../02_Chemistry/system.in.settings`
+and `../02_Chemistry/system.groups`, and each later step reads the restart file of the step before. Unpacked in one
+folder, the three archives give this layout, and a cooling history runs from its own folder (here PDMS DP 10, original
+history).
+
+```
+tar -xJf tg_cooling.tar.xz
+tar -xJf atomistic_systems.tar.xz
+tar -xJf atomistic_equilibrated.tar.xz
+cd PDMS/DP10/original
+lmp -in simulation_305K.lmp
+lmp -in simulation_300K.lmp
+```
+
+and so on down to 100 K. The inputs append to `msd.dat`, so rerun them in a copy of the history folder to keep the
+deposited file.
+
+topon wrote the files of `02_Chemistry/` (the first line of `system.data` reads "LAMMPS data file (Dreiding)"). The
+minimization and equilibration that led to `ready2deform.data` ran with LAMMPS 22 Jul 2025 (Update 1), and its
+`write_data` wrote the file (see its first line). The `02_Chemistry/` files have Windows line endings, which LAMMPS
+reads without change. The `*.displace` files of the build are not included, since no deposited input reads them.
+
+The atom IDs in `system.groups` are one lower than those in `system_node_info.txt`, because the builder wrote
+zero-based IDs at the time. The group `nodes` therefore holds 114 of the 121 node atoms and six carbon atoms. It enters
+only the `MSD_node` and `MSD_nodecm` columns of `msd.dat`, and the analysis uses `MSD_all`.

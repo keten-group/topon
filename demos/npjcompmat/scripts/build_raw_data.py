@@ -9,18 +9,25 @@ data/raw/cg_lammps_inputs.tar.xz                LAMMPS inputs of the equilibrati
 data/raw/cg_generation_settings.csv             generator call of every network (target counts, lattice, trials)
 data/raw/cg_velocity_seeds.csv                  velocity seed of each tensile replicate
 data/raw/tg_cooling.tar.xz                      MSD files and LAMMPS inputs of the three cooling histories
+data/raw/atomistic_systems.tar.xz               as-built LAMMPS files of the six atomistic systems (02_Chemistry/)
+data/raw/atomistic_equilibrated.tar.xz          equilibrated start of their cooling runs (05_ExtendedSampling/)
 data/raw/MANIFEST_raw.csv                       SHA-256 of every archived file
 
 The stress-strain files are checked against data/derived/mechanics/mechanics_pulls_4seeds.csv (peak stress of every
 pull) before anything is written.
 
     NPJ_RAW_ROOT=/path/to/Studies python scripts/build_raw_data.py
+    NPJ_RAW_ROOT=/path/to/Studies python scripts/build_raw_data.py atomistic
+
+The second form needs only glass_transition_atomistic/. It rewrites the two atomistic archives and their rows of
+MANIFEST_raw.csv and keeps the other rows.
 """
 import csv
 import hashlib
 import io
 import os
 import re
+import sys
 import tarfile
 from pathlib import Path
 
@@ -38,6 +45,12 @@ SEED_DIRS = {1: None, 2: CG / "sc_6x6x6_replicate2", 3: CG / "sc_6x6x6_replicate
 VELOCITY = {1: 4928459, 2: 7391052, 3: 2648317, 4: 9184735}
 AXES = "xyz"
 MANIFEST = []
+# atomistic systems (folder name in the simulation tree, name in the deposit), FPDMS is PMTFPS
+TG_SYSTEMS = (("PDMS", "PDMS"), ("FPDMS", "PMTFPS"))
+TG_DPS = ("10", "30", "100")
+# as-built files of 02_Chemistry/ (the *.displace files are left out, since no deposited input reads them)
+CHEM_FILES = ("system.data", "system.in.settings", "system.groups", "system_node_info.txt", "system_edge_info.txt")
+ATOMISTIC = ("atomistic_systems.tar.xz", "atomistic_equilibrated.tar.xz")
 
 
 def ss_path(seed, net, ax):
@@ -62,7 +75,65 @@ def peak(path):
     return a[:, 2].max(), len(a)
 
 
+def data_counts(path):
+    """Atom, bond, angle and dihedral counts from the header of a LAMMPS data file."""
+    counts = {}
+    with open(path, encoding="ascii") as fh:
+        for line in fh:
+            t = line.split()
+            if len(t) == 2 and t[1] in ("atoms", "bonds", "angles", "dihedrals"):
+                counts[t[1]] = int(t[0])
+            if t and t[0] in ("Masses", "Atoms"):
+                break
+    return counts
+
+
+def pack_atomistic():
+    """The six atomistic systems, in the folders the cooling inputs of tg_cooling.tar.xz read from
+    <system>/DP<n>/<history>/ (../02_Chemistry/ and ../05_ExtendedSampling/). The files hold no paths or user names and
+    are archived byte for byte."""
+    for sysname, _ in TG_SYSTEMS:
+        for dp in TG_DPS:
+            d = TG / sysname / f"DP_{dp}"
+            built = data_counts(d / "02_Chemistry" / "system.data")
+            equil = data_counts(d / "05_ExtendedSampling" / "ready2deform.data")
+            assert built == equil and len(built) == 4, (d, built, equil)
+            first = (d / "06_TgSimulation" / "simulation_305K.lmp").read_text()
+            for ref in ("../05_ExtendedSampling/ready2deform.data", "../02_Chemistry/system.in.settings",
+                        "../02_Chemistry/system.groups"):
+                assert ref in first, (d, ref)
+    for name, sub, files in ((ATOMISTIC[0], "02_Chemistry", CHEM_FILES),
+                             (ATOMISTIC[1], "05_ExtendedSampling", ("ready2deform.data",))):
+        with tarfile.open(RAW / name, "w:xz", preset=9) as tar:
+            for sysname, label in TG_SYSTEMS:
+                for dp in TG_DPS:
+                    for fn in files:
+                        add(tar, TG / sysname / f"DP_{dp}" / sub / fn, f"{label}/DP{dp}/{sub}/{fn}", name)
+
+
+def write_manifest(keep_other_rows=False):
+    """Write MANIFEST_raw.csv. With keep_other_rows, the rows of archives not rebuilt in this run are kept."""
+    rows = []
+    if keep_other_rows:
+        rebuilt = {m[0] for m in MANIFEST}
+        with open(RAW / "MANIFEST_raw.csv", newline="", encoding="utf-8") as fh:
+            rows = [r for r in list(csv.reader(fh))[1:] if r[0] not in rebuilt]
+    with open(RAW / "MANIFEST_raw.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, lineterminator="\n")
+        w.writerow(["archive", "path_in_archive", "bytes", "sha256", "source"])
+        w.writerows(rows + MANIFEST)
+
+
 def main():
+    if sys.argv[1:] == ["atomistic"]:
+        if not TG.is_dir():
+            raise SystemExit(f"Set NPJ_RAW_ROOT to the folder that holds glass_transition_atomistic/. Now: {RAW_ROOT}")
+        pack_atomistic()
+        write_manifest(keep_other_rows=True)
+        for name in ATOMISTIC:
+            print(f"{name:40s} {(RAW / name).stat().st_size / 1e6:7.2f} MB")
+        print("files archived:", len(MANIFEST))
+        return
     if not (CG.is_dir() and TG.is_dir()):
         raise SystemExit(f"Set NPJ_RAW_ROOT to the folder that holds crosslinker/ and glass_transition_atomistic/ "
                          f"(the full simulation folders, which are not deposited). Now: {RAW_ROOT}")
@@ -141,10 +212,10 @@ def main():
                     for f in lmps:
                         add(tar, f, f"{label}/DP{dp}/{hist}/{f.name}", name)
 
-    with open(RAW / "MANIFEST_raw.csv", "w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["archive", "path_in_archive", "bytes", "sha256", "source"])
-        w.writerows(MANIFEST)
+    # 6. atomistic systems, as built and equilibrated (the files the first cooling step reads)
+    pack_atomistic()
+
+    write_manifest()
     for f in sorted(RAW.iterdir()):
         print(f"{f.name:40s} {f.stat().st_size / 1e6:7.2f} MB")
     print("files archived:", len(MANIFEST))

@@ -39,7 +39,8 @@ This gives the layout the scripts read:
 | `seed<k>/<folder_name>/stress_strain_npt_{x,y,z}.dat` | stress-strain file of every pull, velocity seeds k = 1 to 4 |
 | `<system>/DP<n>/<history>/msd.dat` | MSD file of each system (PDMS, PMTFPS), chain length (DP 10, 30, 100) and cooling history (`original`, `replicate2`, `replicate3`) |
 
-`MANIFEST_raw.csv` gives the original path of every archived file. No script here reads `cg_lammps_inputs.tar.xz`.
+`MANIFEST_raw.csv` gives the original path of every archived file. No script here reads `cg_lammps_inputs.tar.xz` or
+the two `atomistic_*.tar.xz` archives.
 
 With the deposit alone, `cg_mechanics/three_seed_analysis.py`, `cg_mechanics/four_seed_analysis.py` (up to its
 descriptor section) and the two `tg/` scripts run. The other scripts need files that are not deposited.
