@@ -17,7 +17,8 @@
             "max_saves": 1,
             "degree_distribution": "0:15,1:30,2:10,3:43,4:42,5:47,6:29",
             "search": null,
-            "min_giant_fraction": 0.99
+            "min_giant_fraction": 0.99,
+            "seed": null
         },
         "existing_files": {
             "nodes_file": null,

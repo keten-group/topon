@@ -1,0 +1,439 @@
+<title>__TITLE__</title>
+<style>
+/* Layout: a run strip on top, then the network viewer beside a column of per-stage charts, then every run on one chart.
+   The page loads nothing from anywhere: the faces are local stacks (IBM Plex where it is installed). */
+:root {
+  --bg: #f2f4f5;
+  --surface: #ffffff;
+  --ink: #16202a;
+  --muted: #5a6774;
+  --line: #d6dce1;
+  --grid: #e8ecef;
+  --accent: #2a50c8;
+  --kink: #d24a12;
+  --bridge: #47698b;
+  --dangling: #b98011;
+  --loop: #a8327a;
+  --designed: #0d8a78;
+  --good: #1d7f47;
+  --bad: #bf3a22;
+  --pp: #16202a;
+  --font-display: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1318; --surface: #151c23; --ink: #e3e8ed; --muted: #93a0ad; --line: #29333d;
+    --grid: #1e262e; --accent: #7e9cf3; --kink: #ff7c47; --bridge: #8db2d8; --dangling: #e5b24a;
+    --loop: #e37bb6; --designed: #3cc6ae; --good: #4cc47e; --bad: #f0735a; --pp: #e3e8ed;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1318; --surface: #151c23; --ink: #e3e8ed; --muted: #93a0ad; --line: #29333d;
+  --grid: #1e262e; --accent: #7e9cf3; --kink: #ff7c47; --bridge: #8db2d8; --dangling: #e5b24a;
+  --loop: #e37bb6; --designed: #3cc6ae; --good: #4cc47e; --bad: #f0735a; --pp: #e3e8ed;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px; line-height: 1.45; }
+.wrap { max-width: 1320px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 40px; display: grid; gap: 18px; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 26px; letter-spacing: 0.01em; }
+h2 { font-size: 17px; }
+h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.lede { color: var(--muted); max-width: 72ch; margin: 4px 0 0; }
+.mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.runs { display: flex; flex-wrap: wrap; gap: 8px; }
+.run { display: grid; gap: 3px; text-align: left; font: inherit; color: inherit; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px; cursor: pointer; min-width: 0; }
+.run:hover { border-color: var(--muted); }
+.run[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.run:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.run .name { font-weight: 600; font-size: 13px; }
+.run .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-data); font-size: 11px;
+  padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; }
+.pill.good { color: var(--good); }
+.pill.bad { color: var(--bad); }
+.main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 980px) { .main { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.facts { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.viewer { position: relative; width: 100%; aspect-ratio: 1 / 1; max-width: 100%; border-radius: 6px; background: var(--bg); overflow: hidden; touch-action: none; }
+.viewer canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+.viewer canvas:active { cursor: grabbing; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 5px;
+  padding: 5px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.hint { position: absolute; left: 10px; bottom: 8px; font-size: 11px; color: var(--muted); }
+.stepper { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.stepper button { font: inherit; font-size: 12px; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 5px; padding: 6px 2px; cursor: pointer; display: grid; gap: 1px; }
+.stepper button small { font-family: var(--font-data); font-size: 10px; color: var(--muted); }
+.stepper button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.stepper button[aria-pressed="true"] small { color: var(--surface); opacity: 0.85; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; font-size: 12px; }
+.controls label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+.controls select { font: inherit; font-size: 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+.swatch { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; margin-right: 5px; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+@media (max-width: 520px) { .charts { grid-template-columns: minmax(0, 1fr); } }
+.chart { display: grid; gap: 4px; min-width: 0; }
+.chart .val { font-family: var(--font-data); font-size: 12px; color: var(--muted); }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.note { font-size: 12px; color: var(--muted); max-width: 80ch; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; min-width: 720px; }
+th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th:first-child, td:first-child { text-align: left; }
+th { font-weight: 600; color: var(--muted); font-size: 11px; letter-spacing: 0.03em; }
+td.num { font-family: var(--font-data); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<!-- body -->
+
+<div class="wrap">
+  <header>
+    <h1>__TITLE__</h1>
+    <p class="lede">Atomistic networks through the three relaxation stages, checkpoint by checkpoint. Topology is certified by the passage count (no backbone bond through another). <span id="seeds-note">Z1+ is averaged over __SEEDS__ seeds of the export's junction jitter, and "robust pairs" are the partner pairs present in every seed.</span></p>
+  </header>
+
+  <nav class="runs" id="runs" aria-label="Runs"></nav>
+
+  <div class="main">
+    <section class="panel" aria-label="Network">
+      <div class="head">
+        <h2 id="run-title">Network</h2>
+        <div class="facts" id="facts"></div>
+      </div>
+      <div class="viewer" id="viewer">
+        <canvas id="canvas" aria-label="Network drawing: drag to rotate, scroll to zoom, double-click to reset"></canvas>
+        <div class="tip" id="tip" hidden></div>
+        <div class="hint">Drag to rotate · scroll to zoom · double-click to reset · hover a strand for its partners</div>
+      </div>
+      <div class="stepper" id="stepper" role="group" aria-label="Checkpoint"></div>
+      <div class="controls">
+        <label><input type="checkbox" id="show-chains" checked> Strands</label>
+        <label><input type="checkbox" id="show-links" checked> Crosslinks</label>
+        <label><input type="checkbox" id="show-kinks" checked> Z1+ kinks</label>
+        <label><input type="checkbox" id="show-pp"> Primitive paths</label>
+        <label>Colour by <select id="color-by">
+          <option value="class">strand class</option>
+          <option value="z">kinks per strand</option>
+          <option value="designed">designed pairs</option>
+        </select></label>
+      </div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="panel" aria-label="Per stage">
+      <div class="head"><h2>Per checkpoint</h2><span class="note" id="stage-note"></span></div>
+      <div class="charts" id="charts"></div>
+      <p class="note">Energy density is the full force field (DREIDING or CHARMM) evaluated on each checkpoint with a zero-step run, so every stage is read under one Hamiltonian; the build's is high because only its backbone is settled. Passages are counted per stage dump: stage 3's one dump covers its minimisation, NVT and NPT, so the three stage-3 points share one count.</p>
+    </section>
+  </div>
+
+  <section class="panel" aria-label="All runs">
+    <div class="head"><h2>Every run: Z per bridge over its build value</h2></div>
+    <div class="chart" id="overview"></div>
+    <div class="tablewrap"><table id="table"></table></div>
+  </section>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(function () {
+  "use strict";
+  const RUNS = JSON.parse(document.getElementById("data").textContent);
+  for (const r of RUNS) {
+    const box = (r.stages.find((s) => !s.missing) || {}).box || [1, 1, 1];
+    r.stages = r.stages.map((s) => s.missing ? { tag: s.tag, missing: true, box, chains: [], pp: [], kinks: [], zchain: [],
+      z_mean: null, z_sd: null, build_pairs_kept: null, build_pairs: null, temperature: null, density: null,
+      bond_max: null, stretched: null, passages: null, energy: null } : s);
+  }
+  const lastStage = (r) => { let k = 0; r.stages.forEach((s, i) => { if (!s.missing) k = i; }); return k; };
+  if (!RUNS.some((r) => r.seeds)) document.getElementById("seeds-note").textContent = "Z1+ was not available when these runs were read, so Z and the kinks are not shown.";
+  const STAGES = [["stage0_build", "Build", "B"], ["stage1_soft", "Stage 1", "S1"], ["stage2_ramp", "Ramp", "R"],
+                  ["stage3_min", "Minimised", "Min"], ["stage3_nvt", "NVT", "NVT"], ["stage3_npt", "NPT", "NPT"]];
+  const state = { run: 0, stage: 0, yaw: 0.6, pitch: -0.45, zoom: 1, hover: -1 };
+  try { const s = JSON.parse(localStorage.getItem("relax-tracker") || "{}");
+        if (s.run < RUNS.length) state.run = s.run; if (s.stage < 6) state.stage = s.stage; } catch (e) {}
+  if (RUNS[state.run] && RUNS[state.run].stages[state.stage].missing) state.stage = lastStage(RUNS[state.run]);
+  const save = () => { try { localStorage.setItem("relax-tracker", JSON.stringify({ run: state.run, stage: state.stage })); } catch (e) {} };
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fmt = (v, d = 3) => (v === null || v === undefined || Number.isNaN(v)) ? "–" : Number(v).toFixed(d);
+  const el = (tag, attrs = {}, kids = []) => { const e = document.createElementNS(tag === "svg" || attrs._svg ? "http://www.w3.org/2000/svg" : "http://www.w3.org/1999/xhtml", tag);
+    for (const [k, v] of Object.entries(attrs)) if (k !== "_svg") e.setAttribute(k, v); for (const k of kids) e.append(k); return e; };
+  const S = (tag, attrs = {}) => el(tag, Object.assign({ _svg: 1 }, attrs));
+
+  function zKept(run) { const b = run.stages[0].z_mean, n = run.stages[lastStage(run)].z_mean; return (b && n !== null) ? n / b : null; }
+  function totalPassages(run) { return ["stage1", "stage2", "stage3"].reduce((a, k) => a + ((run.crossings[k] || {}).passages || 0), 0); }
+
+  // ---------------------------------------------------------------- run strip
+  function renderRuns() {
+    const box = document.getElementById("runs"); box.replaceChildren();
+    RUNS.forEach((r, i) => {
+      const p = totalPassages(r), kept = zKept(r);
+      const b = el("button", { class: "run", type: "button", "aria-pressed": String(i === state.run) }, [
+        el("span", { class: "name" }, [r.label]),
+        el("span", { class: "meta" }, [
+          el("span", { class: "pill " + (p === 0 ? "good" : "bad") }, [p === 0 ? "0 passages" : p + " passages"]),
+          el("span", { class: "mono" }, ["Z kept " + (kept === null ? "–" : Math.round(kept * 100) + " %")])])]);
+      b.addEventListener("click", () => { state.run = i; state.hover = -1;
+        if (RUNS[i].stages[state.stage].missing) state.stage = lastStage(RUNS[i]); save(); renderAll(); });
+      box.append(b);
+    });
+  }
+
+  // ---------------------------------------------------------------- facts and stepper
+  function renderFacts() {
+    const r = RUNS[state.run], s = r.stages[state.stage];
+    document.getElementById("run-title").textContent = r.label;
+    const f = document.getElementById("facts"); f.replaceChildren();
+    const add = (k, v) => f.append(el("span", {}, [k + " ", el("b", { class: "mono" }, [v])]));
+    add("atoms", r.atoms.toLocaleString("en-US"));
+    add("strands", String(r.classes.length));
+    add("Z/bridge", fmt(s.z_mean) + " ± " + fmt(s.z_sd));
+    add("kinks drawn", String(s.kinks.length));
+    add("box", s.box.map((b) => b.toFixed(1)).join(" × ") + " Å");
+    const st = document.getElementById("stepper"); st.replaceChildren();
+    STAGES.forEach(([tag, name], i) => {
+      const x = r.stages[i];
+      const b = el("button", { type: "button", "aria-pressed": String(i === state.stage) }, [name, el("small", {}, [x.missing ? "not run" : "Z " + fmt(x.z_mean, 2)])]);
+      if (x.missing) b.disabled = true;
+      b.addEventListener("click", () => { state.stage = i; save(); renderFacts(); draw(); renderCharts(); });
+      st.append(b);
+    });
+  }
+
+  // ---------------------------------------------------------------- 3D view
+  const canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d");
+  const tip = document.getElementById("tip");
+  let proj = null;
+
+  function rot(x, y, z) {
+    const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw), cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+    const x1 = cy * x + sy * z, z1 = -sy * x + cy * z;
+    return [x1, cp * y - sp * z1, sp * y + cp * z1];
+  }
+  function mix(hex, bg, t) {
+    const p = (h) => { h = h.replace("#", ""); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)); };
+    const a = p(hex), b = p(bg); return "rgb(" + a.map((v, i) => Math.round(v * (1 - t) + b[i] * t)).join(",") + ")";
+  }
+  function zColor(z) { return z === 0 ? css("--muted") : z === 1 ? css("--bridge") : z === 2 ? css("--accent") : css("--kink"); }
+
+  function partnersOf(stage, chain) {
+    const out = new Set();
+    for (const k of stage.kinks) { if (k[0] === chain + 1 && k[1] > 0) out.add(k[1] - 1); if (k[1] === chain + 1) out.add(k[0] - 1); }
+    return out;
+  }
+
+  function draw() {
+    const r = RUNS[state.run], s = r.stages[state.stage];
+    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    if (s.missing) { ctx.fillStyle = css("--muted"); ctx.font = "13px " + css("--font-body"); ctx.textAlign = "center";
+      ctx.fillText("This checkpoint was not written by the run.", w / 2, h / 2); proj = []; renderLegend(document.getElementById("color-by").value, r); return; }
+    const bg = css("--bg"), box = s.box, c = box.map((b) => b / 2);
+    const diag = Math.hypot(box[0], box[1], box[2]);
+    const scale = (Math.min(w, h) / (diag * 1.05)) * state.zoom;
+    const P = (x, y, z) => { const v = rot(x - c[0], y - c[1], z - c[2]); return [w / 2 + v[0] * scale, h / 2 + v[1] * scale, v[2]]; };
+    const depth = (d) => Math.min(1, Math.max(0, (d / (diag / 2) + 1) / 2));
+    // box
+    ctx.lineWidth = 1; ctx.strokeStyle = css("--line");
+    const corners = []; for (const a of [0, 1]) for (const b of [0, 1]) for (const e of [0, 1]) corners.push(P(a * box[0], b * box[1], e * box[2]));
+    const edges = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+    ctx.beginPath(); for (const [a, b] of edges) { ctx.moveTo(corners[a][0], corners[a][1]); ctx.lineTo(corners[b][0], corners[b][1]); } ctx.stroke();
+
+    const designed = new Map(); r.designed.forEach(([a, b], i) => { designed.set(a - 1, i); designed.set(b - 1, i); });
+    const partners = state.hover >= 0 ? partnersOf(s, state.hover) : null;
+    const mode = document.getElementById("color-by").value;
+    const baseColor = (i) => {
+      if (mode === "z") return zColor(s.zchain[i]);
+      if (mode === "designed") return designed.has(i) ? css("--designed") : css("--line");
+      const k = r.classes[i]; return k === "loop" ? css("--loop") : k === "dangling" ? css("--dangling") : css("--bridge");
+    };
+    proj = [];
+    const items = [];
+    if (document.getElementById("show-chains").checked) {
+      s.chains.forEach((flat, i) => {
+        const pts = []; let dz = 0;
+        for (let k = 0; k < flat.length; k += 3) { const p = P(flat[k] / 10, flat[k + 1] / 10, flat[k + 2] / 10); pts.push(p); dz += p[2]; }
+        items.push({ i, pts, d: dz / pts.length });
+      });
+      items.sort((a, b) => b.d - a.d);
+      for (const it of items) {
+        const i = it.i, pts = it.pts, t = depth(it.d);
+        let col = baseColor(i), lw = 1.1 + 1.3 * (1 - t), fade = 0.55 * t;
+        if (partners) {
+          if (i === state.hover) { col = css("--ink"); lw = 3; fade = 0; }
+          else if (partners.has(i)) { col = css("--kink"); lw = 2.4; fade = 0; }
+          else fade = 0.8;
+        }
+        ctx.strokeStyle = /^#/.test(col) ? mix(col, bg, fade) : col; ctx.lineWidth = lw; ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k < pts.length - 1; k++) { const mx = (pts[k][0] + pts[k + 1][0]) / 2, my = (pts[k][1] + pts[k + 1][1]) / 2; ctx.quadraticCurveTo(pts[k][0], pts[k][1], mx, my); }
+        ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]); ctx.stroke();
+        for (const p of pts) proj.push([p[0], p[1], i]);
+      }
+    }
+    if (document.getElementById("show-pp").checked) {
+      ctx.lineWidth = 1; ctx.strokeStyle = mix(css("--pp"), bg, 0.35);
+      for (const flat of s.pp) { ctx.beginPath(); for (let k = 0; k < flat.length; k += 3) { const p = P(flat[k] / 10, flat[k + 1] / 10, flat[k + 2] / 10); if (k) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); } ctx.stroke(); }
+    }
+    if (document.getElementById("show-links").checked) {
+      ctx.fillStyle = css("--ink");
+      s.chains.forEach((flat, i) => {
+        const k = r.classes[i], n = flat.length;
+        const ends = k === "dangling" ? [0] : k === "loop" ? [0] : [0, n - 3];
+        for (const e of ends) { const p = P(flat[e] / 10, flat[e + 1] / 10, flat[e + 2] / 10); ctx.beginPath(); ctx.arc(p[0], p[1], 2.6, 0, 7); ctx.fill(); }
+      });
+    }
+    if (document.getElementById("show-kinks").checked) {
+      ctx.fillStyle = css("--kink"); ctx.strokeStyle = css("--surface"); ctx.lineWidth = 1;
+      for (const k of s.kinks) { if (partners && k[0] - 1 !== state.hover && k[1] - 1 !== state.hover) continue;
+        const p = P(k[2] / 10, k[3] / 10, k[4] / 10); ctx.beginPath(); ctx.arc(p[0], p[1], 3.4, 0, 7); ctx.fill(); ctx.stroke(); }
+    }
+    renderLegend(mode, r);
+  }
+
+  function renderLegend(mode, r) {
+    const L = document.getElementById("legend"); L.replaceChildren();
+    const sw = (color, text, dot) => L.append(el("span", {}, [el("span", { class: dot ? "dot" : "swatch", style: "background:" + color }), text]));
+    if (mode === "class") { sw(css("--bridge"), "bridge"); sw(css("--dangling"), "dangling"); sw(css("--loop"), "loop"); }
+    else if (mode === "z") { sw(css("--muted"), "0 kinks"); sw(css("--bridge"), "1"); sw(css("--accent"), "2"); sw(css("--kink"), "3 or more"); }
+    else { sw(css("--designed"), r.designed.length ? r.designed.length + " designed pairs" : "no designed pairs in this run"); sw(css("--line"), "other strands"); }
+    sw(css("--ink"), "crosslink", true); sw(css("--kink"), "Z1+ kink (seed 0)", true);
+  }
+
+  // interaction
+  let drag = null;
+  canvas.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY, state.yaw, state.pitch]; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointermove", (e) => {
+    if (drag) { state.yaw = drag[2] + (e.clientX - drag[0]) * 0.008; state.pitch = Math.max(-1.55, Math.min(1.55, drag[3] + (e.clientY - drag[1]) * 0.008)); draw(); return; }
+    if (!proj || e.pointerType === "touch") return;
+    const rect = canvas.getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top;
+    let best = -1, bd = 64;
+    for (const p of proj) { const d = (p[0] - x) ** 2 + (p[1] - y) ** 2; if (d < bd) { bd = d; best = p[2]; } }
+    if (best !== state.hover) { state.hover = best; draw(); }
+    if (best >= 0) {
+      const r = RUNS[state.run], s = r.stages[state.stage], ps = [...partnersOf(s, best)].map((i) => i + 1).sort((a, b) => a - b);
+      tip.hidden = false; tip.style.left = Math.min(x + 12, rect.width - 190) + "px"; tip.style.top = (y + 12) + "px";
+      tip.textContent = "Strand " + (best + 1) + " · " + r.classes[best] + " · " + s.zchain[best] + " kink" + (s.zchain[best] === 1 ? "" : "s") + (ps.length ? " · partners " + ps.join(", ") : " · no partners");
+    } else tip.hidden = true;
+  });
+  canvas.addEventListener("pointerup", () => { drag = null; });
+  canvas.addEventListener("pointerleave", () => { drag = null; if (state.hover !== -1) { state.hover = -1; draw(); } tip.hidden = true; });
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); state.zoom = Math.max(0.5, Math.min(6, state.zoom * Math.exp(-e.deltaY * 0.0015))); draw(); }, { passive: false });
+  canvas.addEventListener("dblclick", () => { state.yaw = 0.6; state.pitch = -0.45; state.zoom = 1; draw(); });
+  for (const id of ["show-chains", "show-links", "show-kinks", "show-pp", "color-by"]) document.getElementById(id).addEventListener("change", draw);
+  new ResizeObserver(() => draw()).observe(document.getElementById("viewer"));
+
+  // ---------------------------------------------------------------- charts
+  function lineChart(opts) {
+    const W = 300, H = 132, L = 40, R = 8, T = 8, B = 22;
+    const vals = opts.series.flatMap((s) => s.values.concat(s.band ? s.band.filter(Boolean).flat() : [])).filter((v) => v !== null && v !== undefined && !Number.isNaN(v));
+    let lo = Math.min(...vals, opts.min ?? Infinity), hi = Math.max(...vals, opts.max ?? -Infinity);
+    if (!vals.length) { lo = 0; hi = 1; }
+    if (hi === lo) { hi += Math.abs(hi) * 0.1 || 1; lo -= Math.abs(lo) * 0.1 || 0; }
+    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    const n = opts.labels.length, x = (i) => L + (i * (W - L - R)) / (n - 1), y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+    const svg = S("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": opts.title });
+    const ticks = niceTicks(lo, hi, 4);
+    for (const t of ticks) {
+      svg.append(S("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: css("--grid"), "stroke-width": 1 }));
+      const tx = S("text", { x: L - 5, y: y(t) + 3.5, "text-anchor": "end", "font-size": 9.5, fill: css("--muted"), "font-family": css("--font-data") }); tx.textContent = fmtTick(t); svg.append(tx);
+    }
+    opts.labels.forEach((lab, i) => { const tx = S("text", { x: x(i), y: H - 6, "text-anchor": "middle", "font-size": 9.5, fill: i === state.stage ? css("--ink") : css("--muted"), "font-weight": i === state.stage ? 600 : 400 }); tx.textContent = lab; svg.append(tx); });
+    svg.append(S("line", { x1: x(state.stage), x2: x(state.stage), y1: T, y2: H - B, stroke: css("--line"), "stroke-width": 1, "stroke-dasharray": "3 3" }));
+    if (opts.ref !== undefined) svg.append(S("line", { x1: L, x2: W - R, y1: y(opts.ref), y2: y(opts.ref), stroke: css("--muted"), "stroke-width": 1, "stroke-dasharray": "2 3" }));
+    for (const s of opts.series) {
+      if (s.bars) {
+        const bw = Math.min(22, (W - L - R) / n * 0.5);
+        s.values.forEach((v, i) => { if (v === null || v === undefined) return; const y0 = y(Math.max(lo, 0));
+          svg.append(S("rect", { x: x(i) - bw / 2, y: Math.min(y(v), y0), width: bw, height: Math.max(1.5, Math.abs(y0 - y(v))), fill: v > 0 ? css("--bad") : css("--good"), rx: 1.5 })); });
+        continue;
+      }
+      if (s.band) {
+        const idx = s.band.map((b, i) => b ? i : -1).filter((i) => i >= 0);
+        if (idx.length > 1) {
+          const up = idx.map((i) => [x(i), y(s.band[i][1])]), dn = idx.map((i) => [x(i), y(s.band[i][0])]).reverse();
+          svg.append(S("path", { d: "M" + up.concat(dn).map((p) => p.join(",")).join("L") + "Z", fill: s.color, "fill-opacity": 0.14, stroke: "none" }));
+        }
+      }
+      const pts = s.values.map((v, i) => (v === null || v === undefined) ? null : [x(i), y(v)]);
+      let d = ""; pts.forEach((p, i) => { if (!p) return; d += (d && pts[i - 1] ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1); });
+      svg.append(S("path", { d, fill: "none", stroke: s.color, "stroke-width": s.width || 1.8, "stroke-opacity": s.opacity ?? 1, "stroke-linejoin": "round" }));
+      if (!s.noDots) pts.forEach((p, i) => { if (p) svg.append(S("circle", { cx: p[0], cy: p[1], r: i === state.stage ? 3.6 : 2.4, fill: i === state.stage ? s.color : css("--surface"), stroke: s.color, "stroke-width": 1.4 })); });
+    }
+    return svg;
+  }
+  function niceTicks(lo, hi, n) { const span = hi - lo, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0))), err = step0 / mag;
+    const step = (err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1) * mag; const out = []; for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step) out.push(+t.toFixed(10)); return out; }
+  function fmtTick(t) { const a = Math.abs(t); return a >= 1000 ? (t / 1000).toFixed(a >= 10000 ? 0 : 1) + "k" : a >= 10 ? t.toFixed(0) : a >= 1 ? t.toFixed(1) : t.toFixed(2); }
+
+  function renderCharts() {
+    const r = RUNS[state.run], st = r.stages, labs = STAGES.map((s) => s[2]);
+    const box = document.getElementById("charts"); box.replaceChildren();
+    const card = (title, value, svg) => box.append(el("div", { class: "chart" }, [el("h3", {}, [title]), el("div", { class: "val" }, [value]), svg]));
+    const cur = st[state.stage];
+    card("Z per bridge", fmt(cur.z_mean) + " ± " + fmt(cur.z_sd) + "  (build " + fmt(st[0].z_mean) + ")",
+      lineChart({ title: "Z per bridge", labels: labs, ref: st[0].z_mean, series: [{ values: st.map((s) => s.z_mean), band: st.map((s) => (s.z_mean === null || s.z_sd === null) ? null : [s.z_mean - s.z_sd, s.z_mean + s.z_sd]), color: css("--accent") }] }));
+    card("Robust build pairs kept", cur.build_pairs_kept === null ? "–" : cur.build_pairs_kept + " of " + cur.build_pairs,
+      lineChart({ title: "Robust build pairs kept", labels: labs, min: 0, max: st[0].build_pairs, series: [{ values: st.map((s) => s.build_pairs_kept), color: css("--designed") }] }));
+    card("Backbone passages", cur.passages === null ? "build" : cur.passages + " in this stage's dump",
+      lineChart({ title: "Backbone passages", labels: labs, min: 0, max: 1, series: [{ bars: true, values: st.map((s) => s.passages) }] }));
+    const e = st.map((s) => s.energy ? s.energy.density_MJ_m3 : null);
+    const later = st.slice(1).map((s) => s.energy ? s.energy.density_MJ_m3 : null);
+    card("Energy density, full force field", cur.energy ? fmt(cur.energy.density_MJ_m3, 0) + " MJ/m³  (bonded " + fmt(cur.energy.bonded_MJ_m3, 0) + ", vdW " + fmt(cur.energy.vdw_MJ_m3, 0) + ", Coulomb " + fmt(cur.energy.coul_MJ_m3, 0) + ")" : "not evaluated",
+      lineChart({ title: "Energy density after the build", labels: labs, series: [{ values: [null].concat(later), color: css("--kink") }] }));
+    card("Temperature (K)", cur.temperature === null ? "build (no velocities)" : fmt(cur.temperature, 0) + " K",
+      lineChart({ title: "Temperature", labels: labs, ref: 300, series: [{ values: st.map((s) => s.temperature), color: css("--dangling") }] }));
+    card("Density (g/cm³)", fmt(cur.density, 4),
+      lineChart({ title: "Density", labels: labs, series: [{ values: st.map((s) => s.density), color: css("--bridge") }] }));
+    card("Longest backbone bond (× r0)", fmt(cur.bond_max) + (cur.stretched ? "  · " + cur.stretched + " over 1.15" : "  · none over 1.15"),
+      lineChart({ title: "Longest backbone bond", labels: labs, ref: 1.15, series: [{ values: st.map((s) => s.bond_max), color: css("--loop") }] }));
+    const pe = cur.energy ? fmt(cur.energy.pe_per_atom, 2) + " kcal/mol per atom" : "not evaluated";
+    card("Potential energy per atom", pe,
+      lineChart({ title: "Potential energy per atom after the build", labels: labs, series: [{ values: [null].concat(st.slice(1).map((s) => s.energy ? s.energy.pe_per_atom : null)), color: css("--ink") }] }));
+    const e0 = st[0].energy ? fmt(st[0].energy.density_MJ_m3, 0) : "–";
+    document.getElementById("stage-note").textContent = STAGES[state.stage][1] + " · build energy density " + e0 + " MJ/m³ (off the energy charts' scale)";
+  }
+
+  // ---------------------------------------------------------------- overview
+  function renderOverview() {
+    const labs = STAGES.map((s) => s[2]);
+    const series = RUNS.map((r, i) => ({ values: r.stages.map((s) => (s.z_mean !== null && r.stages[0].z_mean) ? s.z_mean / r.stages[0].z_mean : null), color: i === state.run ? css("--accent") : css("--muted"),
+      width: i === state.run ? 2.6 : 1.2, opacity: i === state.run ? 1 : 0.55, noDots: i !== state.run }));
+    series.push(series.splice(state.run, 1)[0]);
+    const o = document.getElementById("overview"); o.replaceChildren(lineChart({ title: "Z over build Z, every run", labels: labs, ref: 1, min: 0.5, max: 1.1, series }));
+    const t = document.getElementById("table"); t.replaceChildren();
+    t.append(el("thead", {}, [el("tr", {}, ["Run", "Atoms", "Passages S1 / ramp / S3", "Z build", "Z NVT", "Z NPT", "Z kept (last)", "Robust pairs kept (last)", "LAMMPS time"].map((h) => el("th", {}, [h])))]));
+    const tb = el("tbody");
+    RUNS.forEach((r, i) => {
+      const cr = ["stage1", "stage2", "stage3"].map((k) => (r.crossings[k] || {}).passages ?? "–").join(" / ");
+      const secs = Object.values(r.seconds || {}).reduce((a, b) => a + b, 0);
+      const row = el("tr", { style: i === state.run ? "font-weight:600" : "" }, [
+        el("td", {}, [r.label]), el("td", { class: "num" }, [r.atoms.toLocaleString("en-US")]), el("td", { class: "num" }, [cr]),
+        el("td", { class: "num" }, [fmt(r.stages[0].z_mean)]), el("td", { class: "num" }, [fmt(r.stages[4].z_mean)]), el("td", { class: "num" }, [fmt(r.stages[5].z_mean)]),
+        el("td", { class: "num" }, [zKept(r) === null ? "–" : Math.round(zKept(r) * 100) + " %"]),
+        el("td", { class: "num" }, [r.stages[lastStage(r)].build_pairs_kept === null ? "–" : r.stages[lastStage(r)].build_pairs_kept + " of " + r.stages[lastStage(r)].build_pairs]),
+        el("td", { class: "num" }, [secs ? Math.round(secs / 60) + " min" : "–"])]);
+      tb.append(row);
+    });
+    t.append(tb);
+  }
+
+  function renderAll() { renderRuns(); renderFacts(); draw(); renderCharts(); renderOverview(); }
+  const retheme = () => renderAll();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme);
+  new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  renderAll();
+})();
+</script>

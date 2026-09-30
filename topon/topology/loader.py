@@ -674,12 +674,151 @@ def _sc_positions_from_ids(
     return pos
 
 
+#: Node-feature columns of a schema v1 NPZ, the layout of the downstream
+#: GNN pipeline's bond/create datasets (``N_20_equil_...npz``). Read off the
+#: data rather than the May spec, which names columns 1 and 2 ``length``
+#: and ``contour_length``: column 1 is 18 for a DP-20 strand (the interior
+#: beads, the two chain ends not counted), and column 2 averages 35.5
+#: against 6 Rg^2 = 36.0 on the N20 file, the mean square end-to-end
+#: distance, where a contour length would be about 18 for every strand.
+NPZ_V1_COLUMNS = ("type", "n_interior", "ree2", "rg", "COMX", "COMY", "COMZ",
+                  "chem_degree")
+
+
+def npz_schema_version(arrays) -> int:
+    """The schema of an NPZ dual graph: 1 or 2.
+
+    Files topon writes carry ``schema_version`` (2). The collaborator's
+    bond/create datasets carry none and have 8 feature columns, which is
+    schema 1; a file with no stamp and 10 columns is taken as 2.
+
+    Raises:
+        ValueError: a stamp this reader does not know, or a feature width
+            that is neither schema.
+    """
+    from topon.writers.npz_writer import _FEATURE_COLUMNS, SCHEMA_VERSION
+
+    width = int(np.shape(arrays["node_features"])[1]) if np.ndim(
+        arrays["node_features"]) == 2 else -1
+    if "schema_version" in arrays:
+        version = int(np.asarray(arrays["schema_version"]))
+        expected = {1: len(NPZ_V1_COLUMNS), SCHEMA_VERSION: len(_FEATURE_COLUMNS)}
+        if version not in expected:
+            raise ValueError(
+                f"NPZ schema_version {version} is not one this reader knows "
+                f"({', '.join(str(v) for v in sorted(expected))}); it may be "
+                f"from a newer topon.")
+        if width != expected[version]:
+            raise ValueError(
+                f"NPZ says schema_version {version} but node_features has "
+                f"{width} columns, not {expected[version]}.")
+        return version
+    if width == len(NPZ_V1_COLUMNS):
+        return 1
+    if width == len(_FEATURE_COLUMNS):
+        return SCHEMA_VERSION
+    raise ValueError(
+        f"NPZ node_features has {width} columns and no schema_version; "
+        f"schema 1 has {len(NPZ_V1_COLUMNS)} and schema 2 has "
+        f"{len(_FEATURE_COLUMNS)}.")
+
+
+def upgrade_npz_v1(arrays) -> dict:
+    """A schema v1 NPZ (as a dict of arrays) in the schema v2 layout.
+
+    Column by column (v1 -> v2):
+
+    - ``type``, ``rg`` and ``COMX/Y/Z`` are copied.
+    - ``n_interior`` -> ``length``: plus 2 on the chain rows, since v2's
+      ``length`` is the DP, which counts the two chain ends (a DP-20 strand
+      reads 18 in v1); crosslinker rows stay 1.
+    - ``ree2`` has no v2 column. It is kept as a separate ``ree2`` array
+      (per row, as v1 wrote it), and v2's ``contour_length`` and
+      ``frac_ext`` are NaN, the value the v2 writer uses for a measurement
+      it does not have.
+    - ``chem_degree`` is copied; ``phys_degree`` is counted from the
+      ``edge_type`` 1 edges, which in these datasets are the Z1+ ``-SP+``
+      partner pairs (entanglements), stored in both directions.
+
+    ``n_polymer`` and ``n_crosslinker`` are recounted from the ``type``
+    column: the v1 files carry other numbers there (18 and 0 in the N20
+    file, 98 and 0 in N100), so a reader that believed them rebuilt the
+    first 18 rows of 7,500. Rows are put in polymer-then-crosslinker order
+    if they are not already, with ``node_ids`` and ``edge_index`` moved
+    with them. ``strain``, ``stress`` and ``box`` pass through. The result
+    carries ``schema_version`` 2 and ``upgraded_from`` 1.
+    """
+    from topon.writers.npz_writer import _FEATURE_COLUMNS, SCHEMA_VERSION
+
+    v1 = np.asarray(arrays["node_features"], dtype=np.float32)
+    if v1.ndim != 2 or v1.shape[1] != len(NPZ_V1_COLUMNS):
+        raise ValueError(
+            f"a schema v1 node_features has {len(NPZ_V1_COLUMNS)} columns, "
+            f"got shape {v1.shape}")
+    col = {name: i for i, name in enumerate(NPZ_V1_COLUMNS)}
+    node_ids = np.asarray(arrays["node_ids"])
+    edge_index = np.asarray(arrays["edge_index"])
+    edge_type = np.asarray(arrays["edge_type"])
+
+    kind = v1[:, col["type"]]
+    order = np.argsort(kind, kind="stable")
+    if not np.array_equal(order, np.arange(len(order))):
+        v1 = v1[order]
+        node_ids = node_ids[order]
+        new_row = np.empty_like(order)
+        new_row[order] = np.arange(len(order))
+        edge_index = new_row[edge_index]
+        kind = v1[:, col["type"]]
+    chain = kind == 0
+
+    n = len(v1)
+    v2 = np.full((n, len(_FEATURE_COLUMNS)), np.nan, dtype=np.float32)
+    at = {name: i for i, name in enumerate(_FEATURE_COLUMNS)}
+    v2[:, at["type"]] = kind
+    v2[:, at["length"]] = np.where(chain, v1[:, col["n_interior"]] + 2.0, 1.0)
+    for name in ("rg", "COMX", "COMY", "COMZ", "chem_degree"):
+        v2[:, at[name]] = v1[:, col[name]]
+    ent = edge_index[:, edge_type == 1]
+    v2[:, at["phys_degree"]] = np.bincount(ent[0], minlength=n)[:n] if ent.size else 0.0
+
+    out = {k: np.asarray(v) for k, v in arrays.items()}
+    out.update(
+        node_features=v2,
+        node_ids=node_ids.astype(np.int32),
+        edge_index=edge_index.astype(np.int32),
+        edge_type=edge_type.astype(np.int32),
+        n_polymer=np.int32(int(chain.sum())),
+        n_crosslinker=np.int32(int((kind == 1).sum())),
+        ree2=v1[:, col["ree2"]].copy(),
+        schema_version=np.int32(SCHEMA_VERSION),
+        upgraded_from=np.int32(1),
+    )
+    return out
+
+
+def read_npz(path: Union[str, Path]) -> dict:
+    """The arrays of an NPZ dual graph in the current schema.
+
+    Checks ``schema_version`` (:func:`npz_schema_version`) and upgrades a
+    schema 1 file (:func:`upgrade_npz_v1`), so a caller always sees the v2
+    columns. For GNN pipelines that want the arrays rather than a graph.
+    """
+    with np.load(Path(path)) as data:
+        arrays = {k: data[k] for k in data.files}
+    if npz_schema_version(arrays) == 1:
+        arrays = upgrade_npz_v1(arrays)
+    return arrays
+
+
 def load_npz(
     path: Union[str, Path],
 ) -> tuple[nx.MultiGraph, Optional[np.ndarray]]:
     """Load a topon npz dual graph back into a MultiGraph + dims.
 
-    Reverses :func:`topon.writers.npz_writer.write_npz`.
+    Reverses :func:`topon.writers.npz_writer.write_npz`. A schema v1 file
+    is upgraded first (:func:`read_npz`); its dangling and sol chains have
+    fewer than two crosslinks and are counted and skipped, since the dual
+    graph holds no node for a free chain end.
 
     Args:
         path: Path to the ``.npz`` file.
@@ -688,7 +827,7 @@ def load_npz(
         ``(G, dims)`` -- same shape as :func:`load_graphml`.
     """
     path = Path(path)
-    data = np.load(path)
+    data = read_npz(path)
     node_features = data["node_features"]
     node_ids = data["node_ids"]
     edge_index = data["edge_index"]
@@ -697,8 +836,8 @@ def load_npz(
     n_polymer = int(data["n_polymer"])
     n_crosslinker = int(data["n_crosslinker"])
 
-    # Feature columns (must match npz_writer._FEATURE_COLUMNS):
-    #   v1: [type, length, contour_length, rg, COMX, COMY, COMZ, node_degree]
+    # Feature columns (must match npz_writer._FEATURE_COLUMNS; a v1 file
+    # has been upgraded to these by read_npz):
     #   v2: [type, length, contour_length, rg, COMX, COMY, COMZ,
     #        chem_degree, phys_degree, frac_ext]
     # In v2 the COM columns are deliberately NaN (they are conformation
@@ -827,11 +966,15 @@ def _build_multigraph_from_dual(
     # assignment is deterministic across graphml and npz loads of the
     # same network.
     cid_to_edge: dict[int, tuple[int, int, int]] = {}
+    # A chain with one crosslink (dangling) or none (sol) has no second
+    # junction to be an edge to; topon's own writers never produce one,
+    # but the bond/create datasets carry hundreds, so they are counted and
+    # reported once rather than one line each.
+    skipped = Counter(len(chain_endpoints.get(cid, ())) for cid in polymer_attrs
+                      if len(chain_endpoints.get(cid, ())) != 2)
     for cid in sorted(chain_endpoints):
         endpoints = chain_endpoints[cid]
         if len(endpoints) != 2:
-            print(f"  [warn] chain {cid} has {len(endpoints)} crosslink "
-                  f"endpoints (expected 2); skipping")
             continue
         # Canonicalise the (u, v) order so the same chain always yields
         # the same edge key regardless of how chemical_pairs were ordered
@@ -840,6 +983,12 @@ def _build_multigraph_from_dual(
         dp = int(polymer_attrs[cid].get("length", 1))
         key = G.add_edge(u, v, dp=dp)
         cid_to_edge[cid] = (u, v, key)
+    if skipped:
+        parts = ", ".join(f"{n} with {k} crosslink{'s' if k != 1 else ''}"
+                          for k, n in sorted(skipped.items()))
+        print(f"  [warn] skipped {sum(skipped.values())} chains that do not "
+              f"join two crosslinks ({parts}); the graph has no node for a "
+              f"free chain end")
 
     # Recover entanglement multiplicities by counting chain pairs.
     ent_counts: Counter = Counter()

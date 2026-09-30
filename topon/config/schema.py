@@ -29,12 +29,11 @@ class GeneratorConfig(BaseModel):
 
     The one nested section that refuses unknown keys. Pydantic's default
     is to ignore them, so ``"seed": 7`` under ``topology.generator``
-    validated cleanly and did nothing: there is no seed field here, and a
-    user who wrote it reasonably believed they had pinned the graph. The
-    failure was silent and surfaced much later as a run that would not
-    reproduce. Reproducibility comes from seeding the global streams
-    before generating (``random.seed`` and ``np.random.seed``); a real
-    ``seed`` field threaded through the generator is task 08's remit.
+    validated cleanly and did nothing before there was a seed field (0.2.0
+    refused it; 0.4.0 made it real), and a user who wrote it reasonably
+    believed they had pinned the graph. The failure was silent and
+    surfaced much later as a run that would not reproduce. Any other
+    misspelt key would do the same, which is why the refusal stays.
 
     Scoped to this model on purpose. Every other nested section still
     ignores unknown keys, which ``topon doctor`` warns about instead
@@ -126,6 +125,46 @@ class GeneratorConfig(BaseModel):
             "active subgraph."
         ),
     )
+    odd_walks: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Exact search only. When an attempt's repair ends short on a "
+            "scaffold with an odd cycle (FCC, MIX, SC or BCC beyond the "
+            "first shell), search the augmenting walk again over (site, "
+            "next move) states and close what the marked walk left open. "
+            "Unset means on. A seed whose earlier attempt ended short on "
+            "such a scaffold then lands on that attempt, with a different "
+            "graph than with the walks off, as before 0.4.0. False gives that graph."
+        ),
+    )
+    architecture: Literal["end_linked", "random_crosslinked"] = Field(
+        default="end_linked",
+        description=(
+            "What an edge of the sculpted graph is. 'end_linked': every "
+            "strand is a chain and every junction a crosslinker, the "
+            "historic route. 'random_crosslinked': crosslinks sit along "
+            "longer chains, so a junction is a crosslink point that two "
+            "chains pass through (degree 4 for a crosslink between two "
+            "chain beads) and a degree-1 site is a chain end; stage 3 then "
+            "covers the strands with chains of assignment.chains.dp beads "
+            "(topon.assignment.chains) and gives each strand the beads "
+            "between its crosslinks. Degrees above 2 must be even, since a "
+            "chain passing a junction takes two of its strands."
+        ),
+    )
+    seed: Optional[int] = Field(
+        default=None, ge=0, lt=2 ** 32,
+        description=(
+            "Pins the generated graph. The Python generator draws from its "
+            "own streams seeded with this number, so seed n gives the graph "
+            "that random.seed(n) and np.random.seed(n) just before "
+            "generating gave, without touching the global streams; the C "
+            "route gets a TOPON_SEED drawn the same way. Only stage 1 is "
+            "pinned: the later stages still draw from the global streams "
+            "(assignment.defects.seed pins the defects). null keeps the old "
+            "behaviour, the generator drawing from the global streams."
+        ),
+    )
 
     @field_validator("mix_fractions")
     @classmethod
@@ -191,6 +230,29 @@ class GeneratorConfig(BaseModel):
         return data
 
     @model_validator(mode="after")
+    def _random_crosslinked_degrees(self):
+        """Refuse an odd junction degree for a random-crosslinked network.
+
+        A chain passing a junction takes two of its strands, so a junction
+        of odd degree needs a chain to end inside it, which a crosslink
+        between two chain beads never gives.
+        """
+        if self.architecture != "random_crosslinked":
+            return self
+        from topon.topology.degree_matching import parse_degree_distribution
+
+        counts, _ = parse_degree_distribution(self.degree_distribution)
+        odd = sorted(d for d, n in counts.items() if d >= 3 and d % 2 and n > 0)
+        if odd:
+            raise ValueError(
+                f"architecture 'random_crosslinked' needs even junction "
+                f"degrees (two strands per chain passing), and "
+                f"degree_distribution asks for degree(s) {odd}. Degree 1 is "
+                f"a chain end, 2 a junction that carries a primary loop, "
+                f"4 a crosslink between two chain beads.")
+        return self
+
+    @model_validator(mode="after")
     def _resolve_neighbour_cutoff(self):
         """Fold ``neighbour_shells`` into ``neighbour_cutoff`` and check both.
 
@@ -230,14 +292,162 @@ class ExistingFilesConfig(BaseModel):
     gpickle_file: Optional[str] = Field(default=None, description="Path to .gpickle file")
 
 
+class CrosslinkChainConfig(BaseModel):
+    """One chain type of a melt crosslinked along its chains.
+
+    The reactive beads come from exactly one of ``reactive_every`` (every
+    so many beads from ``reactive_start``), ``reactive`` (the bead indices)
+    or ``sequence`` (one bead per residue, ``crosslink_residue`` reactive,
+    through ``topon.protein_network.sequence.plan_chain``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(ge=1, description="Chains of this type.")
+    dp: Optional[int] = Field(
+        default=None, ge=3,
+        description="Beads per chain, ends and crosslinked beads included "
+                    "(from the sequence when one is given).")
+    reactive_every: Optional[int] = Field(
+        default=None, ge=1,
+        description="Every so many beads may crosslink, from reactive_start.")
+    reactive_start: int = Field(default=1, ge=1,
+                                description="First reactive bead (0 is a chain end).")
+    reactive: Optional[list[int]] = Field(
+        default=None, description="The reactive bead indices, interior beads only.")
+    sequence: Optional[str] = Field(
+        default=None, description="One-letter residue sequence of one repeat.")
+    repeats: int = Field(default=1, ge=1, description="Repeats of the sequence per chain.")
+    crosslink_residue: str = Field(default="Y", description="The residue that crosslinks.")
+    site_type: str = Field(
+        default="X",
+        description="Label of this type's reactive beads, for crosslinking.pairs "
+                    "(a sequence labels them with its crosslink residue).")
+    name: Optional[str] = Field(default=None, description="A name for the record.")
+
+    @model_validator(mode="after")
+    def _one_source_of_sites(self):
+        given = [k for k in ("reactive_every", "reactive", "sequence")
+                 if getattr(self, k) is not None]
+        if len(given) != 1:
+            raise ValueError(
+                f"a crosslinking chain type needs exactly one of reactive_every, "
+                f"reactive or sequence, got {given or 'none'}")
+        if self.sequence is None and self.dp is None:
+            raise ValueError("a crosslinking chain type needs dp (or a sequence)")
+        if self.sequence is not None and self.dp is not None:
+            raise ValueError("give dp or a sequence, not both: the sequence sets the length")
+        return self
+
+
+class CrosslinkingConfig(BaseModel):
+    """A melt grown on a lattice and crosslinked where reactive beads touch.
+
+    Read when ``topology.source`` is ``"crosslink"``
+    (:mod:`topon.topology.chain_crosslinking`). The chains, every strand's
+    DP and the chain it belongs to are decided here, in stage 1, so stage 3
+    leaves them as they are.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chains: list[CrosslinkChainConfig] = Field(
+        default_factory=list, description="The chain types.")
+    crosslinks: Optional[int] = Field(
+        default=None, ge=0, description="Crosslinks to make (exactly one target).")
+    conversion: Optional[float] = Field(
+        default=None, ge=0, le=1,
+        description="Fraction of the reactive beads that react (exactly one target).")
+    per_chain: Optional[float] = Field(
+        default=None, ge=0,
+        description="Crosslinked beads per chain; a crosslink counts on both "
+                    "chains it joins (exactly one target).")
+    packing: float = Field(
+        default=0.4, gt=0, le=0.6,
+        description="Fraction of the lattice sites the melt fills. It sets how "
+                    "evenly the crosslinks spread (a physical parameter, not a "
+                    "resolution): the bond-fluctuation references were 0.395.")
+    persistence: Optional[float] = Field(
+        default=None, ge=0, lt=1,
+        description="Weight of a straight step against 1/4 of the rest for each "
+                    "turn. Unset (and no c_inf), 0.2, the five open directions "
+                    "alike.")
+    c_inf: Optional[float] = Field(
+        default=None, gt=1,
+        description="The chains' characteristic ratio in lattice bonds; the "
+                    "persistence is solved for. Give this or persistence.")
+    contact_radius: float = Field(
+        default=1.5, ge=1,
+        description="Reactive beads this close (lattice units) may crosslink. "
+                    "1.5 takes face and edge neighbours, free of the cubic "
+                    "lattice's parity; 1.0 the face neighbours only (the "
+                    "bond-fluctuation generator's rule).")
+    max_radius: float = Field(
+        default=3.0, ge=1, le=6,
+        description="How far the contact shells may go out when the contacts "
+                    "cannot make the count.")
+    min_gap: int = Field(
+        default=6, ge=3,
+        description="Fewest bonds between two beads of one chain that crosslink "
+                    "each other (3 or more: the builder needs a primary loop of "
+                    "two beads).")
+    pairs: Optional[list[tuple[str, str]]] = Field(
+        default=None,
+        description="Site types that may pair, e.g. [['A', 'B']]; unset, any pair.")
+    keep_windings: bool = Field(
+        default=False,
+        description="Refuse a crosslink that makes a strand run across half the "
+                    "box in the melt, which the builder would draw the short way "
+                    "round. Off, such strands are made and counted "
+                    "(strands_rewound); a box smaller than the chains needs off.")
+    min_dangling_dp: Optional[int] = Field(
+        default=None, ge=0,
+        description="Fewest beads a dangling strand keeps between its crosslink "
+                    "and the chain's end bead; reactive beads closer to a chain "
+                    "end are left out. Unset, 0 on the coarse-grained route (a "
+                    "crosslink on the bead next to a chain end bonds the end bead "
+                    "straight to the junction) and 1 on the atomistic route, "
+                    "whose strands join their junctions through a monomer.")
+    seed: Optional[int] = Field(
+        default=None, ge=0, lt=2 ** 32,
+        description="Pins the melt and the crosslinks. null draws one from "
+                    "NumPy's global stream.")
+
+    @model_validator(mode="after")
+    def _one_target(self):
+        given = [k for k in ("crosslinks", "conversion", "per_chain")
+                 if getattr(self, k) is not None]
+        if self.chains and len(given) != 1:
+            raise ValueError(
+                f"topology.crosslinking needs exactly one of crosslinks, "
+                f"conversion or per_chain, got {given or 'none'}")
+        if self.persistence is not None and self.c_inf is not None:
+            raise ValueError("topology.crosslinking: give persistence or c_inf, not both")
+        if self.max_radius < self.contact_radius:
+            raise ValueError("topology.crosslinking.max_radius is below contact_radius")
+        return self
+
+
 class TopologyConfig(BaseModel):
     """Topology generation/loading configuration."""
-    source: Literal["generate", "load"] = Field(
+    source: Literal["generate", "load", "crosslink"] = Field(
         default="load",
-        description="Whether to generate new topology or load existing"
+        description=(
+            "Whether to generate new topology or load existing. 'crosslink' "
+            "grows the chains of topology.crosslinking as a lattice melt and "
+            "crosslinks the reactive beads that touch (a network crosslinked "
+            "along its chains, with each strand's DP and chain decided here)."
+        ),
     )
     generator: GeneratorConfig = Field(default_factory=GeneratorConfig)
     existing_files: ExistingFilesConfig = Field(default_factory=ExistingFilesConfig)
+    crosslinking: CrosslinkingConfig = Field(default_factory=CrosslinkingConfig)
+
+    @model_validator(mode="after")
+    def _crosslink_has_chains(self):
+        if self.source == "crosslink" and not self.crosslinking.chains:
+            raise ValueError("topology.source 'crosslink' needs topology.crosslinking.chains")
+        return self
 
 
 # =============================================================================
@@ -582,6 +792,47 @@ class CopolymerConfig(BaseModel):
     per_edge_type: dict[str, CopolymerTypeConfig] = Field(default_factory=dict)
 
 
+class ChainsConfig(BaseModel):
+    """Chains through the junctions of a random-crosslinked network.
+
+    Read only when ``topology.generator.architecture`` is
+    ``"random_crosslinked"`` (see :mod:`topon.assignment.chains`). Every
+    chain has ``dp`` beads; the strands between its crosslinks get the beads
+    between them, so the per-strand DP comes from here and
+    ``dp_distribution`` is overwritten.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dp: Optional[int] = Field(
+        default=None, ge=3,
+        description="Beads per chain, ends and crosslinked beads included.")
+    reactive_every: int = Field(
+        default=1, ge=1,
+        description=(
+            "Spacing of the beads that may carry a crosslink, from bead 1: "
+            "1 is every interior bead, 3 every third one."))
+    passes: Optional[list[float]] = Field(
+        default=None,
+        description=(
+            "Target P(a chain passes k junctions) for k = 1, 2, ... . Unset, "
+            "the binomial of random crosslinking over the reactive beads "
+            "with the graph's own mean."))
+    chord_floor: bool = Field(
+        default=True,
+        description=(
+            "Coarse-grained builds only: give every strand at least the "
+            "beads that span its chord at the design bond (0.97 sigma), at "
+            "the box chemistry.target_density gives, so no strand starts "
+            "stretched. Off, the crosslinked beads are uniform along each "
+            "chain whatever the chords."))
+    seed: Optional[int] = Field(
+        default=None, ge=0, lt=2 ** 32,
+        description=(
+            "Pins the cover and the bead split. null draws the generator's "
+            "seed from NumPy's global stream."))
+
+
 class AssignmentConfig(BaseModel):
     """Complete assignment configuration."""
     node_types: NodeTypesConfig = Field(default_factory=NodeTypesConfig)
@@ -591,6 +842,7 @@ class AssignmentConfig(BaseModel):
     entanglements: EntanglementsConfig = Field(default_factory=EntanglementsConfig)
     grafts: GraftsConfig = Field(default_factory=GraftsConfig)
     copolymer: CopolymerConfig = Field(default_factory=CopolymerConfig)
+    chains: ChainsConfig = Field(default_factory=ChainsConfig)
 
 
 # =============================================================================
@@ -969,13 +1221,81 @@ class ConformationConfig(BaseModel):
     junction_shell_spacing: Optional[float] = Field(
         default=None, gt=0,
         description=(
-            "Seat the first bead of every chain leaving a junction on a spread "
-            "shell at least this far apart, in sigma. null leaves them where "
-            "their chords put them."
+            "Seat the first bead of every chain leaving a junction on a "
+            "spread shell at least this far apart, in sigma. All-or-nothing "
+            "per junction, since a half-seated junction is more crowded than "
+            "an unseated one, and most junctions decline: read "
+            "guard_report()['junction_shells'] for what was actually seated. "
+            "null leaves every chain where its chord put it."
+        ),
+    )
+    junction_jitter: float = Field(
+        default=0.0, ge=0.0, le=0.5,
+        description=(
+            "Move every junction by a Gaussian offset per axis before the "
+            "strands are drawn, as a fraction of the site spacing "
+            "((box volume / sites)^(1/3)). On a lattice with several "
+            "neighbour shells many chords cross exactly (every pair of sites "
+            "symmetric about one point has its midpoint there), and three "
+            "strands drawn through one point jam in the push-off; 0.10-0.15 "
+            "takes the close chord triples within 0.5 sigma on the N20 graph "
+            "from 128 to 2-6. The graph does not change; chords, reach and "
+            "coil ratio do (guard_report()['junction_jitter']). An offset that "
+            "would take a strand past 0.97 of its contour (or past its "
+            "lattice chord, if longer), flip a chord's periodic image or "
+            "bring two junctions within 1 sigma is halved. 0 leaves every "
+            "junction on its site."
+        ),
+    )
+    settle_clearance: Optional[float] = Field(
+        default=None, gt=0,
+        description=(
+            "After drawing, part the bonds of different strands to this "
+            "bond-to-bond distance, in sigma (about 1), holding the junctions, "
+            "keeping every bond in the placement band and each strand clear "
+            "of itself, and never moving one bond through another (two bonds "
+            "drawn touching have no side, and are parted first) "
+            "(guard_report()['settle']). Pairs within two bonds of a junction "
+            "both strands share are exempt. Use it with junction_jitter on a "
+            "lattice whose chords cross exactly: on the N20 build without jitter, "
+            "or at 0.02 (up to five strands through one point), it does not "
+            "converge, and a settle that would leave a strand "
+            "failing the gate puts the whole build back as drawn. null draws "
+            "the build as it has always been drawn."
         ),
     )
     entanglement: EntanglementTargetConfig = Field(
         default_factory=EntanglementTargetConfig
+    )
+
+    # ---- the atomistic route (Pipeline, chemistry.model_type "atomistic") ----
+    atomistic_placement: Optional[Literal["straight", "meander", "walk"]] = Field(
+        default="meander",
+        description=(
+            "Draw each strand's backbone as a chain at the force field's bond "
+            "lengths, with 'straight', 'meander' or 'walk' as on the bead-spring "
+            "route (meander_waves, min_bond, min_self_separation and "
+            "path_jitter keep their meaning, read in units of the backbone bond "
+            "over 0.97), settle it (atomistic_clearance), and place every other "
+            "atom at its bond length off the backbone. A strand whose chord "
+            "reaches 0.97 of its extended length (0.79 of the contour for PDMS) "
+            "is drawn straight. The default; a network with POSS nodes falls "
+            "back to the historic placement unless this is set. null keeps the "
+            "historic placement: every heavy atom evenly on the chord, relaxed "
+            "into a molecule by the soft first stage (and the relaxation "
+            "defaults to the historic soft_push deck)."
+        ),
+    )
+    atomistic_clearance: float = Field(
+        default=1.5, ge=0.0,
+        description=(
+            "With atomistic_placement: the closest two backbone bonds may be "
+            "drawn, in A (bonds that share an atom, or sit within two bonds of "
+            "each other along one strand, excepted). Pairs drawn closer are "
+            "opened along the line between them before anything else is "
+            "placed, so the first stage never has to decide which side of each "
+            "other two bonds are on. 0 turns it off."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -1023,6 +1343,53 @@ class OutputConfig(BaseModel):
 
 
 # =============================================================================
+# ANALYSIS CONFIG
+# =============================================================================
+
+class Z1PlusConfig(BaseModel):
+    """Where Z1+ is installed and how to reach it.
+
+    Z1+ (Kroger's primitive-path analysis) is not part of topon and must not
+    be: its licence does not allow redistribution. Install it yourself and
+    point ``executable`` at the binary. It ships for Linux, so on Windows it
+    runs inside WSL, where ``executable`` is a path in the Linux file system.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    executable: str = Field(
+        default="~/z1/Z1+",
+        description=(
+            "Path to the Z1+ binary, in WSL when it runs there. A leading ~/ "
+            "is the home directory of the account it runs under."
+        ),
+    )
+    wsl: Literal["auto", "always", "never"] = Field(
+        default="auto",
+        description=(
+            "Run Z1+ inside WSL. 'auto' does on Windows and does not "
+            "elsewhere."
+        ),
+    )
+    wsl_distro: Optional[str] = Field(
+        default=None,
+        description="WSL distribution to run in; null is the default one",
+    )
+    timeout: float = Field(
+        default=7200.0, gt=0,
+        description="Seconds one Z1+ run may take before it is abandoned",
+    )
+
+
+class AnalysisConfig(BaseModel):
+    """Settings for `topon analyze` and `topon inspect`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    z1plus: Z1PlusConfig = Field(default_factory=Z1PlusConfig)
+
+
+# =============================================================================
 # MAIN CONFIG
 # =============================================================================
 
@@ -1034,5 +1401,44 @@ class ToponConfig(BaseModel):
     chemistry: ChemistryConfig = Field(default_factory=ChemistryConfig)
     conformation: ConformationConfig = Field(default_factory=ConformationConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
-    
+    analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
+
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _crosslink_melt_owns_its_chains(self):
+        """A crosslinked melt decides its chains and loops in stage 1.
+
+        The chain cover (``assignment.chains``) would cut the strands into
+        chains a second time, and
+        the defects stage would add loops and sol the melt already has (its
+        loops are intra-chain crosslinks, its sol the chains no crosslink
+        reached), so both are refused rather than left to overwrite it.
+        """
+        if self.topology.source != "crosslink":
+            return self
+        if self.topology.generator.architecture == "random_crosslinked":
+            raise ValueError(
+                "topology.source 'crosslink' decides the chains in stage 1; "
+                "topology.generator.architecture 'random_crosslinked' (the "
+                "chain cover of a sculpted graph) does not apply to it")
+        d = self.assignment.defects
+        on = [k for k in ("primary_loops", "secondary_loops", "triangles",
+                          "four_cycles", "sol_chains") if getattr(d, k).enabled]
+        if on:
+            raise ValueError(
+                f"topology.source 'crosslink' makes its own loops and sol "
+                f"(intra-chain crosslinks, chains no crosslink reached); "
+                f"assignment.defects {on} would add more on top")
+        return self
+
+    @model_validator(mode="after")
+    def _chains_have_a_length(self):
+        """A random-crosslinked network needs the length of its chains."""
+        arch = self.topology.generator.architecture
+        if arch == "random_crosslinked" and self.assignment.chains.dp is None:
+            raise ValueError(
+                "topology.generator.architecture 'random_crosslinked' needs "
+                "assignment.chains.dp, the beads per chain the strands are "
+                "cut from")
+        return self

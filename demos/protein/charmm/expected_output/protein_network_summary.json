@@ -17,6 +17,7 @@
     "n_extra_snapshots": 2,
     "snapshot_delta_conv": 0.05,
     "min_intrachain_sep": 2,
+    "contact_radius": 1.5,
     "water_content": 0.0,
     "salt_conc": 0.15,
     "target_density": 0.85,

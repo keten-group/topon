@@ -19,7 +19,7 @@ The package contains three independent sub-systems with related jobs.
 | LAMMPS data | `atom_style full`, wrap-only (7-column atom rows, no image flags) | `atom_style full`, 10-column atom rows with image flags (§6) | `atom_style full`, wrap-only |
 | Pipeline | the six stages below | sequence → chain layout → lattice growth and crosslinking → chemistry → LAMMPS files (§6) | independent packing flow |
 | Crosslinks | Y-merge (CG) / chemistry-defined (atomistic) | dityrosine or disulfide (CHARMM `DITY` or `DISU` patch, Martini SC4-SC4 or SC1-SC1 bond) | reaction templates (epoxy/amine, etc.) |
-| Topology shape | lattice graph (SC / BCC / FCC / Diamond / MIX, configurable functionality) | self-avoiding walks on a cubic lattice (bond-fluctuation model) | molecule library + grid packing |
+| Topology shape | lattice graph (SC / BCC / FCC / Diamond / MIX, configurable functionality), or a crosslinked lattice melt | a residue-level lattice melt (default), or self-avoiding walks on the node lattice of the bond-fluctuation model | molecule library + grid packing |
 
 A third, smaller utility (`topon/singlechain/`) handles single-chain solubility calculations. The main pipeline does not use it.
 
@@ -27,7 +27,7 @@ A third, smaller utility (`topon/singlechain/`) handles single-chain solubility 
 
 ## 2. The six-stage pipeline
 
-The `Pipeline` class in [`topon/pipeline.py`](../topon/pipeline.py) runs the core topon pipeline. Its `run()` method calls six stages in order.
+The `Pipeline` class in [`topon/pipeline.py`](../topon/pipeline.py) runs the core topon pipeline. Its `run()` method calls six stages in order. `run_graph_stages()` runs stages 1 to 3 only and returns the graph the chemistry stage would receive, defects included. `topon fit` sweeps its candidate cutoffs through it and `topon generate --verify` regenerates its seeds with it (`topon/inverse/`), so both measure the graph that `run()` builds.
 
 ```
 config.json
@@ -53,9 +53,10 @@ load_config_full() ───► ToponConfig (Pydantic) ──► Pipeline.run()
 ### Stage 1. Topology
 `Pipeline._run_topology_stage` runs this stage from `topon/topology/`.
 
-This stage generates or loads a NetworkX `MultiGraph`. Nodes are network junctions and edges are polymer chains. There are two sources.
+This stage generates or loads a NetworkX `MultiGraph`. Nodes are network junctions and edges are polymer chains. There are three sources.
 - `source="generate"` runs the pure-Python generator (`topon.topology.generator_python.PythonTopologyGenerator`) in process. When `topology.generator.exe_path` is set, it calls the C generator (`generator.exe`) through `topon.topology.generator.run_generator` instead and then loads the `.nodes`/`.edges` files it writes.
 - `source="load"` reads existing `.gpickle` or `.nodes`+`.edges` files through `topon.topology.loader.load_graph`.
+- `source="crosslink"` runs `topon.topology.chain_crosslinking.crosslink_chains`, which grows the chains of `topology.crosslinking` one after another as a self-avoiding melt on a cubic lattice and crosslinks the reactive beads that touch, for a network crosslinked along its chains (random crosslinking, vulcanization, tyrosines placed by a sequence). The graph comes with every strand's `dp`, `chain` and `chain_index` and with `G.graph["chains"]`, so for this source stage 1 decides chain membership and DP and stage 3 keeps them (`AssignmentManager(chains_decided=True)`). The melt is written to `topology/crosslinked_melt.npz`.
 
 #### Lattices and range
 
@@ -118,9 +119,14 @@ default and generates likely networks quickly in process, with no
 compiler. The two are independent programs. Nothing in `csrc/` is called
 from Python, and it should not get a Python binding. Only the shared parts
 (lattice construction and the `.nodes`/`.edges` format) must stay in step.
-The two agree in distribution. Individual draws differ because the C
-generator uses its own random stream (seeded from the clock unless
-`TOPON_SEED` is set).
+The two agree in distribution. Individual draws differ because they use
+different random generators (xoshiro256** in C, the Mersenne Twister in
+Python), so one seed gives a different network in each.
+`topology.generator.seed` pins either route. The Python generator draws
+from private streams seeded with it (the draws that `random.seed(n)` and
+`np.random.seed(n)` gave, leaving the global streams alone), and the C
+binary gets a `TOPON_SEED` drawn from the same number. Unset, both fall
+back to the global streams.
 
 On SC at `max_func=4`, the time to first success is 0.01 s in Python and
 0.04 s in C at 6³ (process startup dominates), 1.5 s and 0.11 s at 12³,
@@ -134,9 +140,13 @@ The stage produces `self.graph` (the annotated `MultiGraph`) and `self.dims` (th
 `topon/core/manifest.py`, with one section per stage. The stage 1 section
 records the lattice, the search, the requested and achieved degree counts,
 the giant-component fraction, the seed and the timing. `topon inspect`
-prints it next to the stage-output summary. The manifest is advisory. No
-stage reads it back, so a missing or half-written manifest does not change
-a run.
+prints it next to the stage-output summary. A `run` entry, written before
+any stage, names the process writing the directory (pid, a hash of the
+host name, start time), so a second process started on the same directory
+can warn that it is not alone. Stage 4 adds the strand record of an
+atomistic build, which `topon analyze` and `topon track` read. The manifest
+is advisory. No stage reads it back, so a missing or half-written manifest
+does not change a run.
 
 #### Periodic cell
 
@@ -159,7 +169,7 @@ this reason.
 
 This stage computes graph statistics (degree distribution, connectivity, and the defect and entanglement *capacity* of the topology) before any annotation is written. The result is stored in `self.analysis_report`. The stage does not modify the graph.
 
-It is separate from the `topon/analysis/` package, which provides `analyze_graph()` for the `topon analyze` sub-command. `Pipeline` does not import from `topon.analysis`.
+It is separate from the `topon/analysis/` package, which holds the connectivity descriptors, the data-file readers and the Z1+ driver behind `topon analyze`, `topon inspect` and `topon track`. `Pipeline` does not import from `topon.analysis`.
 
 ### Stage 3. Assignment
 `Pipeline._run_assignment_stage` runs this stage from `topon/assignment/`.
@@ -174,6 +184,7 @@ This stage annotates the graph in place. `AssignmentManager` (`assignment/manage
 | Degree-of-polymerization distribution (Schulz-Zimm PDI) | `assign_dp()` | `assignment/dp_distribution.py` |
 | Copolymer sequences (Block, Random, Alternating, Gradient) | `generate_monomer_sequence()` | `chemistry/sequences.py` |
 | Defects (primary loops, secondary loops, triangles, four-cycles, sol) | `apply_defects()` | `assignment/defects.py` |
+| Chains through the junctions of a random-crosslinked network (`topology.generator.architecture`, while a crosslinked melt brings its own chains and skips this and the DP draw) | `assign_chains()` | `assignment/chains.py` |
 | Entanglements (which chain pairs to entangle) | `select_entanglements()` | `assignment/entanglements.py` |
 | Re-attribute existing graph (round-trip workflows) | `GraphAttributor` (class) | `assignment/attributor.py` |
 
@@ -204,7 +215,9 @@ This stage also writes the first LAMMPS files to `<output_dir>/02_Chemistry/`.
 
 Stage 5 has two entry points, one for each kind of build.
 
-`ConformationManager` (`conformation/manager.py`) is the pipeline's path for a system that already has a data file. It reads the chemistry-stage output, applies the displacement files, adds a small uniform noise to break degeneracy, and resolves overlaps iteratively.
+`ConformationManager` (`conformation/manager.py`) is the pipeline's path for a system that already has a data file. It reads the chemistry-stage output, applies the displacement files, adds a small uniform noise to break degeneracy, and resolves overlaps iteratively. The noise and the push given to two atoms that coincide come from generators that the pipeline keys on the study name, so a pinned config writes the same relaxed file on every run. Called without them, as the workflow modules call it, they draw from the global NumPy stream.
+
+On the atomistic route the displacement files come from one of two placements, both computed in stage 4 because they need the force field just written. `conformation/atomistic.py` (`conformation.atomistic_placement`, the default) draws each backbone with the bead-spring path routines at the force field's bond lengths, settles the backbones so that no two bonds are closer than `atomistic_clearance` (every move read back with `conformation/segments.py`, the geometry the crossing detector uses, so that no bond passes through another), and sets every other atom at bond length off the backbone. The earlier placement spaces every heavy atom of a strand evenly on its chord.
 
 `conformation/placement/chains.py::place` builds a bead-spring system directly from the graph. `Pipeline` does not call it (`Pipeline._run_conformation_stage` constructs only `ConformationManager`), so it is used through the API as `topon.conformation.place`. It takes a graph, a DP and one of three chain shapes. It sizes the build box from the bead count and the build density (or, equivalently, a coil ratio), draws every strand and checks each strand against a gate. It runs no dynamics and writes no file. It returns the coordinates and the gate readings that show whether they are usable. `conformation/packing/` is still a 1-line stub.
 
@@ -213,7 +226,8 @@ The gate checks three things per strand (every bond at or below the design lengt
 Three more modules are opt-in and not on the default pipeline path. The entanglement workflows use them.
 
 - `conformation/entanglement/` builds chain paths that wind around each other a set number of times. `waypoints.py` draws a chain through points the caller chooses (`Site(at, turns)`) and is the current approach. `braid.py` and `allocation.py` are an earlier search-based construction that picks its own positions. They are kept because the waypoint path has no equivalent yet for their budgeting and obstruction checks. `designed.py` puts a braid on a chain that is already placed. It refuses a request whose windings do not fit in the strands' contour and names the minimum DP. `control.py` closes a loop on the measured Z1+ of the relaxed system. It is exported as `topon.conformation.entanglement.controller` and takes a caller-supplied `runner`, so the stage does not depend on LAMMPS.
-- `conformation/junction_shell.py` spreads the chains leaving a crosslink so their first beads do not overlap. The shell radius grows with functionality.
+- `conformation/junction_shell.py` spreads the chains leaving a crosslink so their first beads do not overlap. The shell radius is the larger of the design bond and the spread the spacing needs, and a junction whose chains cannot pay for the seat is declined whole.
+- `conformation/placement/settle.py` handles strands of a bead-spring build that cross. `chord_triples` counts the triples of bridge chords pairwise within 0.5, 1.0 and 1.5 sigma (a diagnostic in `guard_report()`), and `settle_strands` parts the bonds of different strands to a clearance, holding the junctions and putting back any move that takes one bond through another. `place` calls it with `settle_clearance`, and moves every junction by a seeded Gaussian offset before drawing with `junction_jitter`. Both are off by default.
 - `conformation/paths.py` is plain geometry (two junctions and a bead count in, a path out). `bridging_walk` is melt-like and random. `route_through` is deterministic, for a prescribed topology that must be repeatable. Both keep every bond length exact and end on both junctions. `Clearance` lets either of them draw around the beads already in the box, so the following minimization does not resolve an overlap by pushing two chains through each other. Two routines handle strands with no second endpoint, and the pipeline's chemistry stage calls both. `closed_meander` draws a primary loop as a regular polygon through its junction, and `free_walk` draws a sol chain.
 
 The conformation defaults are in `Pipeline._DEFAULT_CONFORMATION`.
@@ -242,7 +256,8 @@ This stage writes the LAMMPS input scripts. Their content depends on
 `simulation.protocol`.
 
 - `pushoff` (the coarse-grained default) has five stages (capped-displacement push-off under FENE + WCA, uncapped push-off, equilibration at the build density, affine compression, quench) and no minimizer.
-- `hardcore_min` and `soft_push` are the older three-stage decks with a minimizer. They are kept to reproduce earlier runs. The atomistic route always uses the `soft_push` layout, because its bonded terms are stiff and a capped push-off would take much longer than a minimizer to resolve the same overlaps.
+- `hardcore_min` and `soft_push` are the older three-stage decks with a minimizer. They are kept to reproduce earlier runs.
+- On the atomistic route (`simulation.atomistic_protocol`) the pipeline writes the `hard_backbone` stages for a settled build. They keep every pair of backbone atom types hard through stages 1 and 2 and push off under a thermostat, the atomistic counterpart of the bead-spring push-off, with the backbone types handed over by the pipeline, and they dump the backbone for the crossing detector. The earlier `soft_push` layout remains for the earlier placement and the workflow route. `simulation/protocols/atomistic.py` gates the three stages in atomistic units (backbone bonds against r0, no backbone bond passing through another, Z1+ reported).
 
 The scripts go to `<output_dir>/04_Simulation/*.in`. The two protocol
 families differ in which scripts they write and what each one leaves
@@ -259,17 +274,18 @@ The table lists every directory under `topon/`. Modules above the dashed row bel
 
 | Directory | Files / Subdirs | Role |
 |---|---|---|
-| `topology/` | 7 files (`shells.py` holds the neighbor-shell table and cutoff resolver, `degree_matching.py` the exact degree-sequence search) + `csrc/` (C generator) + `network/` (a thin loader wrapper), `sequence/`, `simple/` (stubs) | Graph generation and loading. Stage 1. |
-| `analysis/` | 3 files (`report.py` is `topon analyze`, `run_summary.py` is `topon inspect`) | Read-only graph statistics for the `topon analyze` CLI, and the post-run summary. Not used by `Pipeline` stage 2, which calls `AssignmentManager.analyze()`. |
-| `assignment/` | 8 files | Graph annotation (node/edge types, DP, defects, entanglements, copolymers). Stage 3. |
+| `topology/` | 8 files (`shells.py` holds the neighbor-shell table and cutoff resolver, `degree_matching.py` the exact degree-sequence search, `chain_crosslinking.py` the crosslinked melt behind `source: "crosslink"`) + `csrc/` (C generator) + `network/` (a thin loader wrapper), `sequence/`, `simple/` (stubs) | Graph generation and loading. Stage 1. |
+| `analysis/` | 11 files and the page template of `topon track` (`descriptors.py` the connectivity descriptors and `compare`, `endlinked.py` the end-linked data-file reader, `crosslinked.py` the reader for networks crosslinked along their chains, `atomistic.py` the atomistic reader through the manifest's strand record, `crossings.py` the detector of backbone bonds passing through each other, `z1plus.py` the Z1+ driver, `tracker.py` `topon track`, `analyze.py` `topon analyze`, `run_summary.py` `topon inspect`, `report.py` the capacity counts) | Read-only measurement of a graph or a relaxed system. Z1+ itself is an external program that the driver runs. Not used by `Pipeline` stage 2, which calls `AssignmentManager.analyze()`. |
+| `inverse/` | 5 files (`measure.py` reads a reference network and measures it, `scaffold.py` picks the cubic cell and sweeps the neighbor cutoff, `fit.py` writes the config and its flags, `verify.py` regenerates a config and compares it with the reference) | `topon fit` and `topon generate --verify`. It sits above the pipeline, like `workflows/`, builds graphs through `Pipeline.run_graph_stages` and measures them with `topon.analysis`. No stage imports it, and it runs no dynamics. |
+| `assignment/` | 9 files (`chains.py` covers the strands of a random-crosslinked graph with chains and splits each chain's beads) | Graph annotation (node/edge types, DP, defects, chains, entanglements, copolymers). Stage 3. |
 | `chemistry/` | 4 files (`builder.py` is most of stage 4), `charmm/` (RTF typing and the bundled C35r ethers), and `dreiding/` and `kg/` are stubs | RDKit Mol construction with 3D coords, and CHARMM typing. Stage 4. |
-| `conformation/` | `manager.py` (data-file route) and `placement/chains.py` (bead-spring route, `place`) are stage 5. `entanglement/` (waypoint and braid construction, designed pairs, the Z controller) and `junction_shell.py` are opt-in and off the default path. `packing/` is a stub | Chain placement, overlap resolution, and designed entanglement geometry. Stage 5. |
+| `conformation/` | `manager.py` (data-file route), `atomistic.py` (atomistic backbone placement and settling, called from stage 4, with `segments.py` the segment geometry it shares with the crossing detector) and `placement/chains.py` (bead-spring route, `place`, with `placement/settle.py` the chord-triple count and the bead-spring settle) are stage 5. `entanglement/` (waypoint and braid construction, designed pairs, the Z controller) and `junction_shell.py` are opt-in and off the default path. `packing/` is a stub | Chain placement, overlap resolution, and designed entanglement geometry. Stage 5. |
 | `writers/` | 9 files (`lammps_endlinked.py` writes the `fix bond/create` convention straight from a placement, `lammps_charmm.py` the CHARMM data file and includes) | LAMMPS data and input-script writers. Stage 4 + Stage 6. |
 | `forcefield/` | 5 files (`charmm.py` is the one CHARMM reader, used by the polymer route and the protein builder) | DREIDING parameter parser, Kremer-Grest parameters, and the CHARMM RTF/PRM/stream reader with CHARMM's matching rules, 1-4 weights, NBFIX, CMAP grids and the LAMMPS type tables. Read by chemistry/writers. |
 | `config/` | 4 files | Pydantic `ToponConfig` schema, `load_config()` and `load_config_full()`. |
 | `diagnostics/` | 2 files (`rules.py` is the rule registry) | The semantic checks behind `topon doctor`. |
 | `core/` | 3 files (`manifest.py` is the run manifest read/written across stages) | Shared types, protocols and run-level artifacts. |
-| `utils/` | 4 files | Shared helpers (e.g., `write_lammps_displacement_file`). |
+| `utils/` | 5 files (`processes.py` says which process writes a run and whether it is alive) | Shared helpers (e.g., `write_lammps_displacement_file`). |
 | `pipeline.py` | - | The `Pipeline` orchestrator class. |
 | `cli.py`, `shell.py`, `__main__.py` | - | CLI dispatch and the interactive `topon>` shell. |
 | `presets/` | 3 JSON files | The demo configs `topon init --preset` copies. |
@@ -278,7 +294,7 @@ The table lists every directory under `topon/`. Modules above the dashed row bel
 | `protein_network/` | 19 files + `data/` (Martini 3) + `charmm/` (CHARMM36m) | Protein networks from a sequence (§6). `network.py` is the `topon protein` entry point. |
 | `simbox/` | 8 files | Independent molecule packer + crosslink-template emitter. DREIDING-only. |
 | `singlechain/` | 3 files | Single-chain solubility utility. |
-| `simulation/` | `runner.py` + `protocols/` (`gates.py`, `staged.py`) | LAMMPS subprocess runner and the acceptance gates that check a relaxation (bond histogram per checkpoint, Z1+ held where it must hold, temperature from the velocities). |
+| `simulation/` | `runner.py` + `protocols/` (`gates.py`, `staged.py`, `atomistic.py`) | LAMMPS subprocess runner and the acceptance gates that check a relaxation (bond histogram per checkpoint, Z1+ held where it must hold, temperature from the velocities), with `atomistic.py` the gates of the atomistic stages. |
 
 ---
 
@@ -303,7 +319,8 @@ Every change should follow these rules.
 | `chemistry/` | Build RDKit molecular structure from graph | Generate placement coordinates |
 | `conformation/` | Place atoms in 3D, resolve overlaps | Assign force-field types |
 | `writers/` | Format and write LAMMPS files | Computation of any kind |
-| `analysis/` | Compute graph statistics | Modify the graph |
+| `analysis/` | Compute graph statistics, read data files back | Modify the graph |
+| `inverse/` | Measure a reference and write a config that regenerates it | Run dynamics, or be imported by a stage |
 | `simbox/` | Independent molecule packing sub-system | Interact with the main pipeline |
 | `protein_network/` | Independent protein-network sub-system | Run through `Pipeline` |
 
@@ -318,16 +335,18 @@ The top-level `ToponConfig` sections, in the order the pipeline uses them, are l
 | Section | Used by | Notes |
 |---|---|---|
 | `study` | all stages | `study.name`, `study.output_dir` |
-| `topology` | Stage 1 | `source` (`"generate"` / `"load"`), `lattice_size`, `degree_distribution`, etc. |
-| `assignment` | Stage 3 | sub-objects for entanglements, defects, grafts, copolymer sequences |
+| `topology` | Stage 1 | `source` (`"generate"` / `"load"` / `"crosslink"`), `lattice_size`, `degree_distribution`, `seed`, `crosslinking`, etc. |
+| `assignment` | Stage 3 | sub-objects for entanglements, defects, chains, grafts, copolymer sequences |
 | `chemistry` | Stage 4 | `model_type` (`"coarse_grained"` / `"atomistic"`), `force_field` (`"dreiding"` / `"charmm"`, with a `charmm` block of files), `target_density` |
-| `conformation` | Stage 5 | `overlap_cutoff`, `overlap_max_iters`, `noise_magnitude` for the data-file route, which is the one `Pipeline` runs. The bead-spring keys (`placement`, `coil_ratio` / `build_density`, `junction_shell_spacing`, `entanglement`) are validated here but read only by `topon.conformation.place` and the controller. `Pipeline` does not call these, so `topon generate` validates the keys and ignores them. Also passed through raw |
-| `simulation` (raw) | Stage 4 (angles) and Stage 6 | relaxation protocol, LAMMPS pair_style, angle handling |
+| `conformation` | Stages 4 and 5 | `overlap_cutoff`, `overlap_max_iters`, `noise_magnitude` for the data-file route, which is the one `Pipeline` runs, and `atomistic_placement`, `atomistic_clearance` for the atomistic placement. The bead-spring keys (`placement`, `coil_ratio` / `build_density`, `junction_shell_spacing`, `junction_jitter`, `settle_clearance`, `entanglement`) are validated here but read only by `topon.conformation.place` and the controller. `Pipeline` does not call these, so `topon generate` validates the keys and ignores them. Also passed through raw |
+| `output` | Stages 4 and 6 | the coarse-grained data-file convention, the GraphML and NPZ exports |
+| `analysis` | `topon analyze`, `inspect`, `track` (not `Pipeline`) | where Z1+ is (`analysis.z1plus`) |
+| `simulation` (raw) | Stage 4 (angles) and Stage 6 | relaxation protocols, LAMMPS pair_style, angle handling |
 | `execution` (raw) | the `topon.workflows` runners, not `Pipeline` | LAMMPS subprocess settings (`auto_run`, `executable`, `n_procs`) |
 | `experimental` (raw) | Stage 6 | feature-flagged extras |
 
-`GeneratorConfig`, the per-class blocks under `assignment.defects` and the
-whole `conformation` section refuse unknown keys. The other nested
+`GeneratorConfig`, the per-class blocks under `assignment.defects`, the
+whole `conformation` section and `analysis` refuse unknown keys. The other nested
 sections ignore them, because a config may carry parameters for other
 tools (e.g., under `topology`). For those sections `topon doctor` warns
 through its `unknown_config_keys` rule.
@@ -344,10 +363,11 @@ through its `unknown_config_keys` rule.
 sequence, repeats, chains, model, crosslink residue and method, seed
     │   (topon protein / network.build_protein_network)
     ▼
-sequence.plan_chain  ──►  lattice layout (a node per crosslink residue)
+sequence.plan_chain  ──►  chain plan (the crosslink residues)
     │
     ▼
-bfm: self-avoiding walks on a cubic lattice, Monte Carlo, crosslinks  ──►  JSON snapshots
+bfm: a residue-level melt and crosslinks where crosslink residues touch (melt, the default),
+     or node-lattice walks, Monte Carlo and crosslinks (adjacent and the others)  ──►  JSON snapshots
     │
     ├── martini: polyply chain ITP (martini_topology) replicated per chain
     │            (template_builder), water and ions, lammps_writer
@@ -360,7 +380,8 @@ LAMMPS data + includes + three relaxation scripts + summary JSON
 
 The design choices are as follows.
 
-- `sequence.plan_chain` puts every crosslink residue on its own lattice node. A repeat block with one crosslink residue keeps one crosslink node per block, and any other chain is laid out by anchors at its ends and at its crosslink residues.
+- The default `crosslink_method="melt"` grows the chains as a residue-level melt with `topon.topology.chain_crosslinking` (one site per residue, crosslink residues joined where they touch, no parity rule, no merged nodes) and writes the same snapshot format with one node per residue, which the builders take with the identity map from nodes to residues. The node-lattice methods (`adjacent`, the default before 0.4.0, `winding_safe`, `distance`, `none`) keep the bond-fluctuation model of `bfm.py`.
+- On the node lattice `sequence.plan_chain` puts every crosslink residue on its own lattice node. A repeat block with one crosslink residue keeps one crosslink node per block, and any other chain is laid out by anchors at its ends and at its crosslink residues.
 - The Martini chain topology comes from polyply. The bundled `{nat,high,no}_pro.itp` cover the resilin reference, and any other sequence is run through `polyply gen_params -lib martini3`. `data/martini_v3_protein.itp` holds the 33 bead types that polyply's amino-acid library uses, taken from the Martini 3.0.0 release.
 - The CHARMM36m builder takes every coefficient from `topon.forcefield.charmm` (1-4 weights, 1-4 LJ, NBFIX, no defaults) and writes the `fix cmap` grids from the PRM, so the whole force field comes from one parameter file.
 - Both writers emit 10-column Atoms rows with image flags. The flags come from a spanning tree of the bond graph in which the chain bonds come before the crosslinks, so every tree bond is minimum-image. A crosslink that closes a cycle around the periodic box cannot be made short by any image flags. The Martini writer drops that bond, and the CHARMM builder removes the reaction before patching, so the two residues stay unpatched. Both report the count. Bonds within a chain always survive.
@@ -383,7 +404,10 @@ The `topon` CLI (`topon/cli.py`) maps each sub-command to a backend.
 | `topon doctor` | `topon.diagnostics` rule registry |
 | `topon init` | writes a starter config (a copy of a demo config, or one built from prompts) |
 | `topon inspect` | `topon.analysis.run_summary` |
-| `topon analyze` | `topon.analysis.report.analyze_graph()` |
+| `topon analyze` | `topon.analysis.analyze` (descriptors, Z1+, `--compare`) |
+| `topon fit` | `topon.inverse.fit` (a config from an existing network) |
+| `topon generate --verify` | `topon.inverse.verify` (a build against a reference) |
+| `topon track` | `topon.analysis.tracker` (a page for atomistic relaxation runs) |
 | `topon simbox` | `topon.simbox` API |
 | `topon chain` | `topon.singlechain` |
 | `topon protein` | `topon.protein_network.network.build_protein_network` (also `python -m topon.protein_network build`) |

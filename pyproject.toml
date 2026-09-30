@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "topon"
-version = "0.3.2"
+version = "0.4.0"
 description = "A modular Python package for polymer network generation and LAMMPS input file creation"
 readme = "README.md"
 license = {text = "MIT"}
@@ -73,9 +73,9 @@ include = ["topon*"]
 # which has no __init__.py and so is not picked up as a package. Listing them
 # here keeps them in a regular (non-editable) install. The force-field files
 # of the CHARMM and Martini routes are data too (C35r ethers, CHARMM36m,
-# Martini 3), each folder with its licence.
+# Martini 3), each folder with its licence. analysis/ holds the page
+# template of `topon track`.
 topon = [
-    "data/*",
     "presets/*.json",
     "forcefield/*.txt",
     "utils/*.txt",
@@ -84,6 +84,7 @@ topon = [
     "chemistry/charmm/data/*",
     "protein_network/data/*",
     "protein_network/charmm/data/*",
+    "analysis/*.html",
 ]
 
 [tool.black]

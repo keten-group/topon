@@ -13,6 +13,7 @@ from topon.topology.degree_matching import (
     DEFAULT_ATTEMPTS,
     DEFAULT_MIN_GIANT_FRACTION,
     build_exact_graph,
+    is_fully_specified,
     needs_from_targets,
     parse_degree_distribution,
     resolve_search,
@@ -153,6 +154,16 @@ def _pairs_by_cells(pts, box, wrap, cutoff):
     return found
 
 
+def _odd_degree_sum_message(degree_sum):
+    """The handshake-lemma refusal, one wording for both searches."""
+    return (
+        f"degree_distribution has an odd degree sum ({degree_sum}); every "
+        f"edge contributes 2, so no graph has one. Move one site between two "
+        f"odd degrees (e.g. one fewer at degree 1 and one more at degree 2), "
+        f"or add one site of odd degree."
+    )
+
+
 def shell_distances(G, decimals=6):
     """The distinct edge lengths of ``G`` under the minimum image, sorted.
 
@@ -179,6 +190,160 @@ def shell_distances(G, decimals=6):
         delta -= np.where(wrap, box * np.round(delta / box), 0.0)
     lengths = np.sqrt((delta * delta).sum(axis=1))
     return tuple(float(x) for x in np.unique(np.round(lengths, decimals)))
+
+
+#: Sites per cubic cell of the pure lattices.
+SITES_PER_CELL = {"SC": 1, "BCC": 2, "FCC": 4, "Diamond": 8, "DIAMOND": 8}
+
+#: Face-centre offsets, in the XY / XZ / YZ order the pure FCC builder
+#: uses, so a MIX with an FCC fraction of 1.0 gives the same site set.
+_FACE_OFFSETS = ((0.5, 0.5, 0.0), (0.5, 0.0, 0.5), (0.0, 0.5, 0.5))
+
+
+def mix_site_positions(nx_val, ny_val, nz_val, f_bcc, f_fcc, rng):
+    """The sites of a MIX lattice, drawn from ``rng``.
+
+    Every cell carries its corner; the body centre is drawn with
+    probability ``f_bcc`` and each face centre with probability ``f_fcc``,
+    one ``rng.random()`` per candidate, cells in the SC builder's order (z
+    outer, then y, then x) so fractions (1, 0, 0) give the SC node ids.
+    Shared by the builder and :func:`count_sites`, which is what makes the
+    count a promise about the lattice rather than an estimate of it.
+    """
+    positions = []
+    for k in range(nz_val):
+        for j in range(ny_val):
+            for i in range(nx_val):
+                positions.append((float(i), float(j), float(k)))
+                if f_bcc > 0.0 and rng.random() < f_bcc:
+                    positions.append((i + 0.5, j + 0.5, k + 0.5))
+                if f_fcc > 0.0:
+                    for fx, fy, fz in _FACE_OFFSETS:
+                        if rng.random() < f_fcc:
+                            positions.append((i + fx, j + fy, k + fz))
+    return positions
+
+
+def _cells(config):
+    """``(nx, ny, nz)`` from a config's ``lattice_size``, strictly."""
+    size = getattr(config, "lattice_size", None)
+    if size is None:
+        size = getattr(config, "dimension", None)
+    if isinstance(size, str):
+        parts = size.lower().split("x")
+        if len(parts) == 3 and all(p.strip().isdigit() for p in parts):
+            return tuple(int(p) for p in parts)
+    elif size is not None and len(size) == 3:
+        return tuple(int(p) for p in size)
+    raise ValueError(f"lattice_size {size!r} is not of the form 'NxNxN'")
+
+
+def count_sites(config, seed=None):
+    """How many sites the Python generator's lattice for ``config`` has.
+
+    SC, BCC, FCC and Diamond have a fixed count per cell (1, 2, 4, 8). A
+    MIX draws its body and face sites, so its count depends on the seed:
+    ``seed`` is the number the generator's streams are seeded with, the
+    same meaning as ``topology.generator.seed`` (or ``random.seed(seed)``
+    just before generating), and defaults to the config's own seed. The
+    count comes from the same draw the builder makes, so it is exact, not
+    an expectation. Compute absolute degree counts from it (see
+    :func:`topon.topology.degree_matching.rescale_degree_counts`).
+
+    The C binary draws a MIX from its own stream, so this counts the
+    Python generator's lattice only.
+
+    Raises:
+        ValueError: for a MIX with no seed given and none in the config,
+            where the count is not determined, or a malformed size.
+    """
+    nx_val, ny_val, nz_val = _cells(config)
+    lattice = getattr(config, "lattice_type", "SC")
+    if lattice in SITES_PER_CELL:
+        return SITES_PER_CELL[lattice] * nx_val * ny_val * nz_val
+    if lattice != "MIX":
+        raise ValueError(f"lattice_type {lattice!r} has no site rule")
+    if seed is None:
+        seed = getattr(config, "seed", None)
+    if seed is None:
+        raise ValueError(
+            "a MIX lattice's site count is a random draw; give a seed "
+            "(count_sites(config, seed)) or set topology.generator.seed")
+    fractions = getattr(config, "mix_fractions", None) or {}
+    return len(mix_site_positions(
+        nx_val, ny_val, nz_val, float(fractions.get("BCC", 0.0)),
+        float(fractions.get("FCC", 0.0)), random.Random(int(seed))))
+
+
+def expected_mix_sites(config):
+    """Mean and standard deviation of a MIX lattice's site count.
+
+    ``N (1 + f_bcc + 3 f_fcc)`` sites on average for ``N`` cells, each
+    body and face site an independent draw.
+    """
+    nx_val, ny_val, nz_val = _cells(config)
+    n = nx_val * ny_val * nz_val
+    fractions = getattr(config, "mix_fractions", None) or {}
+    f_bcc = float(fractions.get("BCC", 0.0))
+    f_fcc = float(fractions.get("FCC", 0.0))
+    mean = n * (1.0 + f_bcc + 3.0 * f_fcc)
+    sd = math.sqrt(n * (f_bcc * (1.0 - f_bcc) + 3.0 * f_fcc * (1.0 - f_fcc)))
+    return mean, sd
+
+
+def check_site_count(target_counts, max_func, search, n_sites, label="",
+                     mix=False):
+    """Refuse a request whose sites cannot fit the lattice, in plain numbers.
+
+    ``target_counts`` is the parsed ``degree_distribution`` (missing, or
+    below 0, means unspecified). What has to hold depends on the search:
+
+    - exact: the active sites (degree 1 and up) must fit; degree 0 is the
+      leftover, so any vacancy count is accepted;
+    - strict, every degree from 0 to ``max_func`` named: the counts must
+      add up to the lattice exactly, since every site ends with one of
+      those degrees;
+    - strict, some degrees named: they must not add up to more than the
+      lattice.
+
+    Without this a strict request that does not fit spends every trial
+    and ends in "no graph produced". ``mix`` adds the reason a count that
+    fitted one run can miss the next.
+
+    Raises:
+        ValueError: "degree_distribution asks for N sites, the lattice
+            has M", with what to do about it.
+    """
+    counts = {d: int(n) for d, n in target_counts.items() if int(n) >= 0}
+    where = f"a {label} lattice" if label else "the lattice"
+    hint = (" A MIX lattice's site count is a random draw, so absolute counts "
+            "have to be worked out for the seed that builds it: "
+            "topon.topology.generator_python.count_sites(config, seed) gives "
+            "the count and topon.topology.degree_matching.rescale_degree_counts "
+            "rescales a P(f) to it." if mix else "")
+    if search == "exact":
+        # Worded as the C binary words it, which the two keep in step.
+        asked = sum(n for d, n in counts.items() if d >= 1)
+        if asked > n_sites:
+            raise ValueError(
+                f"degree_distribution places {asked} active sites but {where} "
+                f"has only {n_sites}; enlarge lattice_size, or lower the "
+                f"per-degree counts. (Degree 0 is the leftover sites, so it "
+                f"does not have to be counted in.){hint}")
+        return
+    asked = sum(counts.values())
+    if is_fully_specified(target_counts, max_func):
+        if asked != n_sites:
+            raise ValueError(
+                f"degree_distribution asks for {asked} sites, {where} has "
+                f"{n_sites}; with every degree from 0 to max_functionality "
+                f"({max_func}) named, the counts have to add up to the lattice "
+                f"exactly, so no trial can succeed. Adjust the degree-0 count "
+                f"by {n_sites - asked:+d}, or leave a degree out.{hint}")
+    elif asked > n_sites:
+        raise ValueError(
+            f"degree_distribution asks for {asked} sites, {where} has "
+            f"{n_sites}; enlarge lattice_size or lower the counts.{hint}")
 
 
 class PythonTopologyGenerator:
@@ -274,6 +439,33 @@ class PythonTopologyGenerator:
         self.min_giant_fraction = float(
             DEFAULT_MIN_GIANT_FRACTION if floor is None else floor
         )
+        # None leaves it to degree_matching.DEFAULT_ODD_WALKS (off).
+        self.odd_walks = getattr(config, 'odd_walks', None)
+
+        # The random streams every draw below comes from. With a seed they
+        # are private and restarted at each generate(), see _seed_streams.
+        self.seed = getattr(config, 'seed', None)
+        self._seed_streams()
+
+    def _seed_streams(self):
+        """Point ``_rng`` / ``_np_rng`` at the streams this run draws from.
+
+        With ``seed`` set: a fresh ``random.Random(seed)`` for the lattice
+        draw and the strict sculptor, and a fresh
+        ``np.random.RandomState(seed)`` for the exact search's seeds. Those
+        are the generators behind ``random.seed(seed)`` and
+        ``np.random.seed(seed)``, so seed n draws exactly what seeding the
+        two global streams with n just before ``generate()`` drew, which
+        is how configs pinned a graph before the field existed, and the
+        global streams are left alone. Without a seed the module-level
+        streams are used, as always.
+        """
+        if self.seed is None:
+            self._rng = random
+            self._np_rng = np.random
+        else:
+            self._rng = random.Random(int(self.seed))
+            self._np_rng = np.random.RandomState(int(self.seed))
 
     @staticmethod
     def _wrap_hr(coord, hr_dims, periodic):
@@ -439,22 +631,17 @@ class PythonTopologyGenerator:
                         f"degree {degree}."
                     )
 
-        # --- exact search: the active sites have to fit on the scaffold ---
+        # --- the sites have to fit on the lattice that was built ---
         # The exact search places every requested site itself, so an
-        # over-full request is a plain arithmetic failure; caught here so
-        # it reads as a config error rather than six identical retries.
+        # over-full request is a plain arithmetic failure; a strict request
+        # that names every degree has to add up to the lattice exactly, and
+        # one that names some must not exceed it. Caught here so it reads
+        # as a config error rather than a run of identical failed trials.
+        # A MIX lattice's count is a draw, which the message says.
+        check_site_count(self.target_counts, self.max_func, self.search,
+                         base_nodes, label, mix=self.lattice_type == "MIX")
+
         if self.search == "exact":
-            n_active = sum(
-                self.target_counts[d] for d in range(1, self.max_func + 1)
-            )
-            if n_active > base_nodes:
-                raise ValueError(
-                    f"degree_distribution places {n_active} active sites but a "
-                    f"{label} lattice has only {base_nodes}; enlarge "
-                    f"lattice_size, or lower the per-degree counts. (Degree 0 "
-                    f"is the leftover sites, so it does not have to be "
-                    f"counted in.)"
-                )
             # The handshake lemma: every edge adds 2 to the degree sum, so
             # an odd one belongs to no graph. Cheap to check and otherwise
             # only shows up as a stubborn residual of exactly 1.
@@ -462,13 +649,21 @@ class PythonTopologyGenerator:
                 d * self.target_counts[d] for d in range(1, self.max_func + 1)
             )
             if degree_sum % 2:
-                raise ValueError(
-                    f"degree_distribution has an odd degree sum "
-                    f"({degree_sum}); every edge contributes 2, so no graph "
-                    f"has one. Move one site between two odd degrees (e.g. "
-                    f"one fewer at degree 1 and one more at degree 2), or "
-                    f"add one site of odd degree."
-                )
+                raise ValueError(_odd_degree_sum_message(degree_sum))
+
+        # --- strict search pinning every degree: the same handshake rule ---
+        # A request that names every degree from 0 to max_functionality
+        # fixes the whole degree sequence for the strict sculptor too (no
+        # node can end above the ceiling), so an odd sum is as impossible
+        # there. Before this the sculptor burnt every trial on it. A
+        # partial request is left alone: the degrees it does not name can
+        # take up the parity.
+        elif is_fully_specified(self.target_counts, self.max_func):
+            degree_sum = sum(
+                d * self.target_counts[d] for d in range(1, self.max_func + 1)
+            )
+            if degree_sum % 2:
+                raise ValueError(_odd_degree_sum_message(degree_sum))
 
     def generate(self, trials=1, max_saves=1, time_limit=None, double_pairs=None,
                  need=None):
@@ -498,6 +693,10 @@ class PythonTopologyGenerator:
         """
         successful_graphs = []
 
+        # A seeded generator starts every run from its seed, so calling
+        # generate() twice gives the same graph twice.
+        if self.seed is not None:
+            self._seed_streams()
         base_graph = self._create_lattice(self.dims, self.lattice_type)
         # Reject structurally-unreachable targets before churning through
         # trials (sculpting only removes edges — see _validate_targets_reachable).
@@ -561,9 +760,10 @@ class PythonTopologyGenerator:
         reported after the first, since retrying cannot find room that
         does not exist.
 
-        Seeds come from the global NumPy stream, so ``np.random.seed(n)``
-        before generating makes the result reproducible, and the seed
-        lands in the record for replay.
+        Seeds come from the NumPy stream ``_np_rng`` (the global one, or the
+        generator's own when ``topology.generator.seed`` is set), so either
+        the seed field or ``np.random.seed(n)`` before generating makes the
+        result reproducible, and the seed lands in the record for replay.
 
         Returns a list of graphs in the same form the strict sculptor
         returns, minus ``move_history``: the exact search has no
@@ -576,12 +776,13 @@ class PythonTopologyGenerator:
             need = {int(d): int(n) for d, n in need.items()}
         graphs = []
         for _ in range(max(1, max_saves)):
-            seed = int(np.random.randint(0, 2 ** 31 - 1))
+            seed = int(self._np_rng.randint(0, 2 ** 31 - 1))
             g = build_exact_graph(
                 base_graph, need, self.max_func, seed,
                 double_pairs=double_pairs,
                 min_giant_fraction=self.min_giant_fraction,
                 attempts=DEFAULT_ATTEMPTS,
+                odd_walks=self.odd_walks,
                 label=self._lattice_label(),
             )
             rec = g.graph["sculpt_record"]
@@ -905,23 +1106,8 @@ class PythonTopologyGenerator:
         g.graph["periodicity"] = (px, py, pz)
         g.graph["mix_fractions"] = dict(self.mix_fractions)
 
-        # Face-centre offsets, in the same XY / XZ / YZ order the pure FCC
-        # builder uses so a fraction of 1.0 gives the same site set.
-        face_offsets = ((0.5, 0.5, 0.0), (0.5, 0.0, 0.5), (0.0, 0.5, 0.5))
-
-        positions = []
-        # Cell order matches the SC builder (z outer, then y, then x) so
-        # that fractions (1, 0, 0) yields identical node ids.
-        for k in range(nz_val):
-            for j in range(ny_val):
-                for i in range(nx_val):
-                    positions.append((float(i), float(j), float(k)))
-                    if f_bcc > 0.0 and random.random() < f_bcc:
-                        positions.append((i + 0.5, j + 0.5, k + 0.5))
-                    if f_fcc > 0.0:
-                        for fx, fy, fz in face_offsets:
-                            if random.random() < f_fcc:
-                                positions.append((i + fx, j + fy, k + fz))
+        positions = mix_site_positions(nx_val, ny_val, nz_val, f_bcc, f_fcc,
+                                       self._rng)
 
         for idx, pos in enumerate(positions):
             g.add_node(idx, pos=pos)
@@ -951,10 +1137,36 @@ class PythonTopologyGenerator:
         # In Python we can use a dict or node attribute
         # Default active
         node_status = {n: "ACTIVE" for n in g.nodes()}
-        
+
+        # Running degree histogram: hist[d] is the number of sites of
+        # degree d, kept in step with every edge removed or put back. The
+        # move-safety check and stage 4's completion test read it instead
+        # of recounting all N sites each time, which at 2,744 sites was
+        # most of a trial. Every edge change goes through drop/restore.
+        deg = g.degree
+        hist = [0] * (max((d for _, d in deg), default=0) + 2)
+        for _, d in deg:
+            hist[d] += 1
+
+        def drop(u, v):
+            du, dv = deg[u], deg[v]
+            hist[du] -= 1
+            hist[du - 1] += 1
+            hist[dv] -= 1
+            hist[dv - 1] += 1
+            g.remove_edge(u, v)
+
+        def restore(u, v):
+            g.add_edge(u, v)
+            du, dv = deg[u], deg[v]
+            hist[du - 1] -= 1
+            hist[du] += 1
+            hist[dv - 1] -= 1
+            hist[dv] += 1
+
         # Shuffle node indices
         node_indices = list(g.nodes())
-        random.shuffle(node_indices)
+        self._rng.shuffle(node_indices)
         
         current_node_offset = 0
         
@@ -980,10 +1192,11 @@ class PythonTopologyGenerator:
                         
                     if not self._is_move_safe(g, node_idx, neighbor, stage=1, 
                                               target_degree_sum=target_degree_sum, 
-                                              current_total_degree_sum=-1): # sum not needed for stg 1
+                                              current_total_degree_sum=-1, # sum not needed for stg 1
+                                              degree_counts=hist):
                         continue
-                        
-                    g.remove_edge(node_idx, neighbor)
+
+                    drop(node_idx, neighbor)
                     move_history.append({'stage': 1, 'edge': (node_idx, neighbor), 'reason': 'd0'})
                     removed = True
                     break
@@ -1004,7 +1217,7 @@ class PythonTopologyGenerator:
             
             while g.degree[node_idx] > 1:
                 neighbors = list(g.neighbors(node_idx))
-                random.shuffle(neighbors)
+                self._rng.shuffle(neighbors)
                 removed = False
                 for neighbor in neighbors:
                     if g.degree[neighbor] <= 2:
@@ -1012,17 +1225,18 @@ class PythonTopologyGenerator:
 
                     if not self._is_move_safe(g, node_idx, neighbor, stage=2, 
                                               target_degree_sum=target_degree_sum, 
-                                              current_total_degree_sum=-1):
+                                              current_total_degree_sum=-1,
+                                              degree_counts=hist):
                         continue
-                        
-                    g.remove_edge(node_idx, neighbor)
+
+                    drop(node_idx, neighbor)
                     
                     if self._is_subgraph_connected(g, node_status):
                         move_history.append({'stage': 2, 'edge': (node_idx, neighbor), 'reason': 'd1'})
                         removed = True
                         break
                     else:
-                        g.add_edge(node_idx, neighbor) # Backtrack
+                        restore(node_idx, neighbor) # Backtrack
                         
                 if not removed:
                     return None # Failed to reduce to d1
@@ -1036,7 +1250,7 @@ class PythonTopologyGenerator:
             
             while g.degree[node_idx] > self.max_func:
                 neighbors = list(g.neighbors(node_idx))
-                random.shuffle(neighbors)
+                self._rng.shuffle(neighbors)
                 removed = False
                 for neighbor in neighbors:
                     if g.degree[neighbor] <= 2:
@@ -1044,31 +1258,44 @@ class PythonTopologyGenerator:
                         
                     if not self._is_move_safe(g, node_idx, neighbor, stage=3, 
                                               target_degree_sum=target_degree_sum, 
-                                              current_total_degree_sum=-1):
+                                              current_total_degree_sum=-1,
+                                              degree_counts=hist):
                         continue
-                        
-                    g.remove_edge(node_idx, neighbor)
+
+                    drop(node_idx, neighbor)
                     if self._is_subgraph_connected(g, node_status):
                         move_history.append({'stage': 3, 'edge': (node_idx, neighbor), 'reason': 'max_func'})
                         removed = True
                         break
                     else:
-                        g.add_edge(node_idx, neighbor) # Backtrack
+                        restore(node_idx, neighbor) # Backtrack
                 
                 if not removed:
                     return None # Failed to enforce max func
 
         # --- Stage 4: Systematic Search Loop ---
+        # Sites marked IS_DEGREE_0 / IS_DEGREE_1 sit at degree 0 or 1 by
+        # now, and stage 4 only removes edges whose ends both have degree
+        # 2 or more, so their degrees are fixed from here on: the active
+        # degree-1 count is hist[1] less this constant.
+        inactive_deg1 = sum(1 for n in g.nodes()
+                            if node_status[n] != "ACTIVE" and deg[n] == 1)
+
+        def count_at(d):
+            return hist[d] if 0 <= d < len(hist) else 0
+
         while True:
             # Check current distribution
-            current_degree_sum = sum(d for n, d in g.degree())
-            current_counts = defaultdict(int)
+            current_degree_sum = sum(d * c for d, c in enumerate(hist))
+            # Only an active site can sit above max_func (the inactive ones
+            # are at 0 or 1), so the site scan runs only when the histogram
+            # says some site does.
             has_high_degree = False
-            for n, d in g.degree():
-                current_counts[d] += 1
-                if node_status[n] == "ACTIVE" and d > self.max_func:
-                    has_high_degree = True
-            
+            if any(hist[self.max_func + 1:]):
+                has_high_degree = any(
+                    node_status[n] == "ACTIVE" and d > self.max_func
+                    for n, d in deg)
+
             is_done = True
             
             if has_high_degree:
@@ -1076,7 +1303,7 @@ class PythonTopologyGenerator:
             else:
                 # 1. Check explicit targets
                 for d, count in self.target_counts.items():
-                    if count >= 0 and current_counts[d] != count:
+                    if count >= 0 and count_at(d) != count:
                         is_done = False
                         break
                 
@@ -1103,7 +1330,7 @@ class PythonTopologyGenerator:
             
             # Not done, perform systematic edge removal
             edges = list(g.edges())
-            random.shuffle(edges)
+            self._rng.shuffle(edges)
             
             move_made = False
             
@@ -1116,23 +1343,25 @@ class PythonTopologyGenerator:
                 # Legacy d2 check
                 if u_deg == 2 or v_deg == 2:
                     if self.target_counts[1] != -1: # if d1 count is tracked
-                        d1_count = sum(1 for n in g.nodes() if node_status[n] == "ACTIVE" and g.degree[n] == 1)
+                        # the active degree-1 sites (see inactive_deg1)
+                        d1_count = hist[1] - inactive_deg1
                         if d1_count >= self.target_counts[1]:
                             continue
                             
                 if not self._is_move_safe(g, u, v, stage=4, 
                                           target_degree_sum=target_degree_sum, 
-                                          current_total_degree_sum=current_degree_sum):
+                                          current_total_degree_sum=current_degree_sum,
+                                          degree_counts=hist):
                     continue
-                
-                g.remove_edge(u, v)
+
+                drop(u, v)
                 
                 if self._is_subgraph_connected(g, node_status):
                     move_history.append({'stage': 4, 'edge': (u, v), 'reason': 'systematic'})
                     move_made = True
                     break # Restart loop
                 else:
-                    g.add_edge(u, v) # Backtrack
+                    restore(u, v) # Backtrack
             
             if not move_made:
                 return None # Stuck
@@ -1196,10 +1425,21 @@ class PythonTopologyGenerator:
         return len(seen) == n_active
 
 
-    def _is_move_safe(self, g, u, v, stage, target_degree_sum, current_total_degree_sum):
+    def _is_move_safe(self, g, u, v, stage, target_degree_sum, current_total_degree_sum,
+                      degree_counts=None):
         """
         Equivalent to C `is_move_safe`.
+
+        ``degree_counts`` is the caller's running degree histogram
+        (``degree_counts[d]`` sites of degree ``d``). Without it the counts
+        are taken by scanning every site, which is what this did on every
+        call before 0.4.0 and what made a trial at 2,744 sites slow.
         """
+        def count_at(d):
+            if degree_counts is None:
+                return sum(1 for n in g.nodes() if g.degree[n] == d)
+            return degree_counts[d] if 0 <= d < len(degree_counts) else 0
+
         
         # --- Target Edge Count Check (Stage 4 only) ---
         if stage == 4 and target_degree_sum != -2: # -2 is check for "not set"
@@ -1223,12 +1463,12 @@ class PythonTopologyGenerator:
             # Case A: d0/d1 (Sacred)
             if v_new_degree <= 1:
                 # Count current
-                current_count = sum(1 for n in g.nodes() if g.degree[n] == v_new_degree)
+                current_count = count_at(v_new_degree)
                 if current_count >= self.target_counts[v_new_degree]:
                     return False
             # Case B: d2+ (Only Stage 4)
             elif stage == 4:
-                current_count = sum(1 for n in g.nodes() if g.degree[n] == v_new_degree)
+                current_count = count_at(v_new_degree)
                 if current_count >= self.target_counts[v_new_degree]:
                     return False
                     
@@ -1240,7 +1480,7 @@ class PythonTopologyGenerator:
                 
             # 2b. Overshooting
             if u_new_degree >= 0 and self.target_counts[u_new_degree] > 0:
-                 current_count = sum(1 for n in g.nodes() if g.degree[n] == u_new_degree)
+                 current_count = count_at(u_new_degree)
                  if current_count >= self.target_counts[u_new_degree]:
                      return False
                      

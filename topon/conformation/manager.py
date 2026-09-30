@@ -239,7 +239,7 @@ class ConformationManager:
         return output_path, atom_roles
 
     def resolve_overlaps(self, input_file, atom_roles, cutoff=0.85, max_iters=50,
-                         periodicity=None):
+                         periodicity=None, rng=None):
         """
         Iterative Smart Relax.
         Reads box from input file and enforces wrapping during relaxation.
@@ -248,7 +248,13 @@ class ConformationManager:
         takes neither the minimum image nor the wrap, so a push near a
         free surface cannot teleport an atom to the far face and split
         its molecule.
+
+        ``rng`` is the ``np.random.Generator`` the direction of the push
+        comes from when two atoms coincide. The pipeline passes one of its
+        own so the relaxed file is the same on every run. ``None`` draws from
+        NumPy's global stream, which the workflow modules seed.
         """
+        rand = np.random.random if rng is None else rng.random
         print(f"Checking for hard overlaps (cutoff < {cutoff} Å)...")
 
         with open(input_file, 'r') as f: lines = f.readlines()
@@ -351,7 +357,7 @@ class ConformationManager:
                             if mover_id is not None:
                                 current_pos = coords[mover_id]
                                 # Push Vector (normalized diff)
-                                if dist < 1e-6: vec = np.random.rand(3) - 0.5
+                                if dist < 1e-6: vec = rand(3) - 0.5
                                 else: vec = diff / dist 
                                 
                                 # If we are moving 'a', vec points a->b (bad), we want a away from b.
@@ -402,11 +408,17 @@ class ConformationManager:
             
         return final_path
 
-    def apply_noise(self, input_file, magnitude=0.0001, output_name="system_relaxed.data"):
+    def apply_noise(self, input_file, magnitude=0.0001, output_name="system_relaxed.data",
+                    rng=None):
         """
         Applies a negligible random perturbation to all atoms to break symmetry.
         Used when overlap resolution is skipped or minimal.
+
+        ``rng`` is the ``np.random.Generator`` the perturbation is drawn
+        from, as in :meth:`resolve_overlaps`. ``None`` draws from NumPy's
+        global stream.
         """
+        rand = np.random.random if rng is None else rng.random
         print(f"Applying random noise (magnitude +/- {magnitude})...")
         
         with open(input_file, 'r') as f: lines = f.readlines()
@@ -432,9 +444,9 @@ class ConformationManager:
         new_atoms = []
         for line in atoms:
             parts = line.split()
-            x = float(parts[ix]) + (np.random.rand() - 0.5) * 2 * magnitude
-            y = float(parts[iy]) + (np.random.rand() - 0.5) * 2 * magnitude
-            z = float(parts[iz]) + (np.random.rand() - 0.5) * 2 * magnitude
+            x = float(parts[ix]) + (rand() - 0.5) * 2 * magnitude
+            y = float(parts[iy]) + (rand() - 0.5) * 2 * magnitude
+            z = float(parts[iz]) + (rand() - 0.5) * 2 * magnitude
             
             parts[ix] = f"{x:.6f}"
             parts[iy] = f"{y:.6f}"

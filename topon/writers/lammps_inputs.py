@@ -45,8 +45,8 @@ MINIMISER_STAGES = (
     ("minimize_3_parallel.in", "system_equilibrated.data"),
 )
 
-#: Push-off parameters. Every number here is from the brief's specification
-#: (Task 05) and was measured on the N20/N100 builds: the two capped stages
+#: Push-off parameters. Every number here is from the protocol's
+#: specification and was measured on the N20/N100 builds: the two capped stages
 #: are what keep the bond histogram under 1.2 sigma while the overlaps
 #: resolve. Override any of them under ``experimental.cg.pushoff``.
 PUSHOFF_DEFAULTS = {
@@ -75,6 +75,70 @@ PUSHOFF_DEFAULTS = {
 }
 
 
+#: Atomistic relaxation protocols, selected with ``simulation.atomistic_protocol``.
+#:
+#: ``soft_push`` (default)
+#:     The historic DREIDING deck. Stage 1 runs ``pair_style soft`` with a 1 A
+#:     cutoff for every pair and minimises; stage 2 ramps every Lennard-Jones
+#:     well from 0.001 of its depth under ``nve/limit`` with no thermostat.
+#:     Backbones can pass through each other until the ramp ends: on a DP-10
+#:     test network 4 of the build's 6 Z1+ partner pairs were gone after
+#:     stage 1, and the ramp ended at 964 K.
+#: ``hard_backbone``
+#:     The backbone never goes soft, the atomistic counterpart of the
+#:     bead-spring push-off. Stage 1 gives every pair of backbone atom types
+#:     a fixed soft core (``core`` kcal/mol out to ``core_cutoff`` A, about
+#:     200 kcal/mol in the way of a backbone atom passing through another
+#:     strand's bond) while pairs with a light atom (methyl C, H) ramp as in
+#:     the historic deck; stage 2 holds the backbone pairs at full depth and
+#:     ramps only the light ones. Both stages are capped displacement under a
+#:     Langevin thermostat, with no minimiser; stage 3 is the historic one. On
+#:     the smoke network it kept 4 of the 6 build pairs through stage 1 and
+#:     held the ramp at 300 K. The backbone types come from the pipeline (the
+#:     types of the atoms on the strand record's backbones and junctions).
+ATOMISTIC_PROTOCOLS = ("soft_push", "hard_backbone")
+
+#: ``hard_backbone`` parameters; override any of them under
+#: ``experimental.atomistic.hard_backbone``. Stage 2's length is the deck's
+#: ``experimental.atomistic.dynamics.run_steps``, as for the historic ramp.
+HARD_BACKBONE_DEFAULTS = {
+    "core": 60.0,           # kcal/mol, soft-core A of backbone-backbone pairs
+    "core_cutoff": 3.0,     # A
+    "light_cutoff": 1.0,    # A, soft cutoff of every pair with a light atom
+    "light_max": 30.0,      # kcal/mol, where the light ramp ends
+    "temperature": 300.0,   # K
+    "tdamp": 100.0,         # fs
+    # Stage lengths: stage 1's pair energy has levelled
+    # by 4,000 steps and the ramp is the epsilon ramp itself; at half the
+    # historic lengths and a capped stage-3 minimisation the DP-30 runs kept
+    # the same Z, energy and temperatures with no passage, in 7-8 minutes
+    # against 17.5.
+    "stage1": {"steps": 5000, "limit": 0.05, "velocity_seed": 4928459,
+               "langevin_seed": 48279},
+    "stage2": {"steps": 5000, "limit": 0.1, "langevin_seed": 7811},
+    "stage3": {"minimize": "1.0e-6 1.0e-8 2000 20000"},
+}
+
+#: Stage 3's minimisation on the historic decks ("etol ftol maxiter maxeval").
+HISTORIC_MINIMIZE = {"dreiding": "1.0e-8 1.0e-10 10000000 100000000",
+                     "charmm": "1.0e-6 1.0e-8 100000 1000000"}
+
+
+def light_pair_terms(pair, param, light, n_types, var):
+    """``fix adapt`` terms that reach every type pair with a light type in it.
+
+    LAMMPS stores pair coefficients for ``i <= j``, and a ``pair`` term with
+    type ranges sets only those; so each light type ``t`` needs ``1*t t``
+    (partners at or below it) and ``t t+1*n`` (above it).
+    """
+    terms = []
+    for t in sorted(light):
+        terms.append(f"pair {pair} {param} 1*{t} {t} v_{var}")
+        if t < n_types:
+            terms.append(f"pair {pair} {param} {t} {t + 1}*{n_types} v_{var}")
+    return " ".join(terms)
+
+
 def _merge(base, override):
     """Deep-merge ``override`` into a copy of ``base`` (dicts only)."""
     out = copy.deepcopy(base)
@@ -94,9 +158,11 @@ class LammpsInputGenerator:
         study_name: appended to ``output_dir`` to give the study root.
         config: the ``simulation`` block -- ``protocol``, ``pair_style``,
             ``include_angles``, ``remove_cg_angles``, ``rho_final``,
-            ``final_bond_style``.
+            ``final_bond_style``, and ``atomistic_protocol`` for the
+            atomistic route.
         experimental: the ``experimental`` block; step counts for the
-            push-off live under ``cg.pushoff``.
+            push-off live under ``cg.pushoff``, the hard-backbone parameters
+            under ``atomistic.hard_backbone``.
         flat: put the scripts, the data file and the checkpoints in one
             directory instead of the ``02_Chemistry`` / ``03_Conformation`` /
             ``04_Simulation`` layout. For a bead-spring build that never went
@@ -123,6 +189,15 @@ class LammpsInputGenerator:
                 f"Unknown CG relaxation protocol {self.protocol!r} "
                 f"(expected one of {', '.join(CG_PROTOCOLS)})"
             )
+        self.atomistic_protocol = self.config.get('atomistic_protocol', 'soft_push')
+        if self.atomistic_protocol not in ATOMISTIC_PROTOCOLS:
+            raise ValueError(
+                f"Unknown atomistic relaxation protocol {self.atomistic_protocol!r} "
+                f"(expected one of {', '.join(ATOMISTIC_PROTOCOLS)})"
+            )
+        # Atomistic stages only: dump the backbone atom types every N steps
+        # (minimiser iterations included), for topon.analysis.crossings.
+        self.backbone_dump_every = int(self.config.get('backbone_dump_every', 0) or 0)
 
         # Determine if in test mode
         self.test_mode = self.experimental.get('test_mode', False)
@@ -138,6 +213,57 @@ class LammpsInputGenerator:
         """Push-off parameters: the defaults under ``experimental.cg.pushoff``."""
         return _merge(PUSHOFF_DEFAULTS,
                       self.experimental.get('cg', {}).get('pushoff', {}))
+
+    def _dump_open(self, tag, backbone_types, append=False):
+        """Commands that dump the backbone atoms every N steps, or nothing.
+
+        ``simulation.backbone_dump_every`` (atomistic only) writes
+        ``traj_<tag>.lammpstrj`` with unwrapped coordinates, which stay
+        continuous in time for every atom, so
+        :mod:`topon.analysis.crossings` can follow each backbone bond from one
+        frame to the next and see two of them pass through each other.
+        """
+        n = self.backbone_dump_every
+        if not n:
+            return ""
+        if not backbone_types:
+            raise ValueError("simulation.backbone_dump_every needs the backbone "
+                             "atom types; the pipeline passes them")
+        types = " ".join(str(int(t)) for t in sorted(set(backbone_types)))
+        # LAMMPS will not reset the timestep under an active dump, so a stage
+        # that resets it closes the dump first and reopens it here, appending.
+        group = "" if append else f"group           bbdump type {types}\n"
+        more = " append yes" if append else ""
+        return (f"{group}"
+                f"dump            bbdump bbdump custom {n} traj_{tag}.lammpstrj id xu yu zu\n"
+                f"dump_modify     bbdump sort id format float %.4f{more}\n\n")
+
+    def _dump_close(self):
+        return "undump          bbdump\n" if self.backbone_dump_every else ""
+
+    def _hard_backbone(self):
+        """Hard-backbone parameters, under ``experimental.atomistic.hard_backbone``."""
+        return _merge(HARD_BACKBONE_DEFAULTS,
+                      self.experimental.get('atomistic', {}).get('hard_backbone', {}))
+
+    def _hard_ramp_steps(self, s2) -> int:
+        """The hard-backbone ramp's length: ``experimental.atomistic.dynamics.run_steps``
+        when it is given (the historic knob for the ramp), else the deck's own."""
+        given = self.experimental.get('atomistic', {}).get('dynamics', {}).get('run_steps')
+        return int(given if given is not None else s2["steps"])
+
+    def _stage3_minimize(self, force_field: str) -> str:
+        """Stage 3's minimisation, "etol ftol maxiter maxeval".
+
+        ``experimental.atomistic.stage3.minimize`` when given; else capped on
+        the hard-backbone deck and the historic setting on the historic one.
+        """
+        given = self.experimental.get("atomistic", {}).get("stage3", {}).get("minimize")
+        if given:
+            return str(given)
+        if self.atomistic_protocol == "hard_backbone":
+            return self._hard_backbone()["stage3"]["minimize"]
+        return HISTORIC_MINIMIZE[force_field]
 
     def stages(self, model_type="cg"):
         """``(script, data file)`` per stage, in run order.
@@ -169,7 +295,7 @@ class LammpsInputGenerator:
         """Get run steps from experimental config."""
         return self.experimental.get(model_type, {}).get('dynamics', {}).get('run_steps', 10000)
 
-    def write_serial_soft_minimization(self, input_data="system_relaxed.data", groups_file="system.groups", settings_file="system.in.settings", model_type="atomistic", force_field="dreiding"):
+    def write_serial_soft_minimization(self, input_data="system_relaxed.data", groups_file="system.groups", settings_file="system.in.settings", model_type="atomistic", force_field="dreiding", backbone_types=None, n_atom_types=None):
         """
         Stage 1 of the relaxation protocol.
 
@@ -177,13 +303,23 @@ class LammpsInputGenerator:
         the push-off writes capped-displacement dynamics under FENE + WCA
         (nothing is minimised, despite the script's historic name), while
         ``hardcore_min`` and ``soft_push`` minimise. The atomistic route
-        always minimises: its bonded terms are stiff and a capped push-off
-        would take far longer than a minimiser to resolve the same overlaps.
+        minimises by default (``simulation.atomistic_protocol: "soft_push"``);
+        ``"hard_backbone"`` writes a capped push-off in which the backbone
+        never goes soft, and needs ``backbone_types`` (the LAMMPS atom types
+        of backbone atoms) and ``n_atom_types``.
         """
         if model_type == 'cg' and self.protocol != 'soft_push':
             return self._write_cg_stage1(input_data, groups_file, settings_file)
+        if model_type != 'cg' and self.atomistic_protocol == 'hard_backbone':
+            self._check_hard_backbone(force_field, backbone_types, n_atom_types)
+            if force_field == 'charmm':
+                return self._write_charmm_hard_stage1(
+                    input_data, groups_file, settings_file, backbone_types, n_atom_types)
+            return self._write_hard_backbone_stage1(
+                input_data, groups_file, settings_file, backbone_types, n_atom_types)
         if model_type != 'cg' and force_field == 'charmm':
-            return self._write_charmm_stage1(input_data, groups_file, settings_file)
+            return self._write_charmm_stage1(input_data, groups_file, settings_file,
+                                             backbone_types)
 
         script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
 
@@ -229,7 +365,9 @@ class LammpsInputGenerator:
 
             f.write("neighbor        2.0 bin\n")
             f.write("neigh_modify    every 1 delay 0 check yes\n\n")
-            
+            if model_type == 'atomistic':
+                f.write(self._dump_open("stage1", backbone_types))
+
             f.write("# --- Switch to Soft Potential ---\n")
             if model_type == 'atomistic': f.write("kspace_style    none\n")
             f.write("pair_style      soft 1.0\n")
@@ -288,10 +426,13 @@ class LammpsInputGenerator:
                 f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
                 f.write("minimize 1.0e-4 1.0e-6 1000 10000\nunfix soft_push\n\n")
                 
+                f.write(self._dump_close())
                 f.write("reset_timestep 0\ntimestep 1.0\n")
+                f.write(self._dump_open("stage1", backbone_types, append=True))
                 f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
                 f.write("fix nve_limit all nve/limit 0.1\nrun 1000\nunfix nve_limit\nunfix soft_push\n")
                 f.write("minimize 1.0e-4 1.0e-6 1000 10000\n")
+                f.write(self._dump_close())
                 f.write("write_data system_after_soft.data\n")
                 f.write("write_restart 1.restart\n")
 
@@ -384,7 +525,7 @@ class LammpsInputGenerator:
 # No minimiser, no soft potential, no harmonic bond: the force field of the
 # final state is in force from the first step and the only thing that changes
 # is how far a bead may move per step. That is what keeps the network's
-# entanglement state the one the build placed (Task 05).
+# entanglement state the one the build placed.
 #
 # The script name is historic. Nothing here minimises.
 
@@ -437,7 +578,7 @@ write_restart   1.restart
     def _write_cg_hardcore_stage1(self, input_data, groups_file, settings_file):
         """Stage 1 of ``hardcore_min``: WCA throughout, minimiser kept.
 
-        The protocol ``tests/workflows/lammps_hardcore/`` held before Task 05.
+        The protocol ``tests/workflows/lammps_hardcore/`` held before the push-off.
         A hard core stops chains passing through one another during the push,
         which the soft potential does not, but the minimiser still threads
         bonds -- so this is for reproducing earlier runs, not for new ones.
@@ -695,15 +836,26 @@ print "=== PROTOCOL DONE ==="
 """)
         return script_path
 
-    def write_parallel_production(self, settings_file="system.in.settings", model_type="atomistic", force_field="dreiding", charmm_pair_style="lj/charmmfsw/coul/long"):
+    def write_parallel_production(self, settings_file="system.in.settings", model_type="atomistic", force_field="dreiding", charmm_pair_style="lj/charmmfsw/coul/long", backbone_types=None, n_atom_types=None):
         """
         Parent function that generates the complete parallel minimization pipeline:
         1. minimize_2_parallel.in (Stage 2: Ramp)
         2. minimize_3_parallel.in (Stage 3: Tight Min + Equilibration)
         """
+        if model_type != 'cg' and self.atomistic_protocol == 'hard_backbone':
+            self._check_hard_backbone(force_field, backbone_types, n_atom_types)
+            if force_field == 'charmm':
+                self._write_charmm_hard_stage2(settings_file, backbone_types, n_atom_types)
+                self._write_charmm_stage3(settings_file, charmm_pair_style, backbone_types)
+                print("Generated parallel scripts (CHARMM hard-backbone stage 2, stage 3).")
+                return
+            self._write_hard_backbone_stage2(settings_file, backbone_types, n_atom_types)
+            self._write_stage3_equilibration(settings_file, model_type, backbone_types)
+            print("Generated parallel scripts (hard-backbone stage 2, stage 3).")
+            return
         if model_type != 'cg' and force_field == 'charmm':
-            self._write_charmm_stage2(settings_file)
-            self._write_charmm_stage3(settings_file, charmm_pair_style)
+            self._write_charmm_stage2(settings_file, backbone_types)
+            self._write_charmm_stage3(settings_file, charmm_pair_style, backbone_types)
             print("Generated parallel minimization scripts (CHARMM stages 2 & 3).")
             return
         if model_type == 'cg':
@@ -714,11 +866,142 @@ print "=== PROTOCOL DONE ==="
             print(f"Generated parallel minimization scripts (CG Stages 2 & 3).")
             return
 
-        self._write_stage2_ramp(settings_file, model_type)
-        self._write_stage3_equilibration(settings_file, model_type)
+        self._write_stage2_ramp(settings_file, model_type, backbone_types)
+        self._write_stage3_equilibration(settings_file, model_type, backbone_types)
         print(f"Generated parallel minimization scripts (Stages 2 & 3).")
 
-    def _write_stage2_ramp(self, settings_file, model_type):
+    # ==================================================================
+    # Atomistic, protocol "hard_backbone": the backbone never goes soft
+    # ==================================================================
+
+    def _check_hard_backbone(self, force_field, backbone_types, n_atom_types):
+        if not backbone_types or not n_atom_types:
+            raise ValueError(
+                "simulation.atomistic_protocol 'hard_backbone' needs the backbone "
+                "atom types; the pipeline passes them from the strand record")
+
+    def _write_hard_backbone_stage1(self, input_data, groups_file, settings_file,
+                                    backbone_types, n_atom_types):
+        """Stage 1: capped push-off with a fixed soft core on backbone pairs."""
+        p = self._hard_backbone()
+        s1 = p["stage1"]
+        hard = sorted({int(t) for t in backbone_types})
+        light = [t for t in range(1, int(n_atom_types) + 1) if t not in hard]
+        rel = lambda d, f: os.path.relpath(os.path.join(d, f), self.sim_dir).replace("\\", "/")
+        core = "\n".join(f"pair_coeff      {a} {b} {p['core']} {p['core_cutoff']}"
+                         for i, a in enumerate(hard) for b in hard[i:])
+        adapt = (f"fix             light all adapt 1 "
+                 f"{light_pair_terms('soft', 'a', light, n_atom_types, 'prefactor')} "
+                 f"reset no\n" if light else "")
+        unadapt = "unfix           light\n" if light else ""
+        body = f"""# LAMMPS Stage 1: hard-backbone push-off (ATOMISTIC, protocol "hard_backbone")
+#
+# Backbone-backbone pairs (atom types {' '.join(map(str, hard))}) keep a soft
+# core of {p['core']} kcal/mol out to {p['core_cutoff']} A from the first
+# step, so no backbone atom passes through another strand's bond; every pair
+# with a light atom (types {' '.join(map(str, light)) or 'none'}) ramps
+# 0 -> {p['light_max']} kcal/mol at {p['light_cutoff']} A, as in the historic
+# deck. Capped displacement under a Langevin thermostat and no minimiser: a
+# minimiser resolves an overlap by whatever lowers the energy, which on the
+# bead-spring route was a bond stretched and a bead let through it.
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     harmonic
+dihedral_style  harmonic
+improper_style  cvff
+special_bonds   dreiding
+pair_style      lj/cut/coul/long 12.0
+kspace_style    pppm 1.0e-4
+
+read_data       {rel(self.conf_dir, input_data)}
+include         {rel(self.chem_dir, settings_file)}
+include         {rel(self.chem_dir, groups_file)}
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff 8.0
+
+{self._dump_open('stage1', hard)}kspace_style    none
+pair_style      soft {p['core_cutoff']}
+pair_coeff      * * 0.0 {p['light_cutoff']}
+{core}
+variable        prefactor equal ramp(0,{p['light_max']})
+{adapt}velocity        all create {p['temperature']} {s1['velocity_seed']} dist gaussian
+fix             lang all langevin {p['temperature']} {p['temperature']} {p['tdamp']} {s1['langevin_seed']}
+fix             cap all nve/limit {s1['limit']}
+timestep        1.0
+thermo          1000
+run             {s1['steps']}
+unfix           cap
+unfix           lang
+{unadapt}{self._dump_close()}write_data      system_after_soft.data
+write_restart   1.restart
+"""
+        path = os.path.join(self.sim_dir, "minimize_1_serial.in")
+        with open(path, "w") as f:
+            f.write(body)
+        return path
+
+    def _write_hard_backbone_stage2(self, settings_file, backbone_types, n_atom_types):
+        """Stage 2: the epsilon ramp for light pairs, backbone at full depth."""
+        p = self._hard_backbone()
+        s2 = p["stage2"]
+        hard = sorted({int(t) for t in backbone_types})
+        light = [t for t in range(1, int(n_atom_types) + 1) if t not in hard]
+        settings = os.path.relpath(os.path.join(self.chem_dir, settings_file),
+                                   self.sim_dir).replace("\\", "/")
+        # scale yes: each pair ramps to its own depth. Without it fix adapt
+        # sets epsilon to the variable itself, 1 kcal/mol at the end for every
+        # light pair (0.0957 for C_3), which is what the first DP-30 run had.
+        adapt = (f"fix             ramp all adapt 1 "
+                 f"{light_pair_terms('lj/cut/coul/long', 'epsilon', light, n_atom_types, 'scale')} "
+                 f"scale yes reset no\n" if light else "")
+        unadapt = "unfix           ramp\n" if light else ""
+        run_steps = self._hard_ramp_steps(s2)
+        body = f"""# LAMMPS Stage 2: epsilon ramp with the backbone at full depth (protocol "hard_backbone")
+#
+# Pairs with a light atom ramp from 0.001 to 1 of their Lennard-Jones depth;
+# backbone-backbone pairs (types {' '.join(map(str, hard))}) are at full depth
+# from the first step. Capped under a Langevin thermostat: the historic ramp
+# runs nve/limit alone and ended a small test network at 964 K.
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     harmonic
+dihedral_style  harmonic
+improper_style  cvff
+pair_style      soft {p['core_cutoff']}
+
+read_data       system_after_soft.data
+
+neigh_modify    one 10000
+comm_modify     mode single cutoff 12.0
+
+{self._dump_open('stage2', hard)}pair_style      lj/cut/coul/long 10.0 10.0
+kspace_style    pppm 1.0e-4
+include         {settings}
+special_bonds   lj/coul 0.0 0.0 1.0
+
+variable        scale equal ramp(0.001,1.0)
+{adapt}fix             lang all langevin {p['temperature']} {p['temperature']} {p['tdamp']} {s2['langevin_seed']}
+fix             cap all nve/limit {s2['limit']}
+timestep        1.0
+thermo          1000
+# RUNTIME: {run_steps} steps
+run             {run_steps}
+unfix           cap
+unfix           lang
+{unadapt}{self._dump_close()}write_data      system_ramped.data
+"""
+        with open(os.path.join(self.sim_dir, "minimize_2_parallel.in"), "w") as f:
+            f.write(body)
+
+    def _write_stage2_ramp(self, settings_file, model_type, backbone_types=None):
         """
         Stage 2: Parallel Ramp.
         METHODOLOGY: Set 1 (Slow 200k Step Ramp + Extended Cutoffs)
@@ -749,6 +1032,7 @@ print "=== PROTOCOL DONE ==="
             f.write("neigh_modify    one 10000\n")
             f.write("comm_modify     mode single cutoff 12.0\n\n")
             
+            f.write(self._dump_open("stage2", backbone_types))
             f.write("# --- 3. Soft Pre-Minimization ---\n")
             f.write("pair_style      soft 1.0\n")
             f.write("pair_coeff      * * 1.0\n")
@@ -768,7 +1052,10 @@ print "=== PROTOCOL DONE ==="
             f.write("variable        scale equal \"ramp(0.001, 1.0)\"\n")
             f.write("timestep        1.0\n\n")
 
-            f.write("fix             1 all adapt 1 pair lj/cut/coul/long epsilon * * v_scale\n")
+            # scale yes: every pair ramps to its own DREIDING depth. Without
+            # it fix adapt set epsilon to the variable itself, 0.001 to 1
+            # kcal/mol for every pair (H_ is 0.0152, Si3 0.31) before 0.4.0.
+            f.write("fix             1 all adapt 1 pair lj/cut/coul/long epsilon * * v_scale scale yes\n")
             f.write("fix             fxnve all nve/limit 0.1\n")
             f.write("thermo          1000\n\n")
             
@@ -780,10 +1067,11 @@ print "=== PROTOCOL DONE ==="
             f.write("unfix           fxnve\n")
             f.write("unfix           1\n")
             f.write("kspace_modify   compute yes\n\n")
+            f.write(self._dump_close())
 
             f.write("write_data      system_ramped.data\n")
 
-    def _write_stage3_equilibration(self, settings_file, model_type):
+    def _write_stage3_equilibration(self, settings_file, model_type, backbone_types=None):
         """
         Stage 3: Parallel Equilibration.
         METHODOLOGY: Set 1 (Tight Min -> NVT -> NPT)
@@ -812,6 +1100,7 @@ print "=== PROTOCOL DONE ==="
             f.write("# --- 2. Safety Settings ---\n")
             f.write("# Keep these even in stage 3 to prevent random crashes\n")
             f.write("neigh_modify    one 10000\n\n")
+            f.write(self._dump_open("stage3", backbone_types))
             
             f.write("# --- 3. Define Potential ---\n")
             f.write("pair_style      lj/cut/coul/long 10.0 10.0\n")
@@ -819,15 +1108,20 @@ print "=== PROTOCOL DONE ==="
             f.write(f"include         {settings_path}\n")
             f.write("special_bonds   lj/coul 0.0 0.0 1.0\n\n")
             
-            f.write("# --- 4. Tight Minimization (Set 1 Logic) ---\n")
-            f.write("# High precision 1e-8/1e-10 tolerances\n")
+            if self.atomistic_protocol == "hard_backbone":
+                f.write("# --- 4. Minimization, capped (hard-backbone deck) ---\n")
+            else:
+                f.write("# --- 4. Tight Minimization (Set 1 Logic) ---\n")
+                f.write("# High precision 1e-8/1e-10 tolerances\n")
             f.write("min_style       cg\n")
-            f.write("minimize        1.0e-8 1.0e-10 10000000 100000000\n\n")
+            f.write(f"minimize        {self._stage3_minimize('dreiding')}\n\n")
             
             f.write("write_data      system_minimized_final.data\n\n")
             
             f.write("# --- 5. Equilibration Loop (Set 1 Logic) ---\n")
+            f.write(self._dump_close())
             f.write("reset_timestep  0\n")
+            f.write(self._dump_open("stage3", backbone_types, append=True))
             f.write("variable        temp equal 300\n")
             f.write("velocity        all create ${temp} 12345\n\n")
             
@@ -842,6 +1136,7 @@ print "=== PROTOCOL DONE ==="
             f.write("run             1000\n")
             f.write("unfix           1\n\n")
             
+            f.write(self._dump_close())
             f.write("write_data      system_equilibrated.data\n")
             f.write("print \"All Minimization Stages Complete.\"\n")
 
@@ -880,7 +1175,8 @@ print "=== PROTOCOL DONE ==="
                 "improper_style  harmonic\n"
                 "special_bonds   charmm\n")
 
-    def _write_charmm_stage1(self, input_data, groups_file, settings_file):
+    def _write_charmm_stage1(self, input_data, groups_file, settings_file,
+                             backbone_types=None):
         p = self._charmm_paths(settings_file, groups_file, input_data)
         script_path = os.path.join(self.sim_dir, "minimize_1_serial.in")
         with open(script_path, 'w') as f:
@@ -899,6 +1195,7 @@ print "=== PROTOCOL DONE ==="
             f.write("comm_modify     mode single cutoff 12.0\n")
             f.write("variable        prefactor equal ramp(0,30)\n")
             f.write("thermo          100\n\n")
+            f.write(self._dump_open("stage1", backbone_types))
             f.write("# --- Junctions held, everything else pushed apart ---\n")
             f.write('if "$(is_defined(group,nodes))" then "fix freeze_nodes nodes setforce 0 0 0"\n')
             f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
@@ -907,16 +1204,19 @@ print "=== PROTOCOL DONE ==="
             f.write("# --- All atoms ---\n")
             f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
             f.write("minimize 1.0e-4 1.0e-6 1000 10000\nunfix soft_push\n\n")
+            f.write(self._dump_close())
             f.write("reset_timestep 0\ntimestep 1.0\n")
+            f.write(self._dump_open("stage1", backbone_types, append=True))
             f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
             f.write("fix nve_limit all nve/limit 0.1\nrun 1000\nunfix nve_limit\nunfix soft_push\n")
             f.write("fix soft_push all adapt 1 pair soft a * * v_prefactor\n")
             f.write("minimize 1.0e-4 1.0e-6 1000 10000\nunfix soft_push\n")
+            f.write(self._dump_close())
             f.write("write_data system_after_soft.data nocoeff\n")
             f.write("write_restart 1.restart\n")
         return script_path
 
-    def _write_charmm_stage2(self, settings_file):
+    def _write_charmm_stage2(self, settings_file, backbone_types=None):
         p = self._charmm_paths(settings_file)
         run_steps = self._get_run_steps('atomistic')
         script_path = os.path.join(self.sim_dir, "minimize_2_parallel.in")
@@ -931,6 +1231,7 @@ print "=== PROTOCOL DONE ==="
             f.write("pair_coeff      * * 1.0\n\n")
             f.write("neigh_modify    one 10000\n")
             f.write("comm_modify     mode single cutoff 12.0\n\n")
+            f.write(self._dump_open("stage2", backbone_types))
             f.write("min_style       cg\n")
             f.write("minimize        1.0e-4 1.0e-6 1000 10000\n\n")
             f.write("pair_style      lj/cut/coul/long 12.0\n")
@@ -945,9 +1246,10 @@ print "=== PROTOCOL DONE ==="
             f.write(f"run             {run_steps}\n")
             f.write("unfix           fxnve\n")
             f.write("unfix           1\n\n")
+            f.write(self._dump_close())
             f.write("write_data      system_ramped.data nocoeff\n")
 
-    def _write_charmm_stage3(self, settings_file, pair_style):
+    def _write_charmm_stage3(self, settings_file, pair_style, backbone_types=None):
         p = self._charmm_paths(settings_file)
         dihedral = "charmmfsw" if "charmmfsw" in pair_style else "charmm"
         script_path = os.path.join(self.sim_dir, "minimize_3_parallel.in")
@@ -964,10 +1266,13 @@ print "=== PROTOCOL DONE ==="
             f.write("thermo          100\n")
             f.write("thermo_style    custom step pe ke etotal evdwl ecoul epair ebond "
                     "eangle edihed eimp press vol temp\n\n")
+            f.write(self._dump_open("stage3", backbone_types))
             f.write("min_style       cg\n")
-            f.write("minimize        1.0e-6 1.0e-8 100000 1000000\n")
+            f.write(f"minimize        {self._stage3_minimize('charmm')}\n")
             f.write("write_data      system_minimized_final.data\n\n")
+            f.write(self._dump_close())
             f.write("reset_timestep  0\n")
+            f.write(self._dump_open("stage3", backbone_types, append=True))
             f.write("variable        temp equal 300\n")
             f.write("velocity        all create ${temp} 12345\n")
             f.write("timestep        1.0\n\n")
@@ -980,8 +1285,108 @@ print "=== PROTOCOL DONE ==="
             f.write("fix             1 all npt temp ${temp} ${temp} 100.0 iso 1.0 1.0 1000.0\n")
             f.write("run             1000\n")
             f.write("unfix           1\n\n")
+            f.write(self._dump_close())
             f.write("write_data      system_equilibrated.data\n")
             f.write('print "All Minimization Stages Complete."\n')
+
+    def _write_charmm_hard_stage1(self, input_data, groups_file, settings_file,
+                                  backbone_types, n_atom_types):
+        """Stage 1 of "hard_backbone" in CHARMM styles (the DREIDING one's twin)."""
+        p = self._hard_backbone()
+        s1 = p["stage1"]
+        c = self._charmm_paths(settings_file, groups_file, input_data)
+        hard = sorted({int(t) for t in backbone_types})
+        light = [t for t in range(1, int(n_atom_types) + 1) if t not in hard]
+        core = "\n".join(f"pair_coeff      {a} {b} {p['core']} {p['core_cutoff']}"
+                         for i, a in enumerate(hard) for b in hard[i:])
+        adapt = (f"fix             light all adapt 1 "
+                 f"{light_pair_terms('soft', 'a', light, n_atom_types, 'prefactor')} "
+                 f"reset no\n" if light else "")
+        unadapt = "unfix           light\n" if light else ""
+        body = f"""# LAMMPS Stage 1: hard-backbone push-off (ATOMISTIC, CHARMM, protocol "hard_backbone")
+#
+# Backbone-backbone pairs (atom types {' '.join(map(str, hard))}) keep a soft
+# core of {p['core']} kcal/mol out to {p['core_cutoff']} A from the first
+# step; every pair with a light atom ramps 0 -> {p['light_max']} kcal/mol at
+# {p['light_cutoff']} A. The .soft settings carry the bonded terms with 1-4
+# weights 0. Capped displacement under a Langevin thermostat, no minimiser.
+
+{self._charmm_header("charmm")}pair_style      soft {p['core_cutoff']}
+
+read_data       {c['data']}
+include         {c['soft']}
+pair_coeff      * * 0.0 {p['light_cutoff']}
+{core}
+include         {c['groups']}
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff 12.0
+
+{self._dump_open('stage1', hard)}variable        prefactor equal ramp(0,{p['light_max']})
+{adapt}velocity        all create {p['temperature']} {s1['velocity_seed']} dist gaussian
+fix             lang all langevin {p['temperature']} {p['temperature']} {p['tdamp']} {s1['langevin_seed']}
+fix             cap all nve/limit {s1['limit']}
+timestep        1.0
+thermo          1000
+run             {s1['steps']}
+unfix           cap
+unfix           lang
+{unadapt}{self._dump_close()}write_data      system_after_soft.data nocoeff
+write_restart   1.restart
+"""
+        path = os.path.join(self.sim_dir, "minimize_1_serial.in")
+        with open(path, "w") as f:
+            f.write(body)
+        return path
+
+    def _write_charmm_hard_stage2(self, settings_file, backbone_types, n_atom_types):
+        """Stage 2 of "hard_backbone" in CHARMM styles: light pairs ramp, no minimiser."""
+        p = self._hard_backbone()
+        s2 = p["stage2"]
+        c = self._charmm_paths(settings_file)
+        hard = sorted({int(t) for t in backbone_types})
+        light = [t for t in range(1, int(n_atom_types) + 1) if t not in hard]
+        # scale yes: each pair ramps to its own depth. Under arithmetic
+        # mixing a mixed light-backbone pair is re-mixed from its two ends,
+        # so it ramps as the square root of the scale; set pairs (NBFIX)
+        # ramp as the scale.
+        adapt = (f"fix             ramp all adapt 1 "
+                 f"{light_pair_terms('lj/cut/coul/long', 'epsilon', light, n_atom_types, 'scale')} "
+                 f"scale yes reset no\n" if light else "")
+        unadapt = "unfix           ramp\n" if light else ""
+        run_steps = self._hard_ramp_steps(s2)
+        body = f"""# LAMMPS Stage 2: epsilon ramp with the backbone at full depth (CHARMM, protocol "hard_backbone")
+#
+# CHARMM LJ without 1-4 terms (lj/cut/coul/long, arithmetic mixing, NBFIX);
+# pairs with a light atom ramp from 0.001 to 1 of their depth, backbone
+# pairs (types {' '.join(map(str, hard))}) are at full depth from the first
+# step. No soft pre-minimisation: the historic CHARMM ramp opens with one.
+
+{self._charmm_header("charmm")}pair_style      lj/cut/coul/long 12.0
+pair_modify     mix arithmetic
+kspace_style    pppm 1.0e-4
+
+read_data       system_after_soft.data
+include         {c['soft']}
+include         {c['lj']}
+
+neigh_modify    one 10000
+comm_modify     mode single cutoff 12.0
+
+{self._dump_open('stage2', hard)}variable        scale equal ramp(0.001,1.0)
+{adapt}fix             lang all langevin {p['temperature']} {p['temperature']} {p['tdamp']} {s2['langevin_seed']}
+fix             cap all nve/limit {s2['limit']}
+timestep        1.0
+thermo          1000
+# RUNTIME: {run_steps} steps
+run             {run_steps}
+unfix           cap
+unfix           lang
+{unadapt}{self._dump_close()}write_data      system_ramped.data nocoeff
+"""
+        with open(os.path.join(self.sim_dir, "minimize_2_parallel.in"), "w") as f:
+            f.write(body)
 
     def write_equilibration_sequence(self, settings_file="system.in.settings", model_type="atomistic"):
         """

@@ -394,9 +394,12 @@ def run(
     # =========================================================================
     print("[Stage 4] Writing LAMMPS input scripts...")
 
+    # This route places atoms the historic way and has no strand record to
+    # take backbone types from, so it keeps the historic deck whatever the
+    # Pipeline's default.
     gen = LammpsInputGenerator(
         str(output_dir), study_name,
-        config=config.get("simulation", {}),
+        config={"atomistic_protocol": "soft_push", **config.get("simulation", {})},
         experimental=experimental,
     )
     gen.write_serial_soft_minimization(

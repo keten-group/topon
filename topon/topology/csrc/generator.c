@@ -43,6 +43,15 @@
  * it exactly, with max_trials bounding the attempts. Both write the same
  * .nodes/.edges files.
  *
+ * SEED AND OUTPUT: --seed=N fixes the whole random stream (it wins over
+ * the TOPON_SEED environment variable; with neither the seed comes from
+ * the clock and the pid and is printed), and --output-dir=DIR says where
+ * the .nodes/.edges files go (default "output" in the working directory,
+ * created if missing). Both are named flags like --search, so the
+ * positional CLI is unchanged. File names carry the lattice size and the
+ * trial number only, so two runs writing into one directory overwrite
+ * each other: give concurrent runs separate directories.
+ *
  * NEIGHBOUR CUTOFF: an optional ninth argument sets the candidate-edge
  * range for SC/BCC/FCC/Diamond in cell units (MIX carries it inside its
  * own argument). At the default 1.0 each pure lattice keeps its
@@ -71,6 +80,7 @@
 #include <limits.h>
 #include <math.h> // For sqrt
 #include <stdint.h>
+#include <errno.h>
 #include <sys/stat.h> // For mkdir
 #ifdef _WIN32
 #include <direct.h> // For _mkdir on Windows
@@ -458,12 +468,39 @@ int is_subgraph_connected(Graph* g, const NodeStatus* node_status) {
     return connected;
 }
 
+/* Where the .nodes/.edges/.log files go: --output-dir, default "output"
+ * in the working directory. Set once in main before anything is written. */
+static const char* g_output_dir = "output";
+
+/* mkdir -p: create every missing component of `path`. Returns 0 when the
+ * directory exists afterwards. Both separators are accepted, since a
+ * Windows caller may pass either. */
+static int make_dirs(const char* path) {
+    char buf[4096];
+    size_t n = strlen(path);
+    if (n == 0 || n >= sizeof(buf)) return -1;
+    memcpy(buf, path, n + 1);
+    for (size_t i = 1; i < n; ++i) {
+        if (buf[i] != '/' && buf[i] != '\\') continue;
+        if (buf[i - 1] == ':') continue;     /* "C:\" is a drive, not a directory */
+        char keep = buf[i];
+        buf[i] = '\0';
+        mkdir(buf, 0755);
+        buf[i] = keep;
+    }
+    mkdir(buf, 0755);
+    struct stat st;
+    return (stat(buf, &st) == 0 && (st.st_mode & S_IFDIR)) ? 0 : -1;
+}
+
 // --- MODIFIED: save_graph_to_file now uses the stored coordinates ---
 void save_graph_to_file(Graph* g, const char* dims_str, long long trial) {
-    char nodes_filename[256], edges_filename[256];
+    char nodes_filename[4352], edges_filename[4352];
     // MODIFIED: Use %s for dims_str
-    sprintf(nodes_filename, "output/network_N%s_trial%lld.nodes", dims_str, trial);
-    sprintf(edges_filename, "output/network_N%s_trial%lld.edges", dims_str, trial);
+    snprintf(nodes_filename, sizeof(nodes_filename), "%s/network_N%s_trial%lld.nodes",
+             g_output_dir, dims_str, trial);
+    snprintf(edges_filename, sizeof(edges_filename), "%s/network_N%s_trial%lld.edges",
+             g_output_dir, dims_str, trial);
     FILE* nodes_file = fopen(nodes_filename, "w");
     if (!nodes_file) { perror("Failed to open nodes file"); return; }
     /* Record the true periodic cell. Without it the Python loader has to
@@ -508,9 +545,10 @@ void save_graph_to_file(Graph* g, const char* dims_str, long long trial) {
 }
 
 void save_move_log_to_file(const MoveLog* move_log, long long count, const char* dims_str, long long trial) {
-    char log_filename[256];
+    char log_filename[4352];
     // MODIFIED: Use %s for dims_str
-    sprintf(log_filename, "output/network_N%s_trial%lld.log", dims_str, trial);
+    snprintf(log_filename, sizeof(log_filename), "%s/network_N%s_trial%lld.log",
+             g_output_dir, dims_str, trial);
     FILE* log_file = fopen(log_filename, "w");
     if (!log_file) {
         perror("Failed to open move log file");
@@ -1406,7 +1444,11 @@ static int simple_max_degree(const Graph* g) {
  *      deficient site and a saturated one of lower target (never a
  *      degree-1 site), or by moving a vacancy onto the deficient site,
  *      then augment again
- *   5. accept when every site reached its target and the largest
+ *   5. odd walks (on by default, --odd-walks=off for the old graphs): when the repair
+ *      has ended short on a scaffold with odd cycles, search the walk of
+ *      step 3 again over (site, next move) pairs and flip each one that
+ *      repeats no edge (exact_close_odd)
+ *   6. accept when every site reached its target and the largest
  *      component holds at least min_giant_fraction of the active sites
  *
  * One call of exact_attempt is one sculpt_exact call. The step bounds
@@ -1421,6 +1463,14 @@ static int simple_max_degree(const Graph* g) {
  * move, the former partners are drained in the order of the site's edge
  * list here, and in set-iteration order there. A comparison of about
  * 16 000 attempts on SC and FCC found no effect of either.
+ *
+ * One stop is Python's alone. When a single site is left short and no
+ * repair move can change that, Python ends the repair loop at once
+ * (stuck() in sculpt_exact); here the loop runs to its bound. The attempt
+ * fails with the same residual either way. Every attempt here draws from
+ * one stream, so stopping early would move the draws of every attempt
+ * after it and change networks the loop builds today, and the idle loop
+ * costs about 0.04 s here against 3 to 127 s in Python.
  *
  * Data layout: the scaffold is a CSR array with, for every directed slot,
  * the slot of the reverse direction, so an edge is switched on or off in
@@ -1451,6 +1501,7 @@ static int simple_max_degree(const Graph* g) {
 #define EXACT_PINNED_SHARE 0.5
 #define EXACT_FALLBACK_AFTER 6
 #define EXACT_BALANCE_TRIES_PER_SITE 100
+#define EXACT_DEFAULT_ODD_WALKS 1     /* degree_matching.DEFAULT_ODD_WALKS */
 
 typedef struct ExactSearch {
     int n;                  /* sites */
@@ -1489,6 +1540,21 @@ typedef struct ExactSearch {
     int* log_s;             /* the slot */
     unsigned char* log_add; /* 1 for an add, 0 for a removal */
     int* touched;           /* sites to drain after a fallback swap */
+    /* the odd walks */
+    int walks_on;           /* --odd-walks, EXACT_DEFAULT_ODD_WALKS unless given */
+    int odd;                /* 1 if some cycle of the scaffold is odd */
+    unsigned int* sstamp;   /* visited marks over states 2 * site + (next move is an add) */
+    unsigned int scur;
+    int* spar;              /* parent state, -1 at the start */
+    int* sslot;             /* slot in the parent's row that led to the state */
+    int* squeue;
+    unsigned int* estamp;   /* edges already on the walk, by their lower slot */
+    unsigned int ecur;
+    int* wx;                /* the walk found, last step first: row, slot, add? */
+    int* wslot;
+    unsigned char* wadd;
+    int wlen;
+    long long odd_walks;
 } ExactSearch;
 
 typedef struct ExactOutcome {
@@ -1501,6 +1567,7 @@ typedef struct ExactOutcome {
     int n_active;
     long long augmentations;
     long long swaps;
+    long long odd_walks;
     double seconds;
     int fallback;           /* the attempt used the fallback deal and repair */
     long long imbalance;    /* sublattice imbalance left by the balanced deal */
@@ -1597,6 +1664,39 @@ static ExactSearch* exact_create(const Graph* base, int max_f, const int* need,
         }
         if (reached < n) w->bipartite = 0;
     }
+
+    /* An odd cycle anywhere, piece by piece (Python's has_odd_cycle): the
+     * odd walks run only on a scaffold that has one. */
+    signed char* side = (signed char*)malloc(nn);
+    for (int i = 0; i < n; ++i) side[i] = -1;
+    for (int r = 0; r < n && !w->odd; ++r) {
+        if (side[r] >= 0) continue;
+        int head = 0, tail = 0;
+        side[r] = 0;
+        w->queue[tail++] = r;
+        while (head < tail && !w->odd) {
+            int x = w->queue[head++];
+            for (int q = w->nb_off[x]; q < w->nb_off[x + 1]; ++q) {
+                int y = w->nb[q];
+                if (side[y] < 0) {
+                    side[y] = (signed char)(1 - side[x]);
+                    w->queue[tail++] = y;
+                } else if (side[y] == side[x]) {
+                    w->odd = 1;
+                    break;
+                }
+            }
+        }
+    }
+    free(side);
+    w->sstamp = (unsigned int*)calloc(2 * nn, sizeof(unsigned int));
+    w->spar = (int*)malloc(2 * nn * sizeof(int));
+    w->sslot = (int*)malloc(2 * nn * sizeof(int));
+    w->squeue = (int*)malloc(2 * nn * sizeof(int));
+    w->estamp = (unsigned int*)calloc((size_t)(pos + 1), sizeof(unsigned int));
+    w->wx = (int*)malloc((2 * nn + 1) * sizeof(int));
+    w->wslot = (int*)malloc((2 * nn + 1) * sizeof(int));
+    w->wadd = (unsigned char*)malloc(2 * nn + 1);
     return w;
 }
 
@@ -1608,6 +1708,8 @@ static void exact_free(ExactSearch* w) {
     free(w->queue); free(w->list); free(w->list2); free(w->cand);
     free(w->partners); free(w->touched); free(w->colour);
     free(w->log_x); free(w->log_s); free(w->log_add);
+    free(w->sstamp); free(w->spar); free(w->sslot); free(w->squeue);
+    free(w->estamp); free(w->wx); free(w->wslot); free(w->wadd);
     free(w);
 }
 
@@ -1866,6 +1968,124 @@ static long long exact_residual_repair(ExactSearch* w) {
     return kept;
 }
 
+/* THE ODD WALKS (the odd-walk step of sculpt_exact). exact_augment marks
+ * a site the first time it reaches it, whatever the move that got there,
+ * and never returns to its start. On a bipartite scaffold neither costs
+ * anything. With odd cycles, a deficient site first reached by a removal
+ * can no longer end a walk, and a site 2 units short with every other
+ * site full can only be served by a walk back to itself. So once the
+ * repair has ended short on such a scaffold, the walk is searched again
+ * over (site, next move) states, in scaffold order and without a random
+ * draw, and each walk that repeats no edge is flipped. It runs only in an
+ * attempt that would otherwise fail and draws nothing, so every network
+ * an attempt reached before comes out as it did. An attempt it lands would
+ * have failed, though, so the run's later attempts and networks move
+ * (--odd-walks=off gives the networks from before). */
+static unsigned int exact_new_sstamp(ExactSearch* w) {
+    if (++w->scur == 0) {
+        memset(w->sstamp, 0, (size_t)2 * w->n * sizeof(unsigned int));
+        w->scur = 1;
+    }
+    return w->scur;
+}
+
+static unsigned int exact_new_estamp(ExactSearch* w) {
+    if (++w->ecur == 0) {
+        memset(w->estamp, 0, (size_t)(w->n_slots + 1) * sizeof(unsigned int));
+        w->ecur = 1;
+    }
+    return w->ecur;
+}
+
+/* The walk into state `at` plus a last add by slot q from at's row, into
+ * wx/wslot/wadd (last step first). Returns 0 if it uses an edge twice. */
+static int exact_odd_trace(ExactSearch* w, int at, int q) {
+    unsigned int st = exact_new_estamp(w);
+    int len = 0, x = at >> 1, is_add = 1;
+    for (;;) {
+        int e = q < w->rev[q] ? q : w->rev[q];
+        if (w->estamp[e] == st) return 0;
+        w->estamp[e] = st;
+        w->wx[len] = x;
+        w->wslot[len] = q;
+        w->wadd[len] = (unsigned char)is_add;
+        len++;
+        int p = w->spar[at];
+        if (p < 0) break;
+        q = w->sslot[at];
+        x = p >> 1;
+        is_add = p & 1;
+        at = p;
+    }
+    w->wlen = len;
+    return 1;
+}
+
+/* Breadth-first over (site, next move) from s. A walk ends with an add at
+ * another site below target, or back at s when s is 2 or more short.
+ * Returns 1 with the walk in wx/wslot/wadd, else 0. */
+static int exact_odd_walk(ExactSearch* w, int s) {
+    unsigned int st = exact_new_sstamp(w);
+    int head = 0, tail = 0, start = 2 * s + 1;
+    w->sstamp[start] = st;
+    w->spar[start] = -1;
+    w->squeue[tail++] = start;
+    while (head < tail) {
+        int at = w->squeue[head++], x = at >> 1;
+        if (at & 1) {
+            for (int q = w->nb_off[x]; q < w->nb_off[x + 1]; ++q) {
+                int y = w->nb[q];
+                if (w->present[q] || !exact_eligible(w, x, y)) continue;
+                if ((y != s && w->deg[y] < w->t[y]) || (y == s && w->t[s] - w->deg[s] >= 2)) {
+                    if (exact_odd_trace(w, at, q)) return 1;
+                }
+                if (y == s) continue;
+                int nx = 2 * y;
+                if (w->sstamp[nx] == st) continue;
+                w->sstamp[nx] = st;
+                w->spar[nx] = at;
+                w->sslot[nx] = q;
+                w->squeue[tail++] = nx;
+            }
+        } else {
+            const int* a = w->adj + (size_t)x * w->cap;
+            for (int k = 0; k < w->deg[x]; ++k) {
+                int q = a[k], y = w->nb[q];
+                if (y == s) continue;
+                int nx = 2 * y + 1;
+                if (w->sstamp[nx] == st) continue;
+                w->sstamp[nx] = st;
+                w->spar[nx] = at;
+                w->sslot[nx] = q;
+                w->squeue[tail++] = nx;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Flip odd walks until none is left; returns how many. A walk is applied
+ * in walk order, so a site it passes through is at most one over its
+ * target in between (the present-edge slots hold max_f + 1). */
+static long long exact_close_odd(ExactSearch* w) {
+    long long closed = 0;
+    int progress = 1;
+    while (progress) {
+        progress = 0;
+        for (int s = 0; s < w->n; ++s) {
+            while (w->t[s] > 0 && w->deg[s] < w->t[s] && exact_odd_walk(w, s)) {
+                for (int k = w->wlen - 1; k >= 0; --k) {
+                    if (w->wadd[k]) exact_add(w, w->wx[k], w->wslot[k]);
+                    else exact_rem(w, w->wx[k], w->wslot[k]);
+                }
+                closed++;
+                progress = 1;
+            }
+        }
+    }
+    return closed;
+}
+
 /* One attempt, the equivalent of one sculpt_exact call; with fallback set,
  * one sculpt_exact(..., fallback=True) call. */
 static void exact_attempt(ExactSearch* w, ExactOutcome* out, int fallback) {
@@ -1986,7 +2206,12 @@ static void exact_attempt(ExactSearch* w, ExactOutcome* out, int fallback) {
         exact_drain(w, u);
     }
 
-    /* 5. Accept or reject. */
+    /* 5. Odd walks, only where the repair has ended short and the
+     *    scaffold has an odd cycle. */
+    w->odd_walks = 0;
+    if (w->walks_on && w->odd && exact_collect_deficient(w)) w->odd_walks = exact_close_odd(w);
+
+    /* 6. Accept or reject. */
     memset(out, 0, sizeof(*out));
     for (int i = 0; i < n; ++i) {
         if (w->t[i] <= 0) continue;
@@ -1998,6 +2223,7 @@ static void exact_attempt(ExactSearch* w, ExactOutcome* out, int fallback) {
     }
     out->augmentations = w->augmentations;
     out->swaps = w->swaps;
+    out->odd_walks = w->odd_walks;
     out->fallback = fallback;
     out->imbalance = imbalance;
     if (out->residual == 0) {
@@ -2026,6 +2252,13 @@ static void exact_attempt(ExactSearch* w, ExactOutcome* out, int fallback) {
     out->seconds = (double)(clock() - t0) / CLOCKS_PER_SEC;
 }
 
+/* ", N odd walks" for the attempt line when there were any, else "". */
+static const char* odd_note(char* buf, size_t len, long long n) {
+    if (n <= 0) return "";
+    snprintf(buf, len, ", %lld odd walks", n);
+    return buf;
+}
+
 static void exact_describe_error(const ExactSearch* w, const ExactOutcome* o,
                                  char* buf, size_t len) {
     if (o->residual != 0) {
@@ -2037,19 +2270,30 @@ static void exact_describe_error(const ExactSearch* w, const ExactOutcome* o,
     }
 }
 
-/* True when most of the request is pinned to the scaffold's ceiling
- * (degree_matching._no_slack). A Diamond lattice at the default cutoff
- * has exactly four candidates per site, so a max_func = 4 request leaves
- * no choice anywhere, and retrying draws the same forced assignment. */
-static int exact_no_slack(const ExactSearch* w) {
-    int ceiling = w->max_base_deg < w->max_f ? w->max_base_deg : w->max_f;
-    long long active = 0, pinned = 0;
+/* The active sites the request asks for the scaffold's own ceiling or
+ * more, and all the active sites it places (degree_matching._pinned).
+ * The ceiling is the most candidate partners any site has, not max_f. */
+static void exact_pinned(const ExactSearch* w, long long* pinned, long long* active) {
+    *pinned = 0;
+    *active = 0;
     for (int d = 1; d <= w->max_f; ++d) {
         int c = w->need[d];
         if (c <= 0) continue;
-        active += c;
-        if (d >= ceiling) pinned += c;
+        *active += c;
+        if (d >= w->max_base_deg) *pinned += c;
     }
+}
+
+/* True when most of the request is pinned to the scaffold's ceiling
+ * (degree_matching._no_slack). A Diamond lattice at the default cutoff
+ * has exactly four candidates per site, so a max_func = 4 request leaves
+ * no choice anywhere, and retrying draws the same forced assignment. A
+ * scaffold richer than max_func pins nobody (SC at three shells offers 26
+ * candidates to a site asked for 4), so its short attempts are retried. */
+static int exact_no_slack(const ExactSearch* w) {
+    if (w->n == 0) return 0;
+    long long pinned, active;
+    exact_pinned(w, &pinned, &active);
     return active > 0 && pinned >= EXACT_PINNED_SHARE * active;
 }
 
@@ -2075,15 +2319,16 @@ static void exact_failure_message(FILE* f, const ExactSearch* w, const char* lab
     if (best && best->giant_known) fprintf(f, ", giant component %.3f", best->giant_frac);
     fprintf(f, "\n");
     if (exact_no_slack(w)) {
-        int ceiling = w->max_base_deg < w->max_f ? w->max_base_deg : w->max_f;
-        long long pinned = 0;
-        for (int d = ceiling; d <= w->max_f; ++d) if (d > 0) pinned += w->need[d];
+        /* A degree above max_base_deg was refused before the search began
+         * ("requires degree-N nodes"), so every pinned site is at it. */
+        long long pinned, active;
+        exact_pinned(w, &pinned, &active);
         fprintf(f, "  reason    : the scaffold offers at most %d candidate partners per "
                    "site, and %lld of the %lld active sites are asked for degree %d, so "
                    "most of them must bond to every neighbour they have. There is almost "
                    "no spare edge, and each vacancy%s takes capacity from its neighbours "
                    "that nothing can give back.\n",
-                w->max_base_deg, pinned, n_active, ceiling,
+                w->max_base_deg, pinned, active, w->max_base_deg,
                 w->need[1] ? " and each dangling-end site" : "");
         fprintf(f, "  fix       : give the scaffold more candidates per site than the "
                    "request needs -- a wider neighbour_cutoff, or a lattice with a higher "
@@ -2118,7 +2363,7 @@ static Graph* exact_to_graph(const ExactSearch* w, const Graph* base) {
 // --- Main ---
 
 static void print_usage(const char* prog) {
-    fprintf(stderr, "Usage: %s <dims_str> <periodicity_str> <max_func> <max_trials> <max_saves> \"<degree_dist_string>\" <extensive_logging> <lattice_type> [neighbour_cutoff] [--search=strict|exact] [--min-giant-fraction=F]\n", prog);
+    fprintf(stderr, "Usage: %s <dims_str> <periodicity_str> <max_func> <max_trials> <max_saves> \"<degree_dist_string>\" <extensive_logging> <lattice_type> [neighbour_cutoff] [--search=strict|exact] [--min-giant-fraction=F] [--odd-walks=on|off] [--seed=N] [--output-dir=DIR]\n", prog);
     fprintf(stderr, "Example (Legacy): %s 8x8x8 111 4 1000 1 \"0:0,1:0,2:100,3:312,4:100\" 1 FCC\n", prog);
     fprintf(stderr, "Example (New 'e'): %s 8x6x8 110 6 1000 1 \"0:0,1:0,2:100,e:450\" 1 SC\n", prog);
     fprintf(stderr, "  <dims_str>: Dimensions in NxN_yN_z format (e.g., '8x6x8').\n");
@@ -2128,6 +2373,9 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --search=strict: prune the lattice edge by edge (the default)\n");
     fprintf(stderr, "  --search=exact: exact degree matching; needs a count for every degree 0..max_func, max_trials bounds the attempts\n");
     fprintf(stderr, "  --min-giant-fraction=F: exact search only, the share of active sites the largest component must hold (default 0.99)\n");
+    fprintf(stderr, "  --odd-walks=on|off: exact search only, search the walk again when an attempt ends short on a scaffold with odd cycles (default on)\n");
+    fprintf(stderr, "  --seed=N: fix the random stream (overrides TOPON_SEED; default: clock and pid, printed)\n");
+    fprintf(stderr, "  --output-dir=DIR: where the .nodes/.edges files go (default 'output'); concurrent runs need separate directories\n");
     fprintf(stderr, "Example (Mixed):  %s 6x6x6 111 4 1000 1 \"0:0,1:0\" 0 MIX:0.2,0.4,0.4\n", prog);
     fprintf(stderr, "Example (Shells): %s 6x6x6 111 4 1000 1 \"0:0,1:0\" 0 SC 1.74\n", prog);
     fprintf(stderr, "Example (Exact):  %s 6x6x6 111 6 100 1 \"0:10,1:0,2:26,3:75,4:43,5:53,6:9\" 0 SC --search=exact\n", prog);
@@ -2136,12 +2384,16 @@ static void print_usage(const char* prog) {
 int main(int argc, char *argv[]) {
     /* Eight positional arguments, plus an optional ninth: the neighbour
      * cutoff for the pure lattices. Named flags (--search=..., and
-     * --min-giant-fraction=... for the exact search) may sit anywhere in
-     * argv and do not count as positions, so every existing eight- or
+     * --min-giant-fraction=... and --odd-walks=... for the exact search)
+     * may sit anywhere in argv and do not count as positions, so every existing eight- or
      * nine-argument call keeps its meaning. */
     int search_exact = 0;
     double min_giant = EXACT_DEFAULT_MIN_GIANT_FRACTION;
     int min_giant_given = 0;
+    int odd_walks = EXACT_DEFAULT_ODD_WALKS;
+    int odd_walks_given = 0;
+    unsigned long long seed_flag = 0;
+    int seed_given = 0;
     char* pos[10] = {0};
     int npos = 0;
     for (int i = 1; i < argc; ++i) {
@@ -2166,6 +2418,35 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             min_giant_given = 1;
+        } else if (strncmp(a, "--odd-walks=", 12) == 0) {
+            if (strcmp(a + 12, "on") == 0) odd_walks = 1;
+            else if (strcmp(a + 12, "off") == 0) odd_walks = 0;
+            else {
+                fprintf(stderr, "Error: --odd-walks must be 'on' or 'off', got '%s'.\n", a + 12);
+                return 1;
+            }
+            odd_walks_given = 1;
+        } else if (strncmp(a, "--seed=", 7) == 0) {
+            /* Digits only: strtoull would take "-1" and wrap it round to
+             * 2^64 - 1, which is a seed nobody meant. */
+            const char* s = a + 7;
+            char* end = NULL;
+            int digits = (*s != '\0');
+            for (const char* c = s; *c; ++c) if (*c < '0' || *c > '9') digits = 0;
+            errno = 0;
+            if (digits) seed_flag = strtoull(s, &end, 10);
+            if (!digits || end == s || *end != '\0' || errno == ERANGE) {
+                fprintf(stderr, "Error: --seed must be an integer from 0 to "
+                                "18446744073709551615, got '%s'.\n", s);
+                return 1;
+            }
+            seed_given = 1;
+        } else if (strncmp(a, "--output-dir=", 13) == 0) {
+            if (a[13] == '\0') {
+                fprintf(stderr, "Error: --output-dir needs a directory, got an empty string.\n");
+                return 1;
+            }
+            g_output_dir = a + 13;
         } else {
             fprintf(stderr, "Error: unknown option '%s'.\n", a);
             print_usage(argv[0]);
@@ -2179,6 +2460,9 @@ int main(int argc, char *argv[]) {
     if (min_giant_given && !search_exact) {
         fprintf(stderr, "Warning: --min-giant-fraction applies to --search=exact only; the "
                         "strict search keeps every active site connected.\n");
+    }
+    if (odd_walks_given && !search_exact) {
+        fprintf(stderr, "Warning: --odd-walks applies to --search=exact only.\n");
     }
 
     // MODIFIED: Parse dims_str instead of N
@@ -2238,7 +2522,11 @@ int main(int argc, char *argv[]) {
     if (search_exact) {
         printf("INFO: search=exact, min_giant_fraction=%g, one attempt per trial.\n", min_giant);
     }
-    mkdir("output", 0755);
+    if (make_dirs(g_output_dir) != 0) {
+        fprintf(stderr, "Error: cannot create the output directory '%s'.\n", g_output_dir);
+        return 1;
+    }
+    printf("INFO: Writing networks to %s/\n", g_output_dir);
 
     /* Seed before building the lattice: MIX draws its sites from the
      * stream, unlike the pure builders, which consume no randomness while
@@ -2249,11 +2537,16 @@ int main(int argc, char *argv[]) {
      * byte-identical output from every run that started within the same
      * second. Verified before the fix -- three back-to-back runs produced
      * the same file. clock() and a stack address add what they can on top.
-     * TOPON_SEED overrides for reproducible runs, which the Python
-     * generator gets from seeding `random` directly. */
+     * --seed, or else TOPON_SEED, overrides for reproducible runs; the
+     * environment variable is what the pipeline sets, since a binary built
+     * before --seed existed still reads it. The same number gives the same
+     * stream either way. */
     unsigned long long seed;
     const char* seed_env = getenv("TOPON_SEED");
-    if (seed_env && *seed_env) {
+    if (seed_given) {
+        seed = seed_flag;
+        printf("INFO: Using --seed=%llu (reproducible run).\n", seed);
+    } else if (seed_env && *seed_env) {
         seed = strtoull(seed_env, NULL, 10);
         printf("INFO: Using TOPON_SEED=%llu (reproducible run).\n", seed);
     } else {
@@ -2262,7 +2555,7 @@ int main(int argc, char *argv[]) {
         mix ^= (uint64_t)clock() << 16;
         mix ^= (uint64_t)(uintptr_t)&mix;
         seed = (unsigned long long)splitmix64(&mix);
-        printf("INFO: Seed %llu from the clock (set TOPON_SEED to replay this run).\n", seed);
+        printf("INFO: Seed %llu from the clock (pass --seed=%llu to replay this run).\n", seed, seed);
     }
     rng_seed((uint64_t)seed);
 
@@ -2588,11 +2881,13 @@ int main(int argc, char *argv[]) {
          * network use the fallback deal and repair; a network found resets
          * the count. */
         ExactSearch* w = exact_create(base_graph, max_func, target_counts, min_giant);
+        w->walks_on = odd_walks;
         int no_slack = exact_no_slack(w);
         long long n_active = 0;
         for (int d = 1; d <= max_func; ++d) n_active += target_counts[d];
         long long n_vacancies = (long long)base_graph->V - n_active;
         ExactOutcome best;
+        char odd_buf[48];
         int have_best = 0;
         long long attempts = 0;
         int short_in_a_row = 0, fallback = 0;
@@ -2605,8 +2900,9 @@ int main(int argc, char *argv[]) {
             attempts++;
             if (o.ok) {
                 success_count++;
-                printf("  [exact] attempt %lld%s: reached in %.2fs (%lld augmentations, %lld repairs)\n",
-                       trial, fallback ? " (fallback)" : "", o.seconds, o.augmentations, o.swaps);
+                printf("  [exact] attempt %lld%s: reached in %.2fs (%lld augmentations, %lld repairs%s)\n",
+                       trial, fallback ? " (fallback)" : "", o.seconds, o.augmentations, o.swaps,
+                       odd_note(odd_buf, sizeof(odd_buf), o.odd_walks));
                 short_in_a_row = 0;
                 fallback = 0;
                 Graph* g = exact_to_graph(w, base_graph);
@@ -2624,8 +2920,9 @@ int main(int argc, char *argv[]) {
             }
             char err[256];
             exact_describe_error(w, &o, err, sizeof(err));
-            printf("  [exact] attempt %lld%s: failed in %.2fs (%lld augmentations, %lld repairs) -- %s\n",
-                   trial, fallback ? " (fallback)" : "", o.seconds, o.augmentations, o.swaps, err);
+            printf("  [exact] attempt %lld%s: failed in %.2fs (%lld augmentations, %lld repairs%s) -- %s\n",
+                   trial, fallback ? " (fallback)" : "", o.seconds, o.augmentations, o.swaps,
+                   odd_note(odd_buf, sizeof(odd_buf), o.odd_walks), err);
             printf("[Trial %lld | FAILED] Could not find a valid network.\n", trial);
             /* Keep the attempt Python's _failure_message would quote: the
              * smallest residual, then the largest giant component. */

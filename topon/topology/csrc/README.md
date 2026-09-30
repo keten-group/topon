@@ -84,7 +84,7 @@ generator.
 ## Command line
 
 ```
-generator.exe <dims> <periodicity> <max_func> <max_trials> <max_saves> "<degree_dist>" <logging> <lattice_type> [neighbour_cutoff] [--search=strict|exact] [--min-giant-fraction=F]
+generator.exe <dims> <periodicity> <max_func> <max_trials> <max_saves> "<degree_dist>" <logging> <lattice_type> [neighbour_cutoff] [--search=strict|exact] [--min-giant-fraction=F] [--odd-walks=on|off] [--seed=N] [--output-dir=DIR]
 ```
 
 | argument | meaning |
@@ -100,9 +100,26 @@ generator.exe <dims> <periodicity> <max_func> <max_trials> <max_saves> "<degree_
 | `neighbour_cutoff` | optional; the candidate-edge range for `SC`/`BCC`/`FCC`/`Diamond` in cell units (default `1.0`, the canonical lattice). `MIX` carries it inside its own argument; giving both is refused. |
 | `--search=` | optional flag, anywhere in the line. `strict` (the default) prunes the lattice edge by edge; `exact` runs the exact degree matching |
 | `--min-giant-fraction=` | optional flag for `exact`; the share of active sites the largest component must hold (default `0.99`, the Python default; `1` demands a fully connected active subgraph) |
+| `--odd-walks=` | optional flag for `exact`; `on` (the default) searches the augmenting walk again when an attempt ends short on a scaffold with odd cycles, `off` gives the networks of earlier versions (the same switch as `topology.generator.odd_walks`) |
+| `--seed=` | optional flag; a non-negative integer that fixes the whole random stream. It wins over the `TOPON_SEED` environment variable, which gives the same stream for the same number. With neither, the seed comes from the clock and the pid and is printed, so any run can be replayed |
+| `--output-dir=` | optional flag; where the `.nodes`/`.edges` files go (default `output` in the working directory). Missing directories are created |
 
 The flags are named rather than positional, so every eight- or
 nine-argument call keeps its meaning and gets the strict search.
+
+**Seeds and output directories.** Two runs with the same seed, lattice
+and request write identical files. The file names carry only the lattice
+size and the trial number (`network_N6x6x6_trial0.nodes`), so two runs
+writing into one directory overwrite each other's networks, and a script
+that collects the newest file can pick up the other run's. Give every
+concurrent run its own `--output-dir` (the pipeline does, one run
+directory each). The seed is printed on every run, `--seed` or not.
+
+```bash
+# the same network twice, in two directories
+./generator.exe 8x8x8 111 4 1000 1 "0:20,1:40" 0 SC --seed=7 --output-dir=runs/a
+./generator.exe 8x8x8 111 4 1000 1 "0:20,1:40" 0 SC --seed=7 --output-dir=runs/b
+```
 
 `--search=exact` needs a count for every degree from 0 to `max_func` (an
 `e:N` term, if given, must agree with them). Degree 0 is the leftover
@@ -197,11 +214,18 @@ passed as given. And the
 pipeline hands the binary a `TOPON_SEED` drawn from the global NumPy
 stream, as the Python exact search draws its own, so `np.random.seed(n)`
 pins either route; the seed lands in the run manifest with the requested
-and achieved counts.
+and achieved counts. With `topology.generator.seed` set the draw comes
+from a stream seeded with it instead (the same number `np.random.seed`
+would have given), and the strict search is then seeded as well, where
+unpinned it still seeds from the clock. The seed goes through the environment rather than
+`--seed` so that a binary built before the flag (the paper's release
+binaries) still takes it, and the binary runs in the run's own
+`topology/` directory, so it writes `topology/output/`.
 
 ## Output
 
-Writes `output/network_N<dims>_trial<n>.{nodes,edges}`. The `.nodes` file
+Writes `<output-dir>/network_N<dims>_trial<n>.{nodes,edges}`, with
+`output` in the working directory as the default. The `.nodes` file
 opens with a `# BOX Lx Ly Lz` header recording the true periodic cell,
 which `topon.topology.loader` reads back. That header matters: without it
 the loader falls back to estimating the cell from the coordinate extent,

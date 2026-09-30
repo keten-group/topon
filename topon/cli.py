@@ -30,7 +30,8 @@ _BANNER = r"""
 
    All commands (type `help <cmd>` for details):
      init       validate    doctor      generate    inspect
-     analyze    simbox      chain       protein     recipes
+     analyze    fit         track       simbox      chain
+     protein    recipes
 
    Pipeline (`generate`):
       Topology -> Analysis -> Assignment -> Chemistry -> Conformation -> Output
@@ -103,18 +104,51 @@ def main(ctx, no_shell: bool):
     is_flag=True,
     help="Also export the graph as <name>.npz for downstream GNN pipelines",
 )
+@click.option("--verify", "verify_ref", type=click.Path(exists=True), default=None,
+              help="Reference to hold the build against (LAMMPS data file, NPZ "
+                   "dual graph or strand graph): requested against achieved "
+                   "P(f) and loops, descriptor composite, reach. Writes "
+                   "verify.json into the run directory")
+@click.option("--verify-seeds", type=int, default=1, show_default=True,
+              help="Seeds --verify regenerates, from topology.generator.seed up")
+@click.option("--verify-only", is_flag=True,
+              help="With --verify: build nothing, only regenerate the graphs "
+                   "(stages 1-3, in a scratch directory) and verify them")
+@click.option("--relaxed", type=click.Path(exists=True), default=None,
+              help="With --verify: a relaxed end-linked data file of this "
+                   "build, for Z1+ per strand class against the reference "
+                   "(making it needs MD, which generate does not run)")
+@click.option("--junction-type", type=int, default=None,
+              help="With --verify: junction atom type of a reference data "
+                   "file that is not typed 1 end / 2 interior / 3 junction")
 def generate(
     config_path: str,
     output: str,
     dry_run: bool,
     export_graphml: bool,
     export_npz: bool,
+    verify_ref: str,
+    verify_seeds: int,
+    verify_only: bool,
+    relaxed: str,
+    junction_type: int,
 ):
     """
     Run the full pipeline from a configuration file.
 
     CONFIG_PATH: Path to the JSON configuration file.
+
+    With --verify REFERENCE the build is regenerated (and, with
+    --verify-seeds N, N seeds from the config's own) and held against the
+    reference, which is what a config written by `topon fit` is checked
+    with:
+
+        topon generate ref_config.json --verify ref.data --verify-seeds 3
     """
+    if (verify_only or relaxed or junction_type is not None) and not verify_ref:
+        click.echo("Error: --verify-only, --relaxed and --junction-type go "
+                   "with --verify REFERENCE", err=True)
+        sys.exit(2)
     from topon.config import load_config_full, validate_config
     from topon.pipeline import Pipeline
 
@@ -154,19 +188,63 @@ def generate(
         click.echo("Dry run - not executing pipeline.")
         return
 
-    # Run pipeline (raw_config carries conformation / simulation /
-    # execution / experimental sections that aren't in ToponConfig).
-    click.echo("Running pipeline...")
-    pipeline = Pipeline(config, raw_config=raw_cfg)
-    from topon.chemistry.charmm import CharmmTypingError, MissingCharmmParameters
-    try:
-        pipeline.run()
-    except (CharmmTypingError, MissingCharmmParameters) as e:
-        # a config or force-field problem the message fully explains
-        click.echo(f"CHARMM: {e}", err=True)
-        sys.exit(1)
+    built = {}
+    if not verify_only:
+        # Run pipeline (raw_config carries conformation / simulation /
+        # execution / experimental sections that aren't in ToponConfig).
+        click.echo("Running pipeline...")
+        pipeline = Pipeline(config, raw_config=raw_cfg)
+        from topon.chemistry.charmm import CharmmTypingError, MissingCharmmParameters
+        try:
+            pipeline.run()
+        except (CharmmTypingError, MissingCharmmParameters) as e:
+            # a config or force-field problem the message fully explains
+            click.echo(f"CHARMM: {e}", err=True)
+            sys.exit(1)
 
-    click.echo(f"Pipeline complete. Output written to: {config.study.output_dir}")
+        click.echo(f"Pipeline complete. Output written to: {config.study.output_dir}")
+        if config.topology.generator.seed is not None:
+            built[int(config.topology.generator.seed)] = pipeline.graph
+
+    if verify_ref:
+        _verify_build(config, raw_cfg, verify_ref, verify_seeds, built,
+                      relaxed, junction_type)
+
+
+def _verify_build(config, raw_cfg, reference, n_seeds, built, relaxed,
+                  junction_type):
+    """The --verify half of `topon generate`.
+
+    The config is taken as the pipeline took it, validated, with its legacy
+    keys renamed and its defaults filled, not re-read from the file.
+    """
+    from topon.inverse.verify import format_verify, verify, write_verify
+
+    cfg = {**(raw_cfg or {}), **config.model_dump(mode="json")}
+    seed0 = config.topology.generator.seed
+    if seed0 is None:
+        click.echo("  [note] topology.generator.seed is not set, so the build "
+                   "is unpinned and --verify regenerates seeds 1 and up "
+                   "instead of the graph just built.")
+        seed0 = 1
+    seeds = [int(seed0) + i for i in range(max(1, int(n_seeds)))]
+    click.echo(f"Verifying against {reference} on seed(s) "
+               f"{', '.join(str(s) for s in seeds)}...")
+    try:
+        report = verify(cfg, reference, seeds=seeds, built=built,
+                        relaxed=relaxed, junction_type=junction_type,
+                        z1_config=config.analysis.z1plus,
+                        log=click.echo)
+    except Exception as e:
+        # Whatever stopped it, the build (when there was one) is on disk;
+        # say what failed rather than leave a traceback after it.
+        click.echo(f"Error: the verification did not run: "
+                   f"{type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+    run_dir = Path(config.study.output_dir) / config.study.name
+    path = write_verify(report, run_dir / "verify.json")
+    click.echo(format_verify(report))
+    click.echo(f"\nwrote {path}")
 
 
 @main.command()
@@ -239,58 +317,191 @@ def doctor(config_path: str, strict: bool):
         sys.exit(1)
 
 
-@main.command()
-@click.argument("graph_path", type=click.Path(exists=True))
-@click.option("--format", "-f", type=click.Choice(["text", "json"]), default="text")
-@click.option("--nodes", type=click.Path(exists=True), default=None,
-              help="Companion .nodes file (when GRAPH_PATH is a .edges file)")
-def analyze(graph_path: str, format: str, nodes: str):
-    """
-    Analyze a topology graph and report statistics.
+def _z1_config(config_path, z1_exe, z1_distro):
+    """``analysis.z1plus`` from a config file, with the flags on top."""
+    from topon.config.schema import Z1PlusConfig
 
-    GRAPH_PATH: Path to a .gpickle file, or a .nodes file (pair it with --nodes
-    when passing a .edges file).
+    base = {}
+    if config_path:
+        from topon.utils.errors import load_config_or_die
+        cfg, _raw = load_config_or_die(config_path)
+        base = cfg.analysis.z1plus.model_dump()
+    if z1_exe:
+        base["executable"] = z1_exe
+    if z1_distro:
+        base["wsl_distro"] = z1_distro
+    return Z1PlusConfig(**base)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--format", "-f", type=click.Choice(["text", "json"]), default="text",
+              help="Print the report as text (default) or as JSON on stdout")
+@click.option("--nodes", type=click.Path(exists=True), default=None,
+              help="Companion .nodes file (when PATH is a .edges file)")
+@click.option("--json", "json_out", type=click.Path(), default=None,
+              help="Also write the report to this JSON file, with the "
+                   "distributions beside it as .npz")
+@click.option("--compare", "compare_to", type=click.Path(exists=True), default=None,
+              help="Reference to compare against: a graph, an end-linked data "
+                   "file, or a JSON report written by --json")
+@click.option("--z1", is_flag=True,
+              help="Run Z1+ on PATH (an end-linked LAMMPS data file)")
+@click.option("--z1-exe", default=None,
+              help="Z1+ binary (overrides analysis.z1plus.executable)")
+@click.option("--z1-distro", default=None,
+              help="WSL distribution Z1+ is installed in")
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+              help="topon config to read analysis.z1plus from")
+@click.option("--fast", is_flag=True,
+              help="Skip the cycle spectrum, effective resistance and edge "
+                   "betweenness (the slow part on a large network)")
+@click.option("--seed", type=int, default=0, show_default=True,
+              help="Seed of the sampled betweenness and path lengths")
+@click.option("--strands", "strands", type=click.Path(exists=True), default=None,
+              help="Run manifest (or run directory) holding the strand record "
+                   "of an atomistic data file; found beside the file when omitted")
+def analyze(path: str, format: str, nodes: str, json_out: str, compare_to: str,
+            z1: bool, z1_exe: str, z1_distro: str, config_path: str,
+            fast: bool, seed: int, strands: str):
+    """Connectivity descriptors of a network, Z1+, and a comparison.
+
+    PATH is a strand graph (.gpickle, .nodes with its .edges, .edges with
+    --nodes, .graphml), a LAMMPS data file in the end-linked convention
+    (type 1 chain end, 2 interior, 3 junction; one molecule per chain), which
+    is read into its strand graph, or an atomistic data file of a topon run,
+    read through the strand record in the run's manifest.json (one Z1+ point
+    per repeat unit). Every descriptor is defined in docs/USAGE.md section 3.6.
 
     Examples:
 
         topon analyze network.gpickle
 
-        topon analyze network.nodes
+        topon analyze final.data --z1 --json final_desc.json
 
-        topon analyze network.edges --nodes network.nodes
+        topon analyze network.gpickle --compare reference.data
+
+        topon analyze run/03_Conformation/system_relaxed.data --z1
     """
-    from topon.topology.loader import load_graph
-    from topon.analysis.report import analyze_graph
+    from topon.analysis.analyze import (
+        analyze_network, format_report, write_report)
+    from topon.analysis.endlinked import NotEndLinked
 
-    p = Path(graph_path)
     try:
-        if p.suffix == ".gpickle":
-            G, dims = load_graph(gpickle_path=graph_path)
-        elif p.suffix == ".nodes":
-            edges_path = str(p.with_suffix(".edges"))
-            if not Path(edges_path).exists():
-                click.echo(f"Error: companion .edges file not found: {edges_path}", err=True)
-                sys.exit(1)
-            G, dims = load_graph(nodes_path=graph_path, edges_path=edges_path)
-        elif p.suffix == ".edges":
-            if not nodes:
-                nodes_path = str(p.with_suffix(".nodes"))
-                if not Path(nodes_path).exists():
-                    click.echo("Error: provide --nodes <path> for a .edges file.", err=True)
-                    sys.exit(1)
-                nodes = nodes_path
-            G, dims = load_graph(nodes_path=nodes, edges_path=graph_path)
-        else:
-            click.echo(f"Error: unsupported file type '{p.suffix}'. Use .gpickle, .nodes, or .edges.", err=True)
-            sys.exit(1)
-    except Exception as e:
-        click.echo(f"Error loading graph: {e}", err=True)
+        z1_cfg = _z1_config(config_path, z1_exe, z1_distro) if z1 else None
+        report, dists = analyze_network(
+            path, nodes=nodes, heavy=not fast, seed=seed, z1=z1,
+            z1_config=z1_cfg, compare_to=compare_to, strands=strands)
+    except (NotEndLinked, FileNotFoundError, ValueError) as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    report = analyze_graph(G, dims, verbose=(format == "text"))
-
+    if json_out:
+        j, npz = write_report(report, dists, json_out)
+        click.echo(f"wrote {j} and {npz.name}", err=(format == "json"))
     if format == "json":
-        click.echo(json.dumps(report, indent=2))
+        from topon.analysis.descriptors import to_jsonable
+        click.echo(json.dumps(report, indent=1, default=to_jsonable))
+    else:
+        click.echo(format_report(report))
+
+
+def _floats(text):
+    return [float(x) for x in text.split(",") if x.strip()] if text else None
+
+
+@main.command(name="fit")
+@click.argument("reference", type=click.Path(exists=True))
+@click.option("--out", "-o", type=click.Path(), default=None,
+              help="Config to write (default <reference stem>_config.json in "
+                   "the current directory); the report goes beside it as "
+                   "<stem>.fit.json")
+@click.option("--junction-type", type=int, default=None,
+              help="Junction atom type of a data file not typed 1 end / "
+                   "2 interior / 3 junction; chains are then read from the bonds")
+@click.option("--nodes", type=click.Path(exists=True), default=None,
+              help="Companion .nodes file (when REFERENCE is a .edges file)")
+@click.option("--lattice", type=click.Choice(["SC", "BCC", "FCC", "Diamond", "MIX"]),
+              default="SC", show_default=True, help="Lattice of the fitted cell")
+@click.option("--mix", default=None,
+              help="MIX fractions SC,BCC,FCC, e.g. 0.9,0.05,0.05 (with --lattice MIX)")
+@click.option("--sweep-cutoffs", default=None,
+              help="Cutoffs to sweep, comma-separated, in place of the ones the "
+                   "rule of thumb gives, e.g. 1.74,2.01,2.24")
+@click.option("--seeds", type=int, default=2, show_default=True,
+              help="Builds per candidate cutoff")
+@click.option("--seed", type=int, default=1, show_default=True,
+              help="First sweep seed, and the seed the config is pinned to")
+@click.option("--max-functionality", type=int, default=None,
+              help="Junction ceiling (default: the reference's highest degree)")
+@click.option("--dp", type=float, default=None,
+              help="Strand DP, when the reference does not carry it")
+@click.option("--density", type=float, default=None,
+              help="Bead density, when the reference does not carry it")
+@click.option("--no-z1", is_flag=True,
+              help="Do not run Z1+ on the reference (no entanglement target)")
+@click.option("--z1-exe", default=None, help="Z1+ binary")
+@click.option("--z1-distro", default=None, help="WSL distribution Z1+ is installed in")
+@click.option("--name", default=None, help="study.name of the config")
+@click.option("--no-control", is_flag=True,
+              help="Skip the nearest-neighbour control row of the sweep")
+@click.option("--quiet", "-q", is_flag=True, help="Print the summary only")
+def fit_cmd(reference, out, junction_type, nodes, lattice, mix, sweep_cutoffs,
+            seeds, seed, max_functionality, dp, density, no_z1, z1_exe,
+            z1_distro, name, no_control, quiet):
+    """Measure a network and write a config that regenerates it.
+
+    REFERENCE is a LAMMPS data file of an end-linked network, an NPZ dual
+    graph or a strand graph. The config holds the cubic cell that fits its
+    sites, the neighbour cutoff a short sweep chose (candidates from the
+    rule cutoff ~ p95 junction separation / site spacing), the exact P(f),
+    the loops and sol with the degrees of the junctions they sit on, DP,
+    density, and the entanglement target from the reference's Z1+.
+    Everything that cannot be matched is flagged. Check the result with
+    `topon generate CONFIG --verify REFERENCE`.
+
+    Examples:
+
+        topon fit reference.data --out reference_config.json
+
+        topon fit ref.data --junction-type 3 --sweep-cutoffs 1.74,2.01,2.24 --seeds 2
+    """
+    from topon.inverse.fit import FitError, fit, format_fit, write_fit
+
+    mix_d = None
+    if bool(mix) != (lattice == "MIX"):
+        click.echo("Error: --mix and --lattice MIX go together", err=True)
+        sys.exit(2)
+    try:
+        if mix:
+            f = _floats(mix)
+            if len(f) != 3:
+                raise ValueError
+            mix_d = {"SC": f[0], "BCC": f[1], "FCC": f[2]}
+        cutoffs = _floats(sweep_cutoffs)
+    except ValueError:
+        click.echo("Error: --mix takes three fractions SC,BCC,FCC and "
+                   "--sweep-cutoffs a comma-separated list of numbers", err=True)
+        sys.exit(2)
+    z1_cfg = None if no_z1 else _z1_config(None, z1_exe, z1_distro)
+    try:
+        result = fit(reference, junction_type=junction_type, nodes=nodes,
+                     lattice=lattice, mix=mix_d,
+                     cutoffs=cutoffs, seeds=seeds, seed=seed,
+                     max_functionality=max_functionality, dp=dp,
+                     density=density, z1=False if no_z1 else None,
+                     z1_config=z1_cfg, name=name, control=not no_control,
+                     log=None if quiet else click.echo)
+    except FitError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    out = out or f"{Path(reference).stem}_config.json"
+    cfg_path, rep_path = write_fit(result, out)
+    click.echo(format_fit(result))
+    click.echo(f"\nwrote {cfg_path} and {rep_path.name}")
 
 
 # Preset name -> the demo config it copies. The copies ship inside the
@@ -564,19 +775,104 @@ def chain(
 
 @main.command()
 @click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
-def inspect(run_dir: str):
+@click.option("--z1/--no-z1", default=True, show_default=True,
+              help="Measure Z1+ on the most relaxed end-linked data file, "
+                   "when Z1+ is installed")
+@click.option("--z1-exe", default=None,
+              help="Z1+ binary (overrides analysis.z1plus.executable)")
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+              help="topon config to read analysis.z1plus from")
+def inspect(run_dir: str, z1: bool, z1_exe: str, config_path: str):
     """Summarise what's inside a `topon generate` output directory.
 
     RUN_DIR: path either to the study folder (containing 02_Chemistry/,
     03_Conformation/, 04_Simulation/) or to its parent. Prints atom counts,
-    box dimensions, which displacement files landed, and the next LAMMPS
-    commands to run. Useful for confirming a long pipeline finished cleanly
-    without grepping `system.data` headers by hand.
+    box dimensions, which displacement files landed, the topology and
+    defects requested against achieved, and the next LAMMPS commands to run.
+    When the most relaxed data file is in the end-linked convention it also
+    reads the strands, loops and P(f) off it, and Z1+ when installed.
     """
     from topon.analysis.run_summary import summarise, format_summary
 
-    summary = summarise(Path(run_dir))
+    z1_cfg = _z1_config(config_path, z1_exe, None) if z1 else None
+    summary = summarise(Path(run_dir), network=True, z1=z1, z1_config=z1_cfg)
     click.echo(format_summary(summary))
+
+
+def _study_dir(path: Path) -> Path:
+    """The study folder (with manifest.json) at or directly under ``path``."""
+    if (path / "manifest.json").exists():
+        return path
+    found = [p for p in sorted(path.iterdir()) if (p / "manifest.json").exists()]
+    if len(found) == 1:
+        return found[0]
+    raise click.BadParameter(f"{path} is not a topon study folder (no manifest.json)")
+
+
+@main.command()
+@click.argument("run_dirs", nargs=-1, required=True,
+                type=click.Path(exists=True, file_okay=False))
+@click.option("-o", "--output", default="relaxation_tracker.html", show_default=True,
+              help="The page to write")
+@click.option("--seeds", type=int, default=8, show_default=True,
+              help="Z1+ seeds per checkpoint (0 leaves Z1+ out)")
+@click.option("--energies/--no-energies", default=True, show_default=True,
+              help="Evaluate every checkpoint under the full force field (one "
+                   "zero-step LAMMPS run each)")
+@click.option("--lmp", default="lmp", show_default=True,
+              help="LAMMPS executable for the energies")
+@click.option("--omp", type=int, default=1, show_default=True,
+              help="OpenMP threads for those runs")
+@click.option("--title", default="topon Relaxation Tracker", show_default=True,
+              help="The page's title")
+@click.option("--label", "labels", multiple=True,
+              help="A label per run, in the order given (default: the folder name)")
+@click.option("--z1-exe", default=None,
+              help="Z1+ binary (overrides analysis.z1plus.executable)")
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+              help="topon config to read analysis.z1plus from")
+def track(run_dirs, output, seeds, energies, lmp, omp, title, labels, z1_exe,
+          config_path):
+    """A tracker page for atomistic relaxation runs.
+
+    RUN_DIRS: one or more study folders of the atomistic route (each with
+    manifest.json, 03_Conformation/ and 04_Simulation/), or their parents.
+    Writes one self-contained HTML page: per run and per checkpoint (the
+    build, stage 1, the ramp, and the minimised, NVT and NPT states of stage
+    3), the network drawn as curves with its crosslinks and Z1+ kinks, and
+    through the stages Z per bridge over several Z1+ seeds, the build's
+    robust partner pairs still seen, the backbone passages from the stage
+    dumps, the energy density under the full force field, temperature,
+    density and the longest backbone bond. A run that stopped early shows
+    the checkpoints it wrote.
+
+    Examples:
+
+        topon track output/pdms_dp30
+
+        topon track runs/z1 runs/z2 --label "Z = 1" --label "Z = 2" -o z.html
+
+        topon track run --seeds 4 --omp 4
+    """
+    from topon.analysis.tracker import track_run, write_tracker
+    from topon.analysis.z1plus import z1plus_available
+
+    z1_cfg = _z1_config(config_path, z1_exe, None) if seeds > 0 else None
+    if seeds > 0 and not z1plus_available(z1_cfg):
+        click.echo("Z1+ is not available: Z and the kinks are left out", err=True)
+    runs = []
+    for i, d in enumerate(run_dirs):
+        study = _study_dir(Path(d))
+        label = labels[i] if i < len(labels) else None
+        click.echo(f"reading {study}" + (" (with energies)" if energies else ""), err=True)
+        try:
+            runs.append(track_run(study, label=label, seeds=seeds, z1_config=z1_cfg,
+                                  energies=energies, lmp=lmp, omp=omp))
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            click.echo(f"Error in {study}: {e}", err=True)
+            sys.exit(1)
+    path = write_tracker(runs, output, title=title)
+    click.echo(f"wrote {path} ({len(runs)} run{'s' if len(runs) != 1 else ''})")
 
 
 @main.command()
@@ -651,6 +947,9 @@ def recipes():
          "topon inspect <run_dir>"),
         ("Graph statistics (no chemistry build)",
          "topon analyze graph.gpickle"),
+        ("A config that regenerates an existing network, and its check",
+         "topon fit ref.data --out ref_config.json\n"
+         "topon generate ref_config.json --verify ref.data --verify-seeds 3"),
     ]
     click.echo()
     click.echo("topon recipes — common use cases")

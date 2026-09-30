@@ -60,7 +60,7 @@ def wrap_with_images(x, box):
     first that starts         50             0         0
     =================  =========  ============  ========
 
-    So the 50 that remain are exactly the intrinsic case, and the brief's ask
+    So the 50 that remain are exactly the intrinsic case, and the aim
     -- consistent flags along a dangling chain -- is met. LAMMPS says
     "Inconsistent image flags" once for the 50 and then uses the minimum image
     for the bond force, which is correct; ``refnet.unwrap`` walks chains bead

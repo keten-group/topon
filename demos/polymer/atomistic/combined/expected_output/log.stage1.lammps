@@ -1,0 +1,184 @@
+LAMMPS (2 Apr 2025)
+  using 4 OpenMP thread(s) per MPI task
+Loaded 1 plugins from <LAMMPS install>/plugins
+package omp 4
+using multi-threaded neighbor list subroutines
+# LAMMPS Stage 1: hard-backbone push-off (ATOMISTIC, protocol "hard_backbone")
+#
+# Backbone-backbone pairs (atom types 1 3) keep a soft
+# core of 60.0 kcal/mol out to 3.0 A from the first
+# step, so no backbone atom passes through another strand's bond; every pair
+# with a light atom (types 2 4) ramps
+# 0 -> 30.0 kcal/mol at 1.0 A, as in the historic
+# deck. Capped displacement under a Langevin thermostat and no minimiser: a
+# minimiser resolves an overlap by whatever lowers the energy, which on the
+# bead-spring route was a bond stretched and a bead let through it.
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     harmonic
+dihedral_style  harmonic
+improper_style  cvff
+special_bonds   dreiding
+pair_style      lj/cut/coul/long 12.0
+kspace_style    pppm 1.0e-4
+
+read_data       ../03_Conformation/system_relaxed.data
+Reading data file ...
+  orthogonal box = (0 0 0) to (90.354255 90.354255 90.354255)
+  1 by 1 by 1 MPI processor grid
+  reading atoms ...
+  53209 atoms
+  scanning bonds ...
+  4 = max bonds/atom
+  scanning angles ...
+  6 = max angles/atom
+  scanning dihedrals ...
+  30 = max dihedrals/atom
+  orthogonal box = (0 0 0) to (90.354255 90.354255 90.354255)
+  1 by 1 by 1 MPI processor grid
+  reading bonds ...
+  53298 bonds
+  reading angles ...
+  101234 angles
+  reading dihedrals ...
+  127722 dihedrals
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        0        1       
+  special bond factors coul:  0        0        1       
+     4 = max # of 1-2 neighbors
+    10 = max # of 1-3 neighbors
+    14 = max # of special neighbors
+  special bonds CPU = 0.010 seconds
+  read_data CPU = 0.932 seconds
+include         ../02_Chemistry/system.in.settings
+# Forcefield Settings (Auto-Generated)
+
+# Pair Coeffs
+pair_coeff 1 1 0.3100 3.8041 # Si3
+pair_coeff 2 2 0.0951 3.4730 # C_3
+pair_coeff 3 3 0.0957 3.0332 # O_3
+pair_coeff 4 4 0.0152 2.8464 # H_
+
+# Bond Coeffs
+bond_coeff 1 350.0000 1.6970 # C_3-Si3
+bond_coeff 2 350.0000 1.5870 # O_3-Si3
+bond_coeff 3 350.0000 1.0900 # C_3-H_
+bond_coeff 4 350.0000 1.2570 # H_-Si3
+
+# Angle Coeffs
+angle_coeff 1 50.0000 109.4710 # O_3-Si3-O_3
+angle_coeff 2 50.0000 109.4710 # C_3-Si3-O_3
+angle_coeff 3 50.0000 109.4710 # C_3-Si3-C_3
+angle_coeff 4 50.0000 109.4710 # H_-C_3-Si3
+angle_coeff 5 50.0000 109.4710 # H_-C_3-H_
+angle_coeff 6 50.0000 104.5100 # Si3-O_3-Si3
+angle_coeff 7 50.0000 109.4710 # H_-Si3-O_3
+angle_coeff 8 50.0000 109.4710 # C_3-Si3-H_
+
+# Dihedral Coeffs
+dihedral_coeff 1 0.111111 -1 3 # C_3-Si3-C_3-H_
+dihedral_coeff 2 0.111111 -1 3 # H_-C_3-Si3-O_3
+dihedral_coeff 3 0.333333 -1 3 # C_3-Si3-O_3-Si3
+dihedral_coeff 4 0.333333 -1 3 # O_3-Si3-O_3-Si3
+dihedral_coeff 5 0.333333 -1 3 # H_-Si3-O_3-Si3
+dihedral_coeff 6 0.111111 -1 3 # H_-C_3-Si3-H_
+
+include         ../02_Chemistry/system.groups
+# LAMMPS group definitions
+group nodes id 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 53 54 55 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 82 83 84 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 131 132 133 134 135 136 137 138 139
+121 atoms in group nodes
+group beads subtract all nodes
+53088 atoms in group beads
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff 8.0
+
+group           bbdump type 1 3
+10991 atoms in group bbdump
+dump            bbdump bbdump custom 10 traj_stage1.lammpstrj id xu yu zu
+dump_modify     bbdump sort id format float %.4f
+
+kspace_style    none
+pair_style      soft 3.0
+pair_coeff      * * 0.0 1.0
+pair_coeff      1 1 60.0 3.0
+pair_coeff      1 3 60.0 3.0
+pair_coeff      3 3 60.0 3.0
+variable        prefactor equal ramp(0,30.0)
+fix             light all adapt 1 pair soft a 1*2 2 v_prefactor pair soft a 2 3*4 v_prefactor pair soft a 1*4 4 v_prefactor reset no
+velocity        all create 300.0 4928459 dist gaussian
+fix             lang all langevin 300.0 300.0 100.0 48279
+fix             cap all nve/limit 0.05
+timestep        1.0
+thermo          1000
+run             5000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style cvff/omp
+Neighbor list info ...
+  update: every = 1 steps, delay = 0 steps, check = yes
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 5
+  ghost atom cutoff = 8
+  binsize = 2.5, bins = 37 37 37
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair soft/omp, perpetual
+      attributes: half, newton on, omp
+      pair build: half/bin/newton/omp
+      stencil: half/bin/3d
+      bin: standard
+WARNING: Inconsistent image flags
+For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
+Per MPI rank memory allocation (min/avg/max) = 125.2 | 125.2 | 125.2 Mbytes
+   Step          Temp          E_pair         E_mol          TotEng         Press     
+         0   300            187134.16      32892.745      267607.79      25199.798    
+      1000   275.11041      1912.8185      53163.362      98709.501     -348.4466     
+      2000   275.25442      1498.0005      51589.553      96743.714      369.80796    
+      3000   271.70681      1139.501       51706.697      95939.697     -415.242      
+      4000   274.20451      1089.6729      51265.845      95845.159      235.22651    
+      5000   273.22414      1020.4577      50863.559      95218.169      104.13564    
+Loop time of 38.2907 on 4 procs for 5000 steps with 53209 atoms
+
+Performance: 11.282 ns/day, 2.127 hours/ns, 130.580 timesteps/s, 6.948 Matom-step/s
+155.9% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 3.5912     | 3.5912     | 3.5912     |   0.0 |  9.38
+Bond    | 12.752     | 12.752     | 12.752     |   0.0 | 33.30
+Neigh   | 3.0941     | 3.0941     | 3.0941     |   0.0 |  8.08
+Comm    | 0.97571    | 0.97571    | 0.97571    |   0.0 |  2.55
+Output  | 6.1832     | 6.1832     | 6.1832     |   0.0 | 16.15
+Modify  | 11.073     | 11.073     | 11.073     |   0.0 | 28.92
+Other   |            | 0.6215     |            |       |  1.62
+
+Nlocal:          53209 ave       53209 max       53209 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:          34040 ave       34040 max       34040 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:         330335 ave      330335 max      330335 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 330335
+Ave neighs/atom = 6.2082542
+Ave special neighs/atom = 5.808491
+Neighbor list builds = 180
+Dangerous builds = 0
+unfix           cap
+unfix           lang
+unfix           light
+undump          bbdump
+write_data      system_after_soft.data
+System init for write_data ...
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style cvff/omp
+WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
+write_restart   1.restart
+System init for write_restart ...
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Last active /omp style is improper_style cvff/omp
+Total wall time: 0:00:39

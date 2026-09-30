@@ -41,7 +41,20 @@ the compiled C generator (`topon/topology/csrc/generator.c`), which also runs on
 
 Diamond (4 neighbors) and `MIX` (SC, BCC and FCC sites overlaid at chosen fractions) are also available. A neighbor
 cutoff lets strands connect sites beyond the nearest neighbors, and each axis can be periodic or open (e.g., a slab
-with a free surface).
+with a free surface). `topology.generator.seed` pins the generated graph.
+
+Networks crosslinked along their chains (e.g., vulcanized rubber or a protein gel) are built in two ways. With
+`topology.source: "crosslink"` topon grows the chains as a self-avoiding melt on a cubic lattice and crosslinks the
+reactive beads that touch, so every strand's length follows from where the crosslinks fell. With
+`architecture: "random_crosslinked"` a sculpted lattice graph is covered with chains of a given length instead.
+
+## Measuring and matching networks
+
+`topon analyze` measures a network, from a graph or from a LAMMPS data file, with a set of connectivity descriptors
+(cycles, clustering, betweenness, effective resistance, the spectrum and the chord statistics) and, when Z1+ is
+installed, the primitive-path entanglements per strand. `--compare` scores it against a reference. `topon fit` reads an
+existing network (e.g., one made by `fix bond/create` in LAMMPS) and writes a config whose generated networks match
+it, and `topon generate --verify` checks that config against the reference.
 
 ## Output
 
@@ -58,6 +71,13 @@ input scripts that relax it into an equilibrated melt with the same connectivity
 <td>All-atom PDMS network with DREIDING (silicon in gold, oxygen in red).</td>
 </tr>
 </table>
+
+Atomistic strands are drawn at their bond lengths and settled before the first stage so that no two backbone bonds
+start closer than 1.5 Å, and the relaxation keeps the backbone hard so that strands do not pass through each other,
+which a crossing detector checks at every stage. The coarse-grained relaxation uses a capped push-off for the same
+reason. `topon track` writes an HTML page that follows an
+atomistic relaxation stage by stage (the network, the entanglements, the energy, the density and any strand that
+passed through another).
 
 ## Strand features
 
@@ -106,9 +126,10 @@ topon protein --sequence GRGDSPYAAAAAAAAA --repeats 12 --chains 8 \
               --model charmm --water-content 30 --output ./run_charmm
 ```
 
-The chains are grown as self-avoiding walks on a cubic lattice (the bond-fluctuation model) and crosslinked at their
-tyrosines (dityrosine) or, with `--crosslink-residue C`, their cysteines (disulfide) up to the gel point. A build that
-does not gel stops and says so. In CHARMM36m the atoms are placed from the force field's internal-coordinate tables,
+The chains are grown as a self-avoiding melt on a cubic lattice, one site per residue, and crosslinked where their
+tyrosines touch (dityrosine) or, with `--crosslink-residue C`, their cysteines (disulfide), up to the gel point. A build
+that does not gel stops and says so. `--crosslink-method adjacent` gives the node lattice of the bond-fluctuation model
+that earlier versions used. In CHARMM36m the atoms are placed from the force field's internal-coordinate tables,
 each crosslink is the RTF's patch (`DITY` or `DISU`), and every term, including the 1-4 terms, NBFIX and the CMAP
 grids, comes from the parameter file. `--seed` pins the whole build, and `protein_network_summary.json` records what was
 built. Martini 3 represents tryptophan with a virtual site, which LAMMPS lacks, so the Martini model refuses it. A bond
@@ -126,7 +147,7 @@ pip install -e .
 LAMMPS is needed only to run the generated inputs. Martini 3 protein networks of a sequence other than the bundled
 resilin reference need polyply (`pip install -e ".[martini]"`). The C generator is optional. Build it with
 `gcc -O2 -o generator.exe generator.c -lm` in `topon/topology/csrc/` and set `topology.generator.exe_path` to the
-binary.
+binary. Z1+ is optional too, and topon calls it when it is installed (its license does not allow topon to ship it).
 
 ## Getting started
 
@@ -137,7 +158,7 @@ topon generate my_run.json --output ./runs
 
 Running `topon` without arguments opens an interactive session. `topon doctor` checks a config before a run,
 `topon inspect` summarizes a finished run and `topon recipes` lists worked examples. Ready-made configs are in
-[`demos/`](demos/).
+[`demos/`](demos/), and the atomistic demos include the output of a full relaxation.
 
 ## Documentation
 

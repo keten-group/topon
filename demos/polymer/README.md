@@ -43,6 +43,14 @@ need (the SMILES there are not used).
 with CHARMM parameters (`chemistry.force_field = "charmm"`, the bundled C35r ether force field and a stream file for
 the junction) instead of DREIDING. Its README explains the residue matching and the three LAMMPS stages.
 
+## Expected output
+
+Each atomistic demo (the six DREIDING ones and the CHARMM one) has an `expected_output/` folder with the small text
+files of one build relaxed through its three LAMMPS stages. These are the coefficient includes, the groups, the stage
+scripts, the LAMMPS logs, the run manifest and the `topon track` page, with a README that gives the numbers of every
+stage and the commands that made them. The data files are not included. For these runs the DREIDING demos load the
+showcase network instead of generating one, so they share one graph.
+
 ## Where each feature lives in the config
 
 | Feature | Config section | Notes |

@@ -7,29 +7,31 @@ this many windings* -- and it works on the strands as placed rather than
 replacing them, so the statistical state the build was tuned for survives the
 designed ones being added.
 
-What this delivers today
-------------------------
-The budget half is complete and measured: a request is priced before anything
-is drawn, and one that does not fit is refused by name with the minimum DP
-where the contour binds and with the reason DP will not help where the axial
-room binds.
+What this delivers, and where
+-----------------------------
+A named pair comes back carrying the winding it was asked for, verified on the
+paths as drawn rather than assumed from the plan. Measured on SC 6x6x6 at
+DP 60, one request per strand: **8 of 8 delivered at coil 2.84 with linking
+numbers 1.02 to 1.03**, and 4 of 8 at coil 3.85. The acceptance test is
+half the requested windings at DP 60; both densities meet it and the lower one
+saturates it.
 
-The *routing* half does not yet clear the gate on a strand that was already
-drawn as a meander. Composing a braid onto one and waving the remaining free
-run back out to the contour leaves beads two to five places apart at 0.48 to
-0.99 sigma at the seam where the braid meets the meander, across every
-geometry tried (DP 60 to 300, chords 15 to 25 sigma, one winding). That is the
-threaded-bond pathology the gate exists to catch, so with ``strict`` -- the
-default -- the strand goes back to the path the placement drew and the request
-is refused with the reading that failed. The cause is understood:
-:func:`meander_to_length` zeroes its wave across a protected stretch and ramps
-it back over 1.6 times the stretch's half-width, so the free run on either side
-has to carry the whole contour in less room than it had before the braid, and
-it folds. The fix is to build a braided strand *from its chord* the way
-:func:`~topon.conformation.entanglement.waypoints.entangled_pair` and
-:mod:`~topon.conformation.entanglement.realize` already do for the pipeline's
-entangled edges, rather than composing onto a meander; that is the route to use
-for delivered windings today.
+The control that makes that claim mean anything: the same machinery with no
+braid asked for gives a linking number of 0.00 on the same strands. The winding
+comes from the braid, not from the meander that would have been there anyway.
+
+Three limits, all of them refusals rather than surprises:
+
+* **coil ratio.** Above about 3.5 the free run's own wave is tight enough to
+  take the braid apart, and the pair is drawn but does not wind. Swept at
+  DP 40, 60 and 120: delivered from coil 1.5 to 3.5, refused above.
+* **one braid per stretch of chord.** Two blending into each other collapse the
+  winding of both. Asked four partners against one strand on SC 6x6x6, every
+  pair read 0.00 to 0.01; the same strands asked one at a time read 1.02. The
+  second request on a stretch is refused;
+  :func:`~topon.conformation.entanglement.allocation.allocate_contacts` is the
+  thing that packs several along one chain properly.
+* **the budgets below**, which are checked before anything is drawn.
 
 What it can refuse, and why that is the point
 ---------------------------------------------
@@ -64,16 +66,22 @@ Two budgets bind, and they are not the same:
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
 
+from topon.conformation.entanglement.allocation import (
+    _interval_on,
+    _overlaps,
+)
 from topon.conformation.entanglement.braid import (
     BraidShape,
     axial_room,
     braid_path,
     closest_approach,
+    far_closed_linking,
     feasible_window,
     gap_at,
     make_contact,
@@ -96,6 +104,11 @@ __all__ = [
 #: curve and a 22-bead sample of it under-measures its own length by the chord
 #: error of every bead, which is exactly the error the budget must not make.
 _DENSE = 600
+
+#: Least gap between two braids on one chord, as a fraction of it. The same
+#: default ``allocate_contacts`` uses, and for the same reason: adjacent
+#: blends that touch fight each other.
+_BRAID_SEPARATION = 0.02
 
 
 @dataclass(frozen=True)
@@ -134,6 +147,9 @@ class PairOutcome:
     axial_have: float = 0.0
     gap: float = 0.0
     clearance: Optional[float] = None
+    linking: Optional[float] = None
+    """Winding measured on the two paths as drawn, by the Gauss integral over
+    chord-closed loops. ``None`` until the pair has been built."""
 
     @property
     def refused(self) -> bool:
@@ -377,93 +393,165 @@ def _minimum_dp(cost: dict, n_bonds_per_dp: int, bond: float) -> int:
 # Routing
 # ---------------------------------------------------------------------------
 
-def _compose_on_path(path, chord_pair, entries, bond: float,
-                     min_bond: float = 0.85, min_sep: float = 1.0,
-                     waves: float = 6.0, min_waves: float = 0.5,
-                     is_loop: bool = False):
-    """Put the braids on a strand that already has a shape.
+#: Multipliers tried on each braid's ``n_radius``, in order: the fitted radius
+#: first, because it is the one the budget priced, then wider, because a wider
+#: turn is one the bond length can follow.
+_RADIUS_SCALES = (1.0, 1.2, 1.5, 1.8, 0.8)
 
-    The braid is defined on the chord, so the beads inside its axial span take
-    the braid and every other bead stays on the path the placement drew. The
-    contour is then restored by waving the *unprotected* stretches out again
-    (:func:`meander_to_length` with the braid intervals protected), so the
-    winding keeps the geometry it was given and only the free run between the
-    braids takes up the slack the detour spent.
 
-    Two things the plain placement already knows, and that this has to know
-    too. The wave count is searched, not fixed: the detour leaves less free run
-    to spend the contour in than the strand started with, so the waves that
-    were fine before the braid fold after it, and the first sign is a bead
-    sitting on a bead a few places along at the seam where the braid meets the
-    meander -- measured at 0.65 sigma on a DP-120 pair. And the path is *not*
-    resampled at equal arc afterwards: a braid is a tight helix, so resampling
-    along the polyline cuts every corner off it, which put a 0.569 sigma bond
-    inside the turn.
+def _braided_path(chord_pair, entries, n_out: int, bond: float,
+                  min_bond: float = 0.85, min_sep: float = 1.0,
+                  waves: float = 6.0, min_waves: float = 0.5,
+                  is_loop: bool = False, dense_per_bead: int = 6,
+                  radius_scales=_RADIUS_SCALES, reach: float = 0.4):
+    """Draw a strand that carries braids, from its chord.
 
-    The braid's own beads are held still through all of it. Unfolding pushes
-    apart beads that sit close with no bond between them, which is precisely
-    what the two turns of a braid do.
+    Not from the strand the placement already drew. Composing a braid onto a
+    meander and waving what is left of the free run back out to the contour
+    was the first attempt and it does not work: it left beads two to five
+    places apart at 0.5 to 1.0 sigma where the braid met the meander, on every
+    geometry tried. :func:`~topon.conformation.entanglement.waypoints.
+    meander_to_length` zeroes its wave across a protected stretch and ramps it
+    back over 1.6 times that stretch's half-width, so the free run either side
+    has to carry the *whole* contour in less room than it had before the
+    braid, and folds. A meander with a second meander laid over it is not a
+    meander.
+
+    Drawn from the chord there is only ever one wave, which is the
+    construction :func:`~topon.conformation.entanglement.waypoints.
+    entangled_pair` has used since 0.2.0 and the one the pipeline's own
+    entangled edges take. Three things are borrowed from it:
+
+    * **draw dense, then resample once.** A wave has to be resolved before
+      beads are placed on it, or the resampling cuts the corners off and loses
+      the length the wave just added. ``dense_per_bead`` sets how finely; six
+      is what ``entangled_pair`` uses.
+    * **protect in chord fractions**, ``at +- half / chord``, not in indices of
+      whatever the base happened to be.
+    * **the braid keeps its geometry and the free run pays for it.** Only the
+      unprotected stretches are waved.
+
+    The braid's radius is searched alongside the wave count, which is the one
+    thing ``entangled_pair`` does not have to do and this does. A turn of
+    radius ``r`` drawn with a bond of ``b`` puts a bead and its second
+    neighbour at ``2 r sin(2 asin(b / 2 r))``, so a radius too tight for the
+    bead spacing leaves that pair touching however the free run is waved:
+    measured at the default 0.9, one pair inside the braid at 0.992 against a
+    floor of 1.0 with everything else clear. Widening the turn costs nothing
+    in partner clearance, which is set by the gap, and ``fit_to_gap``'s
+    ceiling is respected. Neither knob is monotone on its own -- the same pair
+    reads 0.992, 1.101 and 0.996 at radii 0.9, 1.1 and 1.3 -- so both are
+    searched and the first combination that clears the gate is taken.
+
+    What it costs: the strand no longer has the shape the placement gave it.
+    For a handful of designed pairs in a build of thousands that is what it
+    should cost, since the statistical entanglement state is set by the other
+    strands, and it is reported in ``info["redrawn"]`` rather than hidden.
 
     Returns ``(path, info)``.
     """
     from topon.conformation.entanglement.waypoints import (
         meander_to_length, resample_path)
-    from topon.conformation.paths import (bond_lengths, self_contact, unfold,
-                                          _relax_bonds)
+    from topon.conformation.paths import (bond_lengths, self_contact, straight,
+                                          unfold, _relax_bonds)
 
-    a0, a1 = chord_pair
-    n_out = len(path)
-    base = resample_path(np.asarray(path, float), _DENSE)
+    a0, a1 = (np.asarray(v, float) for v in chord_pair)
+    chord = float(np.linalg.norm(a1 - a0))
+    dense = max(int(n_out) * int(dense_per_bead), _DENSE)
     target = (n_out - 1) * bond
+    axis = (a1 - a0) / max(chord, 1e-12)
 
-    braided = []
-    protect = []
-    for contact, half, side, windings, shape in entries:
-        arm = braid_path(a0, a1, contact, windings, side, _DENSE, half, shape)
-        u = (base - contact.origin) @ contact.axis
-        inside = np.abs(u) < half
-        if not inside.any():
-            continue
-        braided.append((inside, arm))
-        idx = np.flatnonzero(inside)
-        protect.append((idx[0] / (_DENSE - 1.0), idx[-1] / (_DENSE - 1.0)))
+    def scaled(scale):
+        """Every braid radius scaled, inside the ceiling its gap allows.
 
-    w = float(waves)
-    best = None
+        ``fit_to_gap`` capped each radius at ``reach`` of that pair's gap so a
+        braid cannot reach past its partner's chord. Widening respects the
+        same ceiling.
+        """
+        out = []
+        for contact, half, side, windings, shape in entries:
+            n_r = min(shape.n_radius * scale, reach * contact.gap)
+            out.append((contact, half, side, windings,
+                        replace(shape, n_radius=n_r)))
+        return out
+
+    def build(these):
+        """The chord with every braid on it, at dense resolution."""
+        base = straight(a0, a1, dense)
+        protect = []
+        for contact, half, side, windings, shape in these:
+            arm = braid_path(a0, a1, contact, windings, side, dense, half,
+                             shape)
+            u = (base - contact.origin) @ contact.axis
+            inside = np.abs(u) < half
+            if not inside.any():
+                continue
+            base[inside] = arm[inside]
+            at = float((contact.origin - a0) @ axis / max(chord, 1e-12))
+            half_frac = min(0.45, half / max(chord, 1e-12))
+            protect.append((at - half_frac, at + half_frac))
+        return base, protect
+
     draws = 0
-    while True:
-        draws += 1
-        dense = np.array(base, copy=True)
-        for inside, arm in braided:
-            dense[inside] = arm[inside]
-        if _path_length(dense) < target:
-            dense = meander_to_length(dense, target, protect=protect, waves=w)
+    best = None
+    for scale in radius_scales:
+        these = scaled(scale)
+        w = float(waves)
+        while True:
+            draws += 1
+            path, protect = build(these)
+            length = _path_length(path)
+            if length > target:
+                # The braid alone is longer than the beads can carry at this
+                # radius, and waving only ever adds. Next scale.
+                break
+            if length < target:
+                path = meander_to_length(path, target, protect=protect,
+                                         waves=w)
 
-        out = resample_path(dense, n_out)
-        frozen = np.zeros(n_out, bool)
-        for lo, hi in protect:
-            frozen[int(np.floor(lo * (n_out - 1))):
-                   int(np.ceil(hi * (n_out - 1))) + 1] = True
-        out = unfold(out, bond, min_sep=min_sep, iters=120, smooth=False,
-                     frozen=frozen)
-        interior = np.zeros(n_out, bool)
-        interior[1:-1] = True
-        _relax_bonds(out, bond, interior, 400, 0.0, floor=min_bond)
-        _relax_bonds(out, bond, interior, 400, 0.0, only_long=True)
+            out = resample_path(path, n_out)
+            frozen = np.zeros(n_out, bool)
+            for lo, hi in protect:
+                lo_i = max(0, int(np.floor(lo * (n_out - 1))))
+                hi_i = min(n_out - 1, int(np.ceil(hi * (n_out - 1))))
+                frozen[lo_i:hi_i + 1] = True
+            # The braid's own beads are held through the unfold: opening a
+            # fold is the one move that would undo a winding, since the two
+            # arms of a braid are beads sitting close with no bond between.
+            out = unfold(out, bond, min_sep=min_sep, iters=400, smooth=False,
+                         frozen=frozen)
+            interior = np.zeros(n_out, bool)
+            interior[1:-1] = True
+            _relax_bonds(out, bond, interior, 400, 0.0, floor=min_bond)
+            _relax_bonds(out, bond, interior, 400, 0.0, only_long=True)
 
-        b_min = float(bond_lengths(out).min())
-        gap = self_contact(out, closed=is_loop)
-        score = (min(b_min / max(min_bond, 1e-9), 1.0),
-                 min(gap / max(min_sep, 1e-9), 1.0))
-        if best is None or score > best[0]:
-            best = (score, out, w, b_min, gap)
-        if (b_min >= min_bond and gap >= min_sep) or w <= min_waves:
+            b_min = float(bond_lengths(out).min())
+            gap = self_contact(out, closed=is_loop)
+            score = (min(b_min / max(min_bond, 1e-9), 1.0),
+                     min(gap / max(min_sep, 1e-9), 1.0))
+            if best is None or score > best[0]:
+                best = (score, out, w, scale, b_min, gap)
+            if b_min >= min_bond and gap >= min_sep:
+                break
+            if w <= min_waves:
+                break
+            # A finer ladder than halving. Several geometries were measured
+            # landing at 0.986 and 0.993 against a floor of 1.0, inside 1.5 %
+            # of clearing, which is the signature of stepping over the wave
+            # count that would have worked rather than of a shape that cannot
+            # exist.
+            w = max(min_waves, 0.7 * w)
+        if best is not None and best[0] >= (1.0, 1.0):
             break
-        w = max(min_waves, 0.5 * w)
 
-    _score, out, w, b_min, gap = best
-    return out, {"waves": float(w), "draws": draws, "bond_min": b_min,
-                 "self_contact": float(gap)}
+    if best is None:
+        raise ValueError(
+            "no braid radius in the search leaves the beads enough contour: "
+            "every candidate drew a path longer than (n_beads - 1) * bond")
+    _score, out, w, scale, b_min, gap = best
+    return out, {"waves": float(w), "radius_scale": float(scale),
+                 "draws": draws, "bond_min": b_min,
+                 "self_contact": float(gap), "redrawn": True, "dense": dense}
 
 
 def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
@@ -471,7 +559,8 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
                          min_clearance: float = 1.0,
                          apply: bool = True,
                          strict: bool = True,
-                         waves: float = 6.0) -> DesignReport:
+                         waves: float = 6.0,
+                         linking_tolerance: float = 0.25) -> DesignReport:
     """Wind every request that fits, refuse the rest by name.
 
     ``placement`` is a :class:`~topon.conformation.Placement`; with ``apply``
@@ -484,16 +573,22 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
     build stays a meander build; only the stretch inside the braid's span is
     replaced.
 
-    With ``strict`` (the default) a composed strand that no longer clears the
-    gate is put back the way it was and its request is refused with the
-    reading that failed. Turn it off to keep the braid and have the failure
-    reported instead; nothing else changes.
+    With ``strict`` (the default) a pair that fails either check is put back
+    the way it was and refused: the strand no longer clears the placement
+    gate, or the two paths as drawn do not measure the winding that was asked
+    for, within ``linking_tolerance``. Turn it off to keep what was drawn and
+    have the failures reported instead; nothing else changes.
+
+    Reverting is by pair rather than by strand, because a braid is a property
+    of two chains and half of one is a chain wound about a partner that is no
+    longer there -- which measures as an entanglement and is not one.
     """
     shape = shape or BraidShape()
     bond = float(placement.bond)
     report = DesignReport()
     chords = chords_of(placement)
     per_chain: dict[int, list] = {}
+    taken: dict = defaultdict(list)     # chord fractions each strand has spent
 
     for req in requests:
         out = PairOutcome(request=req)
@@ -586,8 +681,35 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
                 f"({out.axial_have:.1f} sigma available, "
                 f"{shape.span(req.windings):.1f} wanted)")
 
+        # Two braids on the same stretch of one chord blend into each other
+        # and the realised winding of both collapses. `allocate_contacts` was
+        # written for this and packs the intervals properly; this refuses the
+        # overlap instead, because the requests here are named by the caller
+        # rather than chosen. Measured before the check: four partners asked
+        # against one strand on SC 6x6x6 delivered nothing at all, every pair
+        # reading a linking number of 0.00 to 0.01, while the same strands
+        # asked one at a time delivered eight of eight at 1.02.
+        iv_a = _interval_on(a0, a1, cost["contact"], cost["half_span"])
+        iv_b = _interval_on(b0, b1, cost["contact"], cost["half_span"])
+        clash = None
+        if _overlaps(iv_a, taken[req.chain_a], _BRAID_SEPARATION):
+            clash = req.chain_a
+        elif _overlaps(iv_b, taken[req.chain_b], _BRAID_SEPARATION):
+            clash = req.chain_b
+        if clash is not None:
+            out.reason = (
+                f"strand {clash} already carries a braid on this stretch of "
+                f"its chord. Two braids blending into each other collapse the "
+                f"winding of both, so the second is refused: ask for it on a "
+                f"different partner, or use allocate_contacts, which packs "
+                f"several contacts along one chain properly")
+            report.outcomes.append(out)
+            continue
+
         out.granted = int(granted)
         report.outcomes.append(out)
+        taken[req.chain_a].append(iv_a)
+        taken[req.chain_b].append(iv_b)
         contact = cost["contact"]
         # A is braided in the image the contact was planned in; B lives one
         # image away, so its copy of the contact is the same frame with the
@@ -602,8 +724,8 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
     notes: dict = {}
     for idx, entries in per_chain.items():
         st = placement.strands[idx]
-        report.paths[idx], notes[idx] = _compose_on_path(
-            st.path, chords[idx], entries, bond,
+        report.paths[idx], notes[idx] = _braided_path(
+            chords[idx], entries, len(st.path), bond,
             min_bond=placement.limits.min_bond,
             min_sep=placement.limits.min_sep, waves=waves,
             is_loop=st.plan.kind == "loop")
@@ -620,6 +742,29 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
     # back to the path the placement drew and the request is refused with what
     # the gate read. Without it the braid is kept and the failure is only
     # reported.
+    # A winding is not delivered because the geometry was planned for it. It
+    # is delivered when the two paths that were actually drawn measure it.
+    # Without this check the search optimises the gate and can hand back a
+    # pair that clears every bond and contact and carries no winding at all:
+    # measured before it was added, requests granted "in full" whose linking
+    # came out at 0.33, 0.27 and 0.15 against the 1 that was asked. That is
+    # the failure this module opens by saying it exists to prevent.
+    unwound: dict = {}
+    for i, out in enumerate(report.outcomes):
+        if out.refused:
+            continue
+        a, b = out.request.chain_a, out.request.chain_b
+        if a not in report.paths or b not in report.paths:
+            continue
+        pa = report.paths[a]
+        (qb, _q1), delta = nearest_image_of(
+            (report.paths[b][0], report.paths[b][-1]),
+            (pa[0], pa[-1]), placement.box)
+        lk = abs(float(far_closed_linking(pa, report.paths[b] + delta)))
+        out.linking = round(lk, 3)
+        if abs(lk - out.granted) > linking_tolerance:
+            unwound[i] = lk
+
     was_clean = {idx: not placement.strands[idx].failures(placement.limits)
                  for idx in report.paths}
     before = {idx: placement.strands[idx].path for idx in report.paths}
@@ -630,29 +775,89 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
         st.routine = f"{st.routine}+braid"
         st.measure()
         why = st.failures(placement.limits)
-        if why and was_clean[idx]:
-            degraded[idx] = (why, st.bond_min, st.self_contact)
+        if why:
+            # Any failure, not only one the braid introduced. Gating on
+            # "was clean before" looked kinder and was worse: a strand the
+            # placement had already failed got braided into something worse
+            # and reported as delivered in full. Measured on a DP-120 pair at
+            # coil 3.9, that produced a linking number of 2.6 for a request of
+            # 1, on a path whose closest self-contact was 0.937. A winding
+            # cannot be delivered on a strand that cannot be drawn.
+            degraded[idx] = (why, st.bond_min, st.self_contact,
+                             was_clean[idx])
 
-    if strict and degraded:
-        for idx in degraded:
+    if strict and (degraded or unwound):
+        # Revert by pair, not by strand. A braid is a property of two chains:
+        # keeping the half that happens to clear the gate leaves one chain
+        # wound around a partner that is no longer there, which measures as an
+        # entanglement and is not one. So a refused request takes both its
+        # strands back, and because a strand may carry braids from more than
+        # one request, taking it back refuses those too -- iterate until the
+        # set stops growing.
+        doomed = set(unwound)
+        revert = set(degraded)
+        for i in unwound:
+            out = report.outcomes[i]
+            revert |= {out.request.chain_a, out.request.chain_b}
+        while True:
+            grew = False
+            for i, out in enumerate(report.outcomes):
+                if i in doomed or out.refused:
+                    continue
+                if {out.request.chain_a, out.request.chain_b} & revert:
+                    doomed.add(i)
+                    revert |= {out.request.chain_a, out.request.chain_b}
+                    grew = True
+            if not grew:
+                break
+
+        for idx in sorted(revert & set(report.paths)):
             st = placement.strands[idx]
             st.path = before[idx]
-            st.routine = st.routine[:-len("+braid")]
+            if st.routine.endswith("+braid"):
+                st.routine = st.routine[:-len("+braid")]
             st.measure()
             report.paths.pop(idx, None)
-        for out in report.outcomes:
-            touched = ({out.request.chain_a, out.request.chain_b}
-                       & set(degraded))
-            if not touched or out.refused:
+
+        for i in sorted(doomed):
+            out = report.outcomes[i]
+            if i in unwound:
+                lk = unwound[i]
+                asked = out.granted
+                out.granted = 0
+                out.reason = (
+                    f"the pair was drawn but does not wind: the two paths "
+                    f"measure a linking number of {lk:.2f} against the "
+                    f"{asked} asked for. The braid cleared every budget and "
+                    f"the gate, and then the free run's own wave took it "
+                    f"apart -- lower the coil ratio so the wave is gentler, "
+                    f"or ask for fewer windings")
                 continue
-            why, b_min, sep = degraded[sorted(touched)[0]]
-            idx = sorted(touched)[0]
+            blamed = sorted({out.request.chain_a, out.request.chain_b}
+                            & set(degraded))
             out.granted = 0
+            if not blamed:
+                other = sorted({out.request.chain_a, out.request.chain_b}
+                               & revert)
+                out.reason = (
+                    f"withdrawn with the braid on strand {other[0]}, which "
+                    f"another request on the same strand could not clear. A "
+                    f"braid is a property of the pair, so half of one is not "
+                    f"worth keeping")
+                continue
+            idx = blamed[0]
+            why, b_min, sep, was_ok = degraded[idx]
+            if not was_ok:
+                out.reason = (
+                    f"strand {idx} does not clear the gate before the braid "
+                    f"either ({', '.join(why)}), so there is nothing to wind: "
+                    f"fix the placement first, most likely by lowering the "
+                    f"coil ratio")
+                continue
             out.reason = (
-                f"the composed path does not clear the gate on strand {idx} "
+                f"the drawn path does not clear the gate on strand {idx} "
                 f"({', '.join(why)}: shortest bond {b_min:.3f}, closest "
-                f"self-contact {sep:.3f}). The braid fits the chords but not "
-                f"the beads -- they are packed tightly enough inside the turn "
-                f"that opening it would undo the winding. Lower the build "
-                f"density so the braid has room, or ask for fewer windings")
+                f"self-contact {sep:.3f}). The braid fits the chords but the "
+                f"free run left over cannot carry the contour without folding "
+                f"-- lower the coil ratio, or ask for fewer windings")
     return report

@@ -30,11 +30,18 @@ multiset:
    FCC and MIX, where a leftover shows up as a residual
 4. repair a locally infeasible draw: swap targets between a deficient
    site and a saturated site of lower target (never a degree-1 site), or
-   relocate a vacancy, then augment again
-5. optional forced double edges, placed before the fill and fixed for the
+   relocate a vacancy, then augment again. When one site is left short
+   and none of these moves can change that, the loop stops there rather
+   than at its step bound
+5. odd walks (``odd_walks``, on by default since 0.4.0): when the
+   repair has ended short on a scaffold with odd cycles (FCC, MIX, SC or
+   BCC beyond the first shell), search the alternating walk of step 3
+   again over (site, next move) pairs, which finds the walks step 3 loses
+   there, and flip each one that repeats no edge
+6. optional forced double edges, placed before the fill and fixed for the
    rest of the search, so parallel strands (secondary loops) come out
    with prescribed endpoint degrees
-6. accept when every site reached its target and the giant component
+7. accept when every site reached its target and the giant component
    holds at least ``min_giant_fraction`` of the active sites
 
 Ported from ``bond_create_validation/scripts/degree_matching.py``, which
@@ -86,6 +93,7 @@ the random deal reaches gives the same graph for the same seed as before.
 from __future__ import annotations
 
 import collections
+import math
 import time
 from typing import Mapping, Optional
 
@@ -121,6 +129,13 @@ DEFAULT_FALLBACK_ATTEMPTS = 6
 #: Tries at balancing the two sublattices, per site, before the fallback
 #: deal gives up and lets the attempt fail on its residual.
 BALANCE_TRIES_PER_SITE = 100
+
+#: Whether an attempt whose repair ended short on a scaffold with an odd
+#: cycle searches the walk again (step 5 of the module docstring). On, so
+#: such an attempt lands where it used to end short. A seed whose earlier
+#: attempt ended short on such a scaffold therefore builds a different
+#: graph than with the walks off (as before 0.4.0); ``odd_walks=False`` gives that one.
+DEFAULT_ODD_WALKS = True
 
 
 class ExactSculptError(RuntimeError):
@@ -239,6 +254,107 @@ def needs_from_targets(target_counts: Mapping[int, int], max_f: int) -> dict[int
     return {d: int(target_counts[d]) for d in range(0, max_f + 1)}
 
 
+def rescale_degree_counts(
+    counts: Mapping[int, int],
+    n_sites: int,
+    vacancy_fraction: Optional[float] = None,
+) -> dict[int, int]:
+    """A P(f) given as counts, rescaled to a lattice of ``n_sites`` sites.
+
+    For taking a reference network's degree counts to another cell (the
+    small-cell studies, or a MIX lattice whose site count is a draw). The
+    vacancies come first, ``round(vacancy_fraction * n_sites)`` of them;
+    the active sites are the rest, shared among degrees 1 and up in the
+    reference's proportions by the largest-remainder rule (floor every
+    share, then give the leftover sites to the largest fractional parts,
+    lower degree first on a tie). If that leaves an odd degree sum, which
+    no graph has, one site moves to an adjacent degree: the move that
+    takes the counts least far from the exact shares (in summed absolute
+    difference), upward on a tie.
+
+    This is the method of the validation's ``cubic_sweep.rescale_target``
+    with two differences. Its parity step always moved a site from degree
+    3 to 4, which works only for a ``max_functionality`` of 4 with some
+    degree-3 sites and on the reference P(f) can land further from the
+    exact shares than the move chosen here; and it returned 0 vacancies,
+    leaving the exact search to take whatever sites were left, where this
+    returns the vacancy count, so the result sums to ``n_sites`` and reads
+    as a full ``degree_distribution`` for either search.
+
+    Args:
+        counts: ``{degree: count}`` of the reference. Degrees it names
+            with a count of 0 are kept in the result, and the result runs
+            from 0 to its highest degree.
+        n_sites: sites of the target lattice (see
+            :func:`topon.topology.generator_python.count_sites`).
+        vacancy_fraction: share of those sites to leave empty. ``None``
+            keeps the reference's own share, ``counts[0]`` over its total.
+
+    Returns:
+        ``{degree: count}`` for every degree from 0 up, summing to
+        ``n_sites`` with an even degree sum.
+
+    Raises:
+        ValueError: on negative counts, a reference with no active site,
+            a fraction outside ``[0, 1)``, or counts whose only active
+            degree is 1 with an odd total, where no single move can fix
+            the parity.
+    """
+    counts = {int(d): int(n) for d, n in counts.items()}
+    if any(d < 0 or n < 0 for d, n in counts.items()):
+        raise ValueError(f"degree counts must be non-negative, got {counts}")
+    n_sites = int(n_sites)
+    if n_sites < 1:
+        raise ValueError(f"n_sites must be at least 1, got {n_sites}")
+    top = max(counts, default=0)
+    n_active_ref = sum(n for d, n in counts.items() if d > 0)
+    if n_active_ref == 0:
+        raise ValueError("the reference counts have no active site (no degree above 0)")
+    if vacancy_fraction is None:
+        vacancy_fraction = counts.get(0, 0) / sum(counts.values())
+    vacancy_fraction = float(vacancy_fraction)
+    if not 0.0 <= vacancy_fraction < 1.0:
+        raise ValueError(f"vacancy_fraction must be in [0, 1), got {vacancy_fraction}")
+
+    n_vacancies = int(round(vacancy_fraction * n_sites))
+    n_active = n_sites - n_vacancies
+    exact = {d: counts.get(d, 0) / n_active_ref * n_active for d in range(1, top + 1)}
+    out = {d: math.floor(x) for d, x in exact.items()}
+    leftover = n_active - sum(out.values())
+    by_remainder = sorted(exact.items(), key=lambda kv: kv[1] - math.floor(kv[1]),
+                          reverse=True)
+    for d, _ in by_remainder[:leftover]:
+        out[d] += 1
+
+    if sum(d * n for d, n in out.items()) % 2:
+        best = None
+        for d in range(1, top + 1):
+            if out[d] == 0:
+                continue
+            for e in (d + 1, d - 1):
+                if not 1 <= e <= top:
+                    continue
+                cost = (abs(out[d] - 1 - exact[d]) - abs(out[d] - exact[d])
+                        + abs(out[e] + 1 - exact[e]) - abs(out[e] - exact[e]))
+                key = (round(cost, 12), -e, -d)
+                if best is None or key < best[0]:
+                    best = (key, d, e)
+        if best is None:
+            raise ValueError(
+                f"the rescaled counts {out} have an odd degree sum and no "
+                f"adjacent degree to move a site to; degree-1 sites alone "
+                f"pair up, so they need an even number")
+        _, d, e = best
+        out[d] -= 1
+        out[e] += 1
+    return {0: n_vacancies, **out}
+
+
+def format_degree_distribution(counts: Mapping[int, int]) -> str:
+    """``{0: 5, 1: 10, 4: 30}`` as the config string ``"0:5,1:10,4:30"``."""
+    return ",".join(f"{int(d)}:{int(n)}" for d, n in sorted(counts.items()))
+
+
 # ---------------------------------------------------------------------------
 # The search
 # ---------------------------------------------------------------------------
@@ -264,6 +380,29 @@ def two_colouring(nodes, nb) -> Optional[dict]:
             elif colour[y] == colour[x]:
                 return None
     return colour if len(colour) == len(nodes) else None
+
+
+def has_odd_cycle(nodes, nb) -> bool:
+    """True if some cycle of the scaffold has odd length (it is not bipartite).
+
+    Unlike :func:`two_colouring` this looks at every piece of the scaffold,
+    so a bipartite scaffold in several pieces still reads as bipartite.
+    """
+    colour = {}
+    for root in nodes:
+        if root in colour:
+            continue
+        colour[root] = 0
+        queue = collections.deque([root])
+        while queue:
+            x = queue.popleft()
+            for y in nb[x]:
+                if y not in colour:
+                    colour[y] = 1 - colour[x]
+                    queue.append(y)
+                elif colour[y] == colour[x]:
+                    return True
+    return False
 
 
 def balance_targets(nodes, t, colour, rng) -> int:
@@ -305,6 +444,7 @@ def sculpt_exact(
     max_rounds: int = MAX_AUGMENT_ROUNDS,
     max_repair_steps: int = MAX_REPAIR_STEPS,
     fallback: bool = False,
+    odd_walks: Optional[bool] = None,
 ):
     """One attempt at a subgraph of ``base`` with exactly the degrees in ``need``.
 
@@ -332,6 +472,9 @@ def sculpt_exact(
             scaffold and run the residual-driven repair instead of step 4
             (see the module docstring). :func:`build_exact_graph` turns it
             on after :data:`FALLBACK_AFTER` short attempts in a row.
+        odd_walks: Search the walk again over (site, next move) states
+            when the repair ends short on a scaffold with an odd cycle.
+            ``None`` takes :data:`DEFAULT_ODD_WALKS`.
 
     Returns:
         ``(edges, degrees, record)``. ``edges`` is a set of ``(u, v)``
@@ -343,6 +486,8 @@ def sculpt_exact(
         and ``record["error"]`` says why.
     """
     t0 = time.time()
+    if odd_walks is None:
+        odd_walks = DEFAULT_ODD_WALKS
     nodes = list(base.nodes())
     n_sites = len(nodes)
     # Degrees above the ceiling would be dropped silently by the slice
@@ -630,10 +775,36 @@ def sculpt_exact(
                 kept += 1
         return kept
 
+    def stuck(u):
+        """True when ``u``, the one site still short, is beyond this loop.
+
+        With every other site at its target an augmenting walk from ``u``
+        has nowhere to end, so only the target moves below can change
+        anything. A swap with a site whose target equals ``u``'s degree
+        hands the same shortfall to that site, and a vacancy move from a
+        site with no bonds hands it to the vacancy. When those are the only
+        moves on offer every later step repeats the state, and the attempt
+        would end with this residual after ``max_repair_steps`` (the SC
+        4x4x4 three-shell request spent 4.5 s there, N20 on SC 14^3
+        127 s). Nothing after a stuck attempt reads its random stream, so
+        stopping here changes no graph.
+        """
+        a, b = deg[u], t[u]
+        on_fixed = {x for pair in fixed for x in pair}
+        if any(max(2, a) <= t[w] < b and t[w] != a
+               for w in active if w != u and w not in on_fixed):
+            return False
+        if a == 0:
+            return True
+        return all(sum(1 for m in base_nb[v] if t[m] > 0) < b
+                   for v in nodes if t[v] == 0)
+
     n_swap = residual_repair() if fallback else 0
     for _ in range(0 if fallback else max_repair_steps):
         deficient = [n for n in active if deg[n] < t[n]]
         if not deficient:
+            break
+        if len(deficient) == 1 and stuck(deficient[0]):
             break
         u = deficient[rng.integers(len(deficient))]
         if t[u] == 1:
@@ -677,6 +848,79 @@ def sculpt_exact(
         for s in (w, u):
             drain(s)
 
+    # --- odd walks ------------------------------------------------------
+    # The augmenting walk above marks a site the first time it reaches it,
+    # whatever the move that reached it, and never returns to its start.
+    # On a bipartite scaffold neither costs anything: a site is always
+    # reached by the same kind of move, and no walk can close on its start
+    # with an add. On a scaffold with odd cycles both lose walks that
+    # exist. A site first reached by a removal cannot end a walk, although
+    # an add would have reached it a step later; and a site 2 units short
+    # with every other site full can only be served by a walk back to
+    # itself (s-a added, a-b removed, b-s added). On SC 4x4x4 at three
+    # shells every attempt that ended short did so for one of these two
+    # reasons, with a 3-step walk available each time. So when the repair
+    # has finished short on such a scaffold, the walk is searched again
+    # over (site, next move) pairs, in scaffold order and without drawing
+    # a random number, and each walk that repeats no edge is flipped. It
+    # runs only in an attempt that would otherwise fail, so every graph an
+    # attempt reached before is untouched, but a seed whose earlier attempt
+    # ended short now lands there with another graph (``odd_walks=False``
+    # gives the graph from before).
+    def odd_walk(s):
+        """An alternating walk from ``s`` that repeats no edge, or None.
+
+        It ends with an add at another site below target, or back at
+        ``s`` when ``s`` is 2 or more short. Returned as ``(x, y, is_add)``
+        steps in walk order.
+        """
+        start = (s, True)                  # True: the next move is an add
+        parent = {start: None}
+        queue = collections.deque([start])
+        while queue:
+            state = queue.popleft()
+            x, adding = state
+            if adding:
+                steps = [(y, True) for y in eligible(x) if y not in adj[x]]
+            else:
+                steps = [(y, False) for y in sorted(adj[x])
+                         if ((x, y) if x < y else (y, x)) not in fixed]
+            for y, is_add in steps:
+                if is_add and (y != s and deg[y] < t[y]
+                               or y == s and t[s] - deg[s] >= 2):
+                    walk = [(x, y, True)]
+                    at = state
+                    while parent[at] is not None:
+                        prev, prev_add = parent[at]
+                        walk.append((prev[0], at[0], prev_add))
+                        at = prev
+                    walk.reverse()
+                    if len({(a, b) if a < b else (b, a) for a, b, _ in walk}) == len(walk):
+                        return walk
+                if y == s:
+                    continue
+                nxt = (y, not is_add)
+                if nxt not in parent:
+                    parent[nxt] = (state, is_add)
+                    queue.append(nxt)
+        return None
+
+    n_odd = 0
+    if odd_walks and any(deg[n] < t[n] for n in nodes if t[n] > 0) \
+            and has_odd_cycle(nodes, base_nb):
+        progress = True
+        while progress:
+            progress = False
+            for s in nodes:
+                while t[s] > 0 and deg[s] < t[s]:
+                    walk = odd_walk(s)
+                    if walk is None:
+                        break
+                    for x, y, is_add in walk:
+                        (add if is_add else rem)(x, y)
+                    n_odd += 1
+                    progress = True
+
     # --- accept or reject -------------------------------------------------
     active = [n for n in nodes if t[n] > 0]
     residual = sum(t[n] - deg[n] for n in active)
@@ -688,6 +932,8 @@ def sculpt_exact(
         doubles=sorted(fixed), n_double=n_double, residual=residual,
         counts={d: int(achieved.get(d, 0)) for d in range(0, max_f + 1)},
     )
+    if n_odd:
+        rec["odd_walks"] = n_odd
     if fallback:
         rec["fallback"] = True
         rec["bipartite"] = colour is not None
@@ -730,6 +976,21 @@ def sculpt_exact(
 _PINNED_SHARE = 0.5
 
 
+def _pinned(base, need: Mapping[int, int], max_f: int) -> tuple[int, int, int]:
+    """The scaffold's ceiling and how much of the request sits on it.
+
+    Returns ``(ceiling, pinned, active)``. ``ceiling`` is the most
+    candidate partners any site of ``base`` has, ``pinned`` the active
+    sites the request asks for that degree or more, and ``active`` all the
+    active sites it places. :func:`_no_slack` and :func:`_failure_message`
+    both read it, so the reason a search gives is the test that stopped it.
+    """
+    ceiling = max((d for _, d in base.degree()), default=0)
+    asked = {d: c for d, c in need.items() if 0 < d <= max_f and c > 0}
+    pinned = sum(c for d, c in asked.items() if d >= ceiling)
+    return ceiling, pinned, sum(asked.values())
+
+
 def _no_slack(base, need: Mapping[int, int], max_f: int) -> bool:
     """True when most of the request is pinned to the scaffold's ceiling.
 
@@ -741,17 +1002,18 @@ def _no_slack(base, need: Mapping[int, int], max_f: int) -> bool:
     the same forced assignment again.
 
     The test is the scaffold's own maximum coordination, not
-    ``max_functionality``: SC at ``max_functionality = 6`` is equally
+    ``max_functionality``. SC at ``max_functionality = 6`` is equally
     pinned for the sites asked to reach 6, but a target that puts only a
     handful of sites there has room everywhere else and deserves its
-    retries.
+    retries. A scaffold richer than ``max_functionality`` pins nobody (SC
+    at three shells offers 26 candidates, so a degree-4 site still has 22
+    to spare). Capping the ceiling at ``max_functionality`` called such a
+    request hopeless after one short attempt and never reached the
+    fallback.
     """
-    degrees = [d for _, d in base.degree()]
-    if not degrees:
+    if base.number_of_nodes() == 0:
         return False
-    ceiling = min(max(degrees), max_f)
-    active = sum(c for d, c in need.items() if d > 0 and c > 0)
-    pinned = sum(c for d, c in need.items() if 0 < d <= max_f and d >= ceiling)
+    _, pinned, active = _pinned(base, need, max_f)
     return bool(active) and pinned >= _PINNED_SHARE * active
 
 
@@ -778,12 +1040,13 @@ def _failure_message(base, need, max_f, records, label, attempts) -> str:
            if best.get("giant_frac") is not None else ""),
     ]
     if _no_slack(base, need, max_f):
-        ceiling = min(max(degrees), max_f)
-        pinned = sum(c for d, c in need.items() if 0 < d <= max_f and d >= ceiling)
+        ceiling, pinned, active = _pinned(base, need, max_f)
+        above = any(c > 0 for d, c in need.items() if ceiling < d <= max_f)
+        asked = f"degree {ceiling}" + (" or more" if above else "")
         lines.append(
-            f"  reason    : the scaffold offers at most {max(degrees)} "
-            f"candidate partners per site, and {pinned} of the {n_active} "
-            f"active sites are asked for degree {ceiling}, so most of them "
+            f"  reason    : the scaffold offers at most {ceiling} "
+            f"candidate partners per site, and {pinned} of the {active} "
+            f"active sites are asked for {asked}, so most of them "
             f"must bond to every neighbour they have. There is almost no "
             f"spare edge, and each vacancy"
             + (" and each dangling-end site" if need.get(1, 0) else "")
@@ -819,6 +1082,7 @@ def build_exact_graph(
     fallback_attempts: int = DEFAULT_FALLBACK_ATTEMPTS,
     label: str = "the lattice",
     verbose: bool = True,
+    odd_walks: Optional[bool] = None,
 ):
     """Sculpt ``base_graph`` to exactly ``need`` and return it as a graph.
 
@@ -849,6 +1113,9 @@ def build_exact_graph(
     The attempts before the switch draw from the same seeds as they always
     did, so a request the random deal reaches is unaffected.
 
+    ``odd_walks`` is passed to every attempt (``None`` takes
+    :data:`DEFAULT_ODD_WALKS`, off).
+
     Raises:
         ExactSculptError: if no attempt reached the request. The message
             names the scaffold, the request, the best attempt's residual
@@ -871,6 +1138,7 @@ def build_exact_graph(
         edges, degrees, rec = sculpt_exact(
             base_graph, need, rng, max_f=max_f, double_pairs=double_pairs,
             min_giant_fraction=min_giant_fraction, fallback=fallback,
+            odd_walks=odd_walks,
         )
         rec["attempt"] = attempt
         rec["seed"] = list(root.entropy) if isinstance(root.entropy, (list, tuple)) \
@@ -881,7 +1149,9 @@ def build_exact_graph(
                   f"{'reached' if edges is not None else 'failed'} in "
                   f"{rec['seconds']:.2f}s "
                   f"({rec['augmentations']} augmentations, "
-                  f"{rec['target_swaps']} repairs)"
+                  f"{rec['target_swaps']} repairs"
+                  + (f", {rec['odd_walks']} odd walks" if rec.get("odd_walks") else "")
+                  + ")"
                   + ("" if edges is not None else f" -- {rec['error']}"))
         if edges is not None:
             rec["attempts"] = attempt + 1

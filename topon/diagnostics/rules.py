@@ -73,24 +73,30 @@ def check_poss_at_internal_junction(cfg, raw) -> List[Issue]:
 
 def check_unknown_node_type(cfg, raw) -> List[Issue]:
     """A `node_type` in assignment.degree.mapping must appear in
-    `chemistry.node_type_map` — otherwise the chemistry stage silently
-    falls through to a single Si atom, contaminating hydrocarbon polymers.
+    `chemistry.node_type_map`. On the atomistic route the chemistry stage
+    refuses the build (since 0.4.0; before, it silently built a single Si
+    atom); a coarse-grained junction is one bead whatever its molecule, so
+    there it is a warning.
     """
     mapping = _node_type_mapping(cfg)
     if not mapping:
         return []
     chem_types = set((cfg.chemistry.node_type_map or {}).keys())
+    atomistic = cfg.chemistry.model_type == "atomistic"
     out: List[Issue] = []
     for degree_str, tname in mapping.items():
         if tname not in chem_types:
             out.append(Issue(
                 rule="unknown_node_type",
-                level="warn",
+                level="error" if atomistic else "warn",
                 message=(
                     f"Assignment maps degree-{degree_str} to '{tname}', but "
                     f"'{tname}' isn't a key in chemistry.node_type_map "
-                    f"(present: {sorted(chem_types) or '[]'}). The chemistry "
-                    f"stage will silently fall through to a single Si atom."
+                    f"(present: {sorted(chem_types) or '[]'}). "
+                    + ("The atomistic chemistry stage will refuse the build."
+                       if atomistic else
+                       "A coarse-grained junction is one bead whatever its "
+                       "molecule, so the build goes ahead.")
                 ),
                 fix=(
                     f'Add a "{tname}" entry under chemistry.node_type_map '
@@ -295,6 +301,200 @@ def check_neighbour_cutoff_vs_box(cfg, raw) -> List[Issue]:
     )]
 
 
+def check_site_count(cfg, raw) -> List[Issue]:
+    """The sites a ``degree_distribution`` asks for against the lattice's.
+
+    Absolute counts belong to one site count. For SC, BCC, FCC and
+    Diamond that is fixed by the size, and for a MIX by the seed that
+    draws it (``count_sites``, the same draw the generator makes). A
+    request that cannot fit is an error here rather than a run of failed
+    trials. A MIX this config does not fix (no ``seed``, or the C binary,
+    which draws its own sites) gets a warning when the expected count
+    leaves the request at risk.
+    """
+    if cfg.topology.source != "generate":
+        return []
+    gen = cfg.topology.generator
+    if gen is None or _lattice_dims(gen) is None:
+        return []
+
+    from topon.topology.degree_matching import (
+        is_fully_specified,
+        parse_degree_distribution,
+        resolve_search,
+    )
+    from topon.topology.generator_python import (
+        check_site_count as fits,
+        count_sites,
+        expected_mix_sites,
+    )
+
+    targets, edge_count = parse_degree_distribution(gen.degree_distribution)
+    if not any(n >= 0 for n in targets.values()):
+        return []
+    try:
+        search = resolve_search(gen.search, targets, gen.max_functionality,
+                                edge_count)
+    except ValueError:
+        return []          # the generator refuses it, with its own message
+    mix = gen.lattice_type == "MIX"
+    label = f"{gen.lattice_size} {gen.lattice_type}"
+    fix = ("Work the counts out for the lattice that is built: "
+           "topon.topology.generator_python.count_sites(config, seed) gives "
+           "its sites, and topon.topology.degree_matching."
+           "rescale_degree_counts carries a P(f) to them.")
+
+    mean, sd = expected_mix_sites(gen) if mix else (None, 0.0)
+    known = not mix or sd == 0.0 or (gen.seed is not None and not gen.exe_path)
+    if known:
+        n_sites = count_sites(gen, seed=gen.seed if gen.seed is not None else 0)
+        try:
+            fits(targets, gen.max_functionality, search, n_sites, label, mix=mix)
+        except ValueError as exc:
+            return [Issue(rule="site_count", level="error",
+                          message=str(exc), fix=fix)]
+        return []
+
+    full = search == "strict" and is_fully_specified(targets, gen.max_functionality)
+    asked = sum(n for d, n in targets.items()
+                if n >= 0 and (d >= 1 or search != "exact"))
+    if not full and asked <= mean - 3.0 * sd:
+        return []
+    why = ("the C binary (exe_path) draws its own sites" if gen.exe_path
+           else "no topology.generator.seed fixes the draw")
+    if full:
+        risk = (f"degree_distribution names every degree, so its {asked} "
+                f"sites must match the draw exactly and most draws will not; "
+                f"those runs end in failed trials.")
+        extra = " Or leave degree 0 out, so the vacancies take up the difference."
+    else:
+        risk = (f"degree_distribution needs {asked} sites, within three "
+                f"standard deviations of that, so some draws will not fit.")
+        extra = ""
+    return [Issue(
+        rule="site_count",
+        level="warn",
+        message=(f"A {label} lattice draws its sites, about {mean:.0f} +/- "
+                 f"{sd:.0f} here, and {why}. {risk}"),
+        fix=("Set topology.generator.seed (the Python generator) and work the "
+             "counts out for that draw: topon.topology.generator_python."
+             "count_sites(config, seed) gives its sites, and topon.topology."
+             "degree_matching.rescale_degree_counts carries a P(f) to them."
+             + extra),
+    )]
+
+
+def check_degree_sum_parity(cfg, raw) -> List[Issue]:
+    """An odd degree sum, which no graph has (every edge adds 2).
+
+    A request that names every degree from 0 to ``max_functionality``
+    fixes the sum, and both generators and both searches refuse an odd
+    one before the first trial, so doctor says so first. A partial request
+    is fine in Python (the degrees it leaves out take up the parity), but
+    the C binary's strict search refuses any odd sum of the degrees it
+    names, so that combination is a warning when ``exe_path`` is set.
+    """
+    if cfg.topology.source != "generate":
+        return []
+    gen = cfg.topology.generator
+    if gen is None:
+        return []
+
+    from topon.topology.degree_matching import (
+        is_fully_specified,
+        parse_degree_distribution,
+        resolve_search,
+    )
+
+    targets, edge_count = parse_degree_distribution(gen.degree_distribution)
+    max_f = int(gen.max_functionality)
+    named_sum = sum(d * n for d, n in targets.items() if 0 < d <= max_f and n > 0)
+    if named_sum % 2 == 0:
+        return []
+    fix = ("Move one site between two odd degrees (e.g. one fewer at degree 1 "
+           "and one more at degree 2), or add one site of odd degree; "
+           "topon.topology.degree_matching.rescale_degree_counts makes the sum "
+           "even when it rescales a P(f).")
+    if is_fully_specified(targets, max_f):
+        return [Issue(
+            rule="degree_sum_parity",
+            level="error",
+            message=(f"degree_distribution names every degree from 0 to "
+                     f"max_functionality ({max_f}) and its degree sum is "
+                     f"{named_sum}, which is odd; every edge adds 2 to the sum, "
+                     f"so no graph has these counts."),
+            fix=fix,
+        )]
+    try:
+        search = resolve_search(gen.search, targets, max_f, edge_count)
+    except ValueError:
+        return []
+    if gen.exe_path and search == "strict" and edge_count < 0:
+        return [Issue(
+            rule="degree_sum_parity",
+            level="warn",
+            message=(f"The degrees degree_distribution names sum to {named_sum}, "
+                     f"which is odd. The Python generator runs this (the degrees "
+                     f"it leaves out take up the parity), but the C binary "
+                     f"(exe_path) refuses it before any trial."),
+            fix=fix + " Or leave exe_path unset.",
+        )]
+    return []
+
+
+def check_diamond_dangling_ends(cfg, raw) -> List[Issue]:
+    """Degree-1 sites on the canonical Diamond scaffold, with no room for them.
+
+    Diamond at the default cutoff has four candidate partners per site, so
+    a site asked for degree 4 has to bond to all of them. Each dangling
+    end leaves three neighbours a bond short, which only vacancies and
+    sites below degree 4 can take. With few sites at 4 there is room (a
+    216-site cell with 10 dangling ends and 56 four-fold sites builds);
+    once most active sites are at 4 there is none, which is where the
+    end-linked reference P(f) sits (73 % four-fold, 8 % dangling), and the
+    validation found no network for it at any size. The test is the exact
+    search's own no-slack rule, the one that stops it after one attempt.
+    """
+    if cfg.topology.source != "generate":
+        return []
+    gen = cfg.topology.generator
+    if gen is None or gen.lattice_type != "Diamond":
+        return []
+    if float(gen.neighbour_cutoff) != 1.0 or gen.neighbour_shells is not None:
+        return []          # a wider scaffold has spare candidates
+
+    from topon.topology.degree_matching import _PINNED_SHARE, parse_degree_distribution
+
+    targets, _ = parse_degree_distribution(gen.degree_distribution)
+    dangling = targets.get(1, 0)
+    if dangling <= 0:
+        return []
+    # The scaffold's four, as in the search. Capped at a lower
+    # max_functionality it would warn where every site keeps a spare
+    # candidate and the search retries.
+    ceiling = 4
+    active = sum(n for d, n in targets.items() if d > 0 and n > 0)
+    pinned = sum(n for d, n in targets.items()
+                 if ceiling <= d <= int(gen.max_functionality) and n > 0)
+    if not active or pinned < _PINNED_SHARE * active:
+        return []
+    return [Issue(
+        rule="diamond_dangling_ends",
+        level="warn",
+        message=(f"Diamond at the default cutoff gives every site four candidate "
+                 f"partners, and degree_distribution asks for {pinned} of its "
+                 f"{active} active sites at degree {ceiling} alongside "
+                 f"{dangling} degree-1 sites. Each dangling end leaves three "
+                 f"neighbours a bond short, and with that many sites at the "
+                 f"ceiling nothing can take it up; the exact search stops "
+                 f"after one attempt on such a request."),
+        fix=("Give the scaffold spare candidates (neighbour_cutoff 0.71 on "
+             "Diamond admits the second shell, z = 16, or use SC/BCC/FCC at a "
+             "wider cutoff), or drop the degree-1 sites. Diamond is not a "
+             "scaffold for end-linked networks with dangling ends."),
+    )]
+
+
 def check_deprecated_mix_cutoff(cfg, raw) -> List[Issue]:
     """``mix_cutoff`` still loads, as ``neighbour_cutoff``, but is deprecated."""
     gen_raw = ((raw or {}).get("topology") or {}).get("generator") or {}
@@ -319,8 +519,8 @@ def check_unknown_config_keys(cfg, raw: dict) -> list:
     ``ToponConfig`` is ``extra="forbid"``, but that binds at the top
     level only: every nested section takes Pydantic's default and drops
     unknown keys without a word. That is how ``topology.generator.seed``
-    validated cleanly while doing nothing, which a user reasonably read
-    as having pinned the graph.
+    validated cleanly while doing nothing before it was a real field
+    (0.4.0), which a user reasonably read as having pinned the graph.
 
     ``GeneratorConfig`` now refuses them outright, so this rule never
     sees that case; a config carrying it fails to load before doctor
@@ -366,9 +566,8 @@ def check_unknown_config_keys(cfg, raw: dict) -> list:
                 ),
                 fix=(
                     "Remove them, or check the spelling against "
-                    "docs/USAGE.md Appendix A. To pin a generated graph "
-                    "there is no config key: seed random and numpy.random "
-                    "before generating."
+                    "docs/USAGE.md Appendix A. A generated graph is pinned "
+                    "by topology.generator.seed."
                 ),
             ))
         for name, field in fields.items():
@@ -462,6 +661,9 @@ def check_conformation_build_knob(cfg, raw) -> List[Issue]:
 RULE_REGISTRY: list[RuleFn] = [
     check_lattice_size_format,
     check_neighbour_cutoff_vs_box,
+    check_site_count,
+    check_degree_sum_parity,
+    check_diamond_dangling_ends,
     check_deprecated_mix_cutoff,
     check_unknown_node_type,
     check_poss_at_internal_junction,

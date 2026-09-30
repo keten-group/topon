@@ -22,6 +22,22 @@ nothing in this module is residue-aware.
 
 The snapshot JSON format is unchanged from that code, so its topology files
 load here as they are.
+
+``generate_melt_topology`` is the residue-level alternative, and the
+default of ``topon protein`` (``crosslink_method="melt"``). One lattice site
+per residue instead of one node per few residues: the chains are grown as a
+self-avoiding melt by :mod:`topon.topology.chain_crosslinking` and every pair
+of crosslink residues in contact (face or edge neighbours) is crosslinked in
+a random order. That removes three artefacts of the node lattice. With one
+crosslinkable node in two (the block layout) every such node of a chain sits
+on one sublattice, so no chain can crosslink itself and two chains pair only
+across sublattices; edge contacts reach both. A crosslink here joins two
+residues one or two lattice steps apart (about 4 to 6 A) instead of merging
+two nodes that stand for 15 to 27 A of chain onto one site. And the
+crosslinks are exact and ordered, so a snapshot at any conversion is a
+prefix. The snapshots keep this module's format, with ``chains`` and
+``reactions`` indexed by residue (``config["layout"] == "residues"``), so
+the builders take them with the identity node-to-residue map.
 """
 from __future__ import annotations
 
@@ -1021,6 +1037,94 @@ def generate_topology(
         "lattice_scale_ang": lattice_scale_ang,
         "max_crosslink_distance_ang": max_crosslink_distance_ang,
         "crosslink_method": crosslink_method,
+    }
+    return {"config": config, "snapshots": snapshots}
+
+
+def generate_melt_topology(plan, n_chains: int, *, target_packing: float = 0.45,
+                           contact_radius: float = 1.5, min_intrachain_sep: int = 2,
+                           n_extra_snapshots: int = 4, snapshot_delta_conv: float = 0.05,
+                           seed: int | None = None, verbose: bool = True,
+                           **_ignored) -> dict:
+    """A topology from a residue-level lattice melt, in this module's format.
+
+    Every residue of every chain is a site of a self-avoiding melt grown one
+    chain after another at ``target_packing`` (at most 0.6), and every pair
+    of crosslink residues within ``contact_radius`` lattice units is
+    crosslinked in a random order under the rules of
+    :func:`topon.topology.chain_crosslinking.crosslink_chains` (each residue
+    once, no two on neighbouring residues, two of one chain no closer in
+    sequence than ``min_intrachain_sep`` crosslink residues). The snapshots
+    are written as :func:`apply_crosslinks_with_snapshots` writes them: the
+    gel point (every chain in one cluster), then one per
+    ``snapshot_delta_conv`` of conversion beyond it, up to
+    ``n_extra_snapshots``, or ``no_gel`` with every crosslink made when the
+    chains never join. ``chains`` hold each residue's lattice site and
+    ``reactions`` the residue pairs, and no site is merged, so the two
+    residues of a crosslink stay one or two lattice steps apart. Keyword
+    arguments of :func:`generate_topology` that have no meaning here
+    (``equil_steps``, ``crosslink_method``) are accepted and ignored.
+    """
+    from topon.topology.chain_crosslinking import ChainType, crosslink_chains
+
+    sites = sorted(int(r) for r in plan.crosslink_residue_indices)
+    n_res = int(plan.n_residues)
+    sep = max(1, int(min_intrachain_sep))
+    gaps = [b - a for a, b in zip(sites, sites[sep:])]
+    min_gap = max(2, min(gaps) if gaps else n_res)
+    ct = ChainType(count=int(n_chains), dp=n_res, reactive=tuple(sites),
+                   site_types=plan.crosslink_residue, name=plan.sequence[:12])
+    melt = crosslink_chains(
+        [ct], crosslinks=len(sites) * int(n_chains) // 2, up_to=True,
+        packing=min(float(target_packing), 0.6), contact_radius=contact_radius,
+        max_radius=contact_radius, min_gap=min_gap, build_density=None, seed=seed)
+    L = int(melt.record["lattice"])
+    chains = []
+    for P in melt.positions:
+        W = np.mod(P, L).astype(int)
+        chains.append([int(x + L * y + L * L * z) for x, y, z in W])
+    total = len(sites) * int(n_chains)
+    uf = UnionFind(int(n_chains))
+    reactions, snapshots = [], []
+    gel, next_conv = False, 0.0
+    for (ci, ri), (cj, rj) in melt.crosslinks:
+        reactions.append(((ci, ri), (cj, rj)))
+        if ci != cj:
+            uf.union(ci, cj)
+        conv = 2 * len(reactions) / total
+        if not gel and uf.n_components() == 1:
+            gel = True
+            next_conv = conv + snapshot_delta_conv
+            snapshots.append(_make_snapshot("gel_point", conv, chains, sites,
+                                            reactions, L, L, L))
+        if gel and len(snapshots) <= n_extra_snapshots and conv >= next_conv:
+            snapshots.append(_make_snapshot(f"post_gel_{len(snapshots)}", conv, chains,
+                                            sites, reactions, L, L, L))
+            next_conv = conv + snapshot_delta_conv
+        if len(snapshots) > n_extra_snapshots:
+            break
+    if not gel:
+        conv = 2 * len(reactions) / max(1, total)
+        snapshots.append(_make_snapshot("no_gel", conv, chains, sites, reactions, L, L, L))
+        warnings.warn(
+            f"Gel point not reached in the residue melt (max conv = {conv:.3f}, "
+            f"{len(reactions)} crosslinks). Use more chains, or allow_no_gel.")
+    rec = melt.record
+    if verbose:
+        print(f"[melt] {n_chains} chains x {n_res} residues on a {L}^3 lattice "
+              f"(packing {rec['packing']:.3f}), {len(melt.crosslinks)} crosslinks at "
+              f"most, snapshots {[x['label'] for x in snapshots]}")
+    config = {
+        "n_chains": int(n_chains), "n_repeats": 1, "segs_per_block": None,
+        "y_offset_in_block": None, "n_nodes_per_chain": n_res, "y_positions": sites,
+        "Nx": L, "Ny": L, "Nz": L, "target_packing": float(target_packing),
+        "actual_packing": float(rec["packing"]), "equil_steps": 0,
+        "n_extra_snapshots": int(n_extra_snapshots),
+        "snapshot_delta_conv": float(snapshot_delta_conv),
+        "min_intrachain_sep": int(min_intrachain_sep), "min_gap_residues": int(min_gap),
+        "contact_radius": float(contact_radius), "seed": seed,
+        "crosslink_method": "melt", "layout": "residues",
+        "melt": {k: rec[k] for k in ("persistence", "c_inf", "rejected", "seconds")},
     }
     return {"config": config, "snapshots": snapshots}
 

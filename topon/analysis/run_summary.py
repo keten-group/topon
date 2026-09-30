@@ -45,6 +45,8 @@ class RunSummary:
     topology: Optional[dict] = None
     #: Stage 3's defects section of the same manifest.
     defects: Optional[dict] = None
+    #: What the furthest end-linked data file says (see :func:`measure_network`).
+    network: Optional[dict] = None
 
 
 def _parse_system_data(path: Path) -> dict:
@@ -195,7 +197,89 @@ def _simulation_summary(d: Path) -> StageReport:
     )
 
 
-def summarise(run_dir: Path) -> RunSummary:
+#: Data files a network is read from, the most relaxed first: every protocol
+#: checkpoint, then the conformation stage's output.
+_NETWORK_FILES = tuple(name for name, _said in _FURTHEST_STAGE) + (
+    "system_relaxed.data",)
+
+
+def network_file(root: Path, flat: bool = False) -> Optional[Path]:
+    """The most relaxed data file of a run, or None."""
+    dirs = [root] if flat else [root / "04_Simulation", root / "03_Conformation"]
+    for name in _NETWORK_FILES:
+        for d in dirs:
+            if (d / name).exists():
+                return d / name
+    return None
+
+
+def measure_network(path: Path, z1: bool = True, z1_config=None) -> dict:
+    """Strands, loops and P(f) read from a data file, and Z1+ when it runs.
+
+    An end-linked file (``output.lammps_convention: "endlinked"``, or a
+    `fix bond/create` dataset) is read into strands by its atom types, and an
+    atomistic file of a run through the strand record in the run's manifest
+    (:mod:`topon.analysis.atomistic`); any other file comes back with a
+    ``note`` saying so. Z1+ is skipped with a ``z1_note`` when it is not
+    installed.
+    """
+    from topon.analysis.atomistic import NoStrandRecord, find_manifest, read_atomistic
+    from topon.analysis.descriptors import strand_counts
+    from topon.analysis.endlinked import NotEndLinked, read_endlinked
+
+    path = Path(path)
+    out: dict = {"file": str(path)}
+    note = ("not in the end-linked convention, so its strands cannot be read "
+            "(a coarse-grained build written with output.lammps_convention "
+            "\"endlinked\" can be, and an atomistic one with its run manifest)")
+    system = None
+    if find_manifest(path) is not None:
+        try:
+            system = read_atomistic(path)
+        except NoStrandRecord as exc:
+            # a record another run of the study left; read the file as it is
+            out["record_note"] = str(exc)
+    atomistic = system is not None
+    if not atomistic:
+        # An atomistic file has far more than three atom types; say so from
+        # the header rather than parse a large file to find out.
+        if (_parse_system_data(path)["n_atom_types"] or 0) > 3:
+            out["note"] = note
+            return out
+        try:
+            system = read_endlinked(path)
+        except NotEndLinked:
+            out["note"] = note
+            return out
+    out["classes"] = system.class_counts()
+    if atomistic:
+        out["density"] = system.mass_density
+        out["units"] = "real"
+    else:
+        out["density"] = system.density
+    t = system.temperature()
+    if t is not None:
+        out["temperature"] = t
+    out.update(strand_counts(system.graph))
+    if z1:
+        from topon.analysis.z1plus import (
+            Z1PlusFailed, Z1PlusUnavailable, measure_system)
+        try:
+            out["z1"] = measure_system(system, config=z1_config)[0]
+        except (Z1PlusUnavailable, Z1PlusFailed) as exc:
+            out["z1_note"] = str(exc)
+    return out
+
+
+def summarise(run_dir: Path, network: bool = False, z1: bool = False,
+              z1_config=None) -> RunSummary:
+    """Read a run directory back.
+
+    With ``network`` the most relaxed data file is also read into its strands
+    (:func:`measure_network`), and with ``z1`` measured with Z1+ as well;
+    `topon inspect` asks for both. Off by default, since a large data file
+    takes seconds to parse and Z1+ is an external program.
+    """
     run_dir = Path(run_dir)
 
     # Layout A: study root containing 02_Chemistry/ + 03_Conformation/ + 04_Simulation/
@@ -258,6 +342,11 @@ def summarise(run_dir: Path) -> RunSummary:
     # `topon inspect` finds it whether they named the study or its parent.
     manifest = read_manifest(root) or read_manifest(run_dir) or {}
 
+    net = None
+    f = network_file(root, flat) if network else None
+    if f is not None:
+        net = measure_network(f, z1=z1, z1_config=z1_config)
+
     return RunSummary(
         root=root,
         chemistry=chem,
@@ -268,7 +357,39 @@ def summarise(run_dir: Path) -> RunSummary:
         box=info.get("box"),
         topology=(manifest.get("stages") or {}).get("topology"),
         defects=(manifest.get("stages") or {}).get("defects"),
+        network=net,
     )
+
+
+def format_network(net: dict) -> list[str]:
+    """Render :func:`measure_network`'s record."""
+    from topon.analysis.analyze import format_pf, format_z1
+
+    lines = ["", f"  Network (from {Path(net['file']).name}):"]
+    if net.get("note"):
+        lines.append(f"    {net['note']}")
+        return lines
+    cls = net.get("classes", {})
+    real = net.get("units") == "real"
+    state = (f"density {net['density']:.4f}{' g/cm3' if real else ''}"
+             if net.get("density") else "")
+    if net.get("temperature") is not None:
+        state += (f", T {net['temperature']:.1f} K" if real
+                  else f", T {net['temperature']:.3f}")
+    lines.append(
+        f"    strands   : {cls.get('bridge', 0)} bridge, {cls.get('dangling', 0)} "
+        f"dangling, {cls.get('loop', 0)} primary loop, {cls.get('free', 0)} sol"
+        + (f"; {state}" if state else ""))
+    lines.append(f"    loops     : {net.get('n_primary_loops', 0)} primary, "
+                 f"{net.get('n_secondary_loops', 0)} secondary (parallel strands)")
+    if net.get("deg_chem_dist"):
+        lines.append(f"    P(f) chem : {format_pf(net['deg_chem_dist'])}")
+        lines.append(f"    P(f) eff  : {format_pf(net['deg_eff_dist'])}")
+    if net.get("z1"):
+        lines.extend(format_z1(net["z1"], indent="    "))
+    elif net.get("z1_note"):
+        lines.append(f"    Z1+       : not measured. {net['z1_note']}")
+    return lines
 
 
 def format_topology(entry: dict) -> list[str]:
@@ -410,6 +531,9 @@ def format_summary(s: RunSummary) -> str:
                 f"    bead budget    : {budget['total_beads']} beads over "
                 + ", ".join(f"{v} {k}" for k, v in chains.items() if v)
             )
+
+    if s.network:
+        lines.extend(format_network(s.network))
 
     # Suggest the next LAMMPS command (try nested first, then flat root)
     candidates = [s.root / "04_Simulation", s.root]

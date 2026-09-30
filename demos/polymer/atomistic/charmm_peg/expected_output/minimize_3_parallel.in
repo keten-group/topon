@@ -21,11 +21,19 @@ include         ../02_Chemistry/system.in.settings
 thermo          100
 thermo_style    custom step pe ke etotal evdwl ecoul epair ebond eangle edihed eimp press vol temp
 
+group           bbdump type 1 2 4
+dump            bbdump bbdump custom 10 traj_stage3.lammpstrj id xu yu zu
+dump_modify     bbdump sort id format float %.4f
+
 min_style       cg
-minimize        1.0e-6 1.0e-8 100000 1000000
+minimize        1.0e-6 1.0e-8 2000 20000
 write_data      system_minimized_final.data
 
+undump          bbdump
 reset_timestep  0
+dump            bbdump bbdump custom 10 traj_stage3.lammpstrj id xu yu zu
+dump_modify     bbdump sort id format float %.4f append yes
+
 variable        temp equal 300
 velocity        all create ${temp} 12345
 timestep        1.0
@@ -41,5 +49,6 @@ fix             1 all npt temp ${temp} ${temp} 100.0 iso 1.0 1.0 1000.0
 run             1000
 unfix           1
 
+undump          bbdump
 write_data      system_equilibrated.data
 print "All Minimization Stages Complete."

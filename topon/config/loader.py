@@ -27,7 +27,7 @@ from topon.config.schema import ToponConfig
 # `topon.conformation.place` and the controller, which the Pipeline does not
 # call. `topon generate` will validate them and then ignore them.
 _SCHEMA_KEYS = {"study", "topology", "assignment", "chemistry", "conformation",
-                "output"}
+                "output", "analysis"}
 
 # Schema sections that are *also* passed through raw, for the callers that
 # have always read them out of the raw dict.

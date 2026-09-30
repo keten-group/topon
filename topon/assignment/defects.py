@@ -42,7 +42,7 @@ secondary loops with endpoint effective degrees ``{(4,4): 115, (3,4): 6,
 
 All three are reproduced exactly by ``by_effective_degree`` placement,
 which fills junctions in ascending effective degree (0 takes two loops,
-1 through ``f_target - 2`` take one). The task brief writes the rule with
+1 through ``f_target - 2`` take one). The original rule was written with
 classes for 0 and ``f_target - 2`` only, which leaves the eight
 effective-degree-1 junctions empty and lands on ``{4: 2312, 3: 153,
 2: 27, 1: 8}``; the intermediate classes are the correction, measured
@@ -280,7 +280,7 @@ def loop_placement_plan(G: nx.MultiGraph, max_f: int = 4,
     network: its 345 loops sit on 8 effective-degree-0 junctions (7 with
     two, 1 with one), 8 effective-degree-1 junctions and 322
     effective-degree-2 junctions. Filling only the 0 and ``f_target - 2``
-    classes, as the task brief writes the rule, leaves those 8
+    classes, as the original rule did, leaves those 8
     effective-degree-1 junctions empty and moves their loops to
     effective-degree-2 junctions, which shifts the chemical P(f) on eight
     junctions.

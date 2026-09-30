@@ -53,10 +53,12 @@ from topon.conformation.paths import (
     straight_chain,
     unfold,
 )
+from topon.conformation.placement.settle import chord_triples, settle_strands
 
 __all__ = [
     "BOND",
     "SELF_SEPARATION",
+    "bead_bond_gaps",
     "separate_coincident",
     "limits_from",
     "GuardLimits",
@@ -71,6 +73,8 @@ __all__ = [
     "coil_ratio_of",
     "density_for_coil_ratio",
     "place",
+    "settle_placement",
+    "site_spacing",
 ]
 
 #: Design bond length of a Kremer-Grest build, in sigma. The reference
@@ -221,6 +225,11 @@ class Placement:
     n_beads: int = 0
     limits: GuardLimits = field(default_factory=GuardLimits)
     coincidence: dict = field(default_factory=dict)
+    junction_shells: dict = field(default_factory=dict)
+    bead_bond: dict = field(default_factory=dict)
+    junction_jitter: dict = field(default_factory=dict)
+    settle: dict = field(default_factory=dict)
+    chord_triples: dict = field(default_factory=dict)
 
     # ---------------- reporting ----------------
 
@@ -260,6 +269,11 @@ class Placement:
                        "min_sep": self.limits.min_sep},
             "failed": len(bad),
             "overstretched": len(self.overstretched),
+            "junction_shells": dict(self.junction_shells),
+            "bead_bond": dict(self.bead_bond),
+            "chord_triples": dict(self.chord_triples),
+            "junction_jitter": dict(self.junction_jitter),
+            "settle": dict(self.settle),
             "coincidence": dict(self.coincidence),
             "failed_examples": [
                 {"key": list(s.plan.key), "kind": s.plan.kind,
@@ -512,6 +526,145 @@ def limits_from(config, placement: str) -> GuardLimits:
                        max_bond=bond, min_sep=float(sep))
 
 
+def site_spacing(graph, box) -> float:
+    """The mean distance between sites, in the units of ``box``.
+
+    ``(V / N)^(1/3)`` over every node of the graph (junctions and the sites of
+    free ends). On a full simple-cubic lattice it is the lattice constant; on
+    the N20 MIX 90/5/5 graph at coil 1.51 it is 8.91 sigma against the 8.86 of
+    box over sites per side; and it means the same thing on a lattice whose
+    unit cell holds several sites (Diamond: half the cell) or on a graph with
+    no lattice at all, where the lattice unit would not.
+    """
+    n = max(int(graph.number_of_nodes()), 1)
+    return float(np.prod(np.asarray(box, float).reshape(3)) / n) ** (1.0 / 3.0)
+
+
+def _reach_stats(reach, taut) -> dict:
+    if not len(reach):
+        return {}
+    return {"mean": round(float(reach.mean()), 4),
+            "p95": round(float(np.percentile(reach, 95)), 4),
+            "max": round(float(reach.max()), 4),
+            "taut": int((reach >= taut).sum()),
+            "over_contour": int((reach > 1.0).sum())}
+
+
+#: The closest two jittered junctions may come, in sigma, unless their sites
+#: were already closer. Nothing afterwards can part them: the coincidence
+#: pass leaves pairs of junctions alone and the settle holds both.
+JUNCTION_FLOOR = 1.0
+
+
+def _jitter_junctions(graph, plans, P, box, fraction: float, bond: float,
+                      rng, taut: float = 0.97, rounds: int = 40,
+                      floor: float = JUNCTION_FLOOR) -> dict:
+    """Move every junction by a Gaussian offset, in place, and say what it did.
+
+    The offset is drawn per axis with a standard deviation of ``fraction``
+    times :func:`site_spacing`, one draw for every junction in graph order.
+    The graph does not change; its chords do, and so do the reach (chord over
+    design contour) and the coil ratio of every strand.
+
+    A jittered chord can reach the contour, which on a dilute build the lattice
+    chord did not. The meander goes straight at ``taut`` (0.97) of it and a
+    chord past the contour is a strand the gate rejects, so an offset may not
+    take any strand past ``max(taut * contour, its lattice chord)``: the
+    offsets at both ends of such a strand are halved until none does (set to
+    zero after ``rounds``, and checked again, until nothing is left over).
+    Nor may it flip a chord's periodic image, which a cell smaller than twice
+    its longest chord would allow, or bring two junctions within ``floor``
+    of each other (or closer than their sites were). The report gives the
+    reach before and after, and how many junctions were held back.
+    """
+    from scipy.spatial import cKDTree
+
+    L = np.asarray(box, float).reshape(3)
+    nodes = [n for n in graph if _kind_of(graph, n) == "junction"]
+    spacing = site_spacing(graph, L)
+    sd = float(fraction) * spacing
+    offs = rng.normal(0.0, sd, (len(nodes), 3))
+    row = {n: k for k, n in enumerate(nodes)}
+
+    chorded = [p for p in plans if p.kind != "loop"]
+    iu = np.array([row.get(p.u, -1) for p in chorded], int)
+    iv = np.array([row.get(p.v, -1) for p in chorded], int)
+    contour = np.array([p.n_bonds * bond for p in chorded], float)
+    d0 = np.array([P[p.v] - P[p.u] for p in chorded], float).reshape(-1, 3)
+    d0 = d0 - L * np.round(d0 / L)
+    c0 = np.linalg.norm(d0, axis=1)
+    cap = np.maximum(taut * contour, c0)
+
+    def jittered(o):
+        ou = np.where(iu[:, None] >= 0, o[np.maximum(iu, 0)], 0.0)
+        ov = np.where(iv[:, None] >= 0, o[np.maximum(iv, 0)], 0.0)
+        return d0 + ov - ou
+
+    site = (np.array([P[n] for n in nodes], float).reshape(-1, 3)
+            if nodes else np.zeros((0, 3)))
+
+    def crowded(o):
+        """Junctions a jitter brings within the floor of another."""
+        if len(site) < 2 or floor <= 0.0:
+            return set()
+        at = fold_into_box(site + o, L)
+        pairs = cKDTree(at, boxsize=L).query_pairs(floor, output_type="ndarray")
+        if not len(pairs):
+            return set()
+        a, b = pairs[:, 0], pairs[:, 1]
+        d_now = at[b] - at[a]
+        d_now -= L * np.round(d_now / L)
+        d_was = site[b] - site[a]
+        d_was -= L * np.round(d_was / L)
+        near = (np.linalg.norm(d_now, axis=1)
+                < np.minimum(floor, np.linalg.norm(d_was, axis=1)))
+        return set(a[near].tolist()) | set(b[near].tolist())
+
+    def offenders(o):
+        d1 = jittered(o)
+        bad = ((np.linalg.norm(d1, axis=1) > cap * (1.0 + 1e-12))
+               | np.any(np.round(d1 / L) != 0, axis=1))
+        hit = set(iu[bad][iu[bad] >= 0].tolist()) | set(iv[bad][iv[bad] >= 0].tolist())
+        return hit | crowded(o)
+
+    held_back: set = set()
+    for _ in range(int(rounds)):
+        hit = offenders(offs)
+        if not hit:
+            break
+        held_back |= hit
+        offs[sorted(hit)] *= 0.5
+    else:
+        # The last resort, checked again: zeroing one junction can put a
+        # neighbour's chord over the limit. All zero is the lattice itself,
+        # which passes, so this ends.
+        while True:
+            hit = {k for k in offenders(offs) if np.any(offs[k] != 0.0)}
+            if not hit:
+                break
+            held_back |= hit
+            offs[sorted(hit)] = 0.0
+
+    for n, k in row.items():
+        P[n] = P[n] + offs[k]
+
+    c1 = np.linalg.norm(jittered(offs), axis=1)
+    size = np.linalg.norm(offs, axis=1)
+    return {
+        "fraction": float(fraction),
+        "spacing": round(spacing, 6),
+        "sigma": round(sd, 6),
+        "junctions": len(nodes),
+        "held_back": len(held_back),
+        "offset_mean": round(float(size.mean()), 6) if len(size) else 0.0,
+        "offset_max": round(float(size.max()), 6) if len(size) else 0.0,
+        "reach_before": _reach_stats(c0 / contour, taut),
+        "reach_after": _reach_stats(c1 / contour, taut),
+        "coil_ratio_after": (round(float(contour.mean() / c1.mean()), 6)
+                             if len(c1) else None),
+    }
+
+
 def place(graph, dp: int, placement: str = "meander",
           coil_ratio: Optional[float] = None,
           build_density: Optional[float] = None,
@@ -520,7 +673,9 @@ def place(graph, dp: int, placement: str = "meander",
           limits: Optional[GuardLimits] = None,
           coincident: float = 0.05,
           junction_shell_spacing: Optional[float] = None,
-          junction_shell_blend: int = 4) -> Placement:
+          junction_shell_blend: int = 4,
+          junction_jitter: float = 0.0,
+          settle_clearance: Optional[float] = None) -> Placement:
     """Draw every strand of ``graph`` at the build state.
 
     ``placement`` is one of ``straight`` (the chord with a jitter), ``meander``
@@ -544,6 +699,19 @@ def place(graph, dp: int, placement: str = "meander",
 
     ``coincident`` is the separation below which two beads anywhere in the
     build are pushed apart (:func:`separate_coincident`); 0 skips the pass.
+
+    ``junction_jitter`` moves every junction by a Gaussian offset per axis,
+    that fraction of the site spacing (:func:`site_spacing`), before any
+    strand is drawn, so that no three chords of a lattice cross at one point
+    (:func:`_jitter_junctions`; the report is
+    ``guard_report()["junction_jitter"]``). ``settle_clearance`` parts the
+    bonds of different strands to that bond-to-bond distance once everything
+    is drawn, holding the junctions and never passing one bond through
+    another (:func:`~topon.conformation.placement.settle.settle_strands`;
+    ``guard_report()["settle"]``). Both default off, and with both off the
+    random stream is not touched, so a build is what it was without them.
+    ``guard_report()["chord_triples"]`` counts the close chord triples the
+    build carries either way.
 
     Returns a :class:`Placement`. It is *not* checked for you -- read
     ``Placement.ok()`` or ``guard_report()`` and decide. The gate is advisory
@@ -581,6 +749,16 @@ def place(graph, dp: int, placement: str = "meander",
     P = {n: p * scale for n, p in pos.items()}
     box_sigma = box_lat * scale
 
+    # Off unless asked for, and then drawn before anything else, so a build
+    # without it takes exactly the random stream it always took.
+    jitter_report = {}
+    if junction_jitter:
+        if junction_jitter < 0:
+            raise ValueError(
+                f"junction_jitter must be at least 0; got {junction_jitter!r}")
+        jitter_report = _jitter_junctions(graph, plans, P, box_sigma,
+                                          float(junction_jitter), bond, rng)
+
     placed: list[PlacedStrand] = []
     for plan in plans:
         if plan.kind == "loop":
@@ -611,9 +789,13 @@ def place(graph, dp: int, placement: str = "meander",
                                    draws=int(note.get("draws", 1)),
                                    chord=chord))
 
+    junction_shells = {}
     if junction_shell_spacing:
-        _seat_on_shells(placed, float(junction_shell_spacing),
-                        int(junction_shell_blend))
+        for st in placed:
+            st.measure()
+        junction_shells = _seat_on_shells(
+            placed, float(junction_shell_spacing),
+            int(junction_shell_blend), bond, limits)
 
     coincidence = (separate_coincident(placed, box_sigma, float(coincident),
                                        rng, bond=bond,
@@ -623,12 +805,44 @@ def place(graph, dp: int, placement: str = "meander",
     for s in placed:
         s.measure()
 
-    return Placement(box=box_sigma, scale=scale,
-                     build_density=float(build_density),
-                     coil_ratio=float(realised_coil), placement=placement,
-                     dp=int(dp), bond=float(bond), strands=placed,
-                     n_beads=int(n_beads), limits=limits,
-                     coincidence=coincidence)
+    pl = Placement(box=box_sigma, scale=scale,
+                   build_density=float(build_density),
+                   coil_ratio=float(realised_coil), placement=placement,
+                   dp=int(dp), bond=float(bond), strands=placed,
+                   n_beads=int(n_beads), limits=limits,
+                   coincidence=coincidence,
+                   junction_shells=junction_shells,
+                   junction_jitter=jitter_report,
+                   chord_triples=chord_triples(placed, box_sigma))
+    if settle_clearance:
+        settle_placement(pl, float(settle_clearance), rng)
+    else:
+        pl.bead_bond = bead_bond_gaps(placed, box_sigma)
+    return pl
+
+
+def settle_placement(pl: Placement, clearance: float, rng=None,
+                     **knobs) -> dict:
+    """Settle a placement's strands in place and record what it did.
+
+    :func:`~topon.conformation.placement.settle.settle_strands` with the
+    placement's own bond, band and self-contact floor. ``place(...,
+    settle_clearance=c)`` calls it last; a caller that moves beads after the
+    placement (designed braids, :func:`~topon.conformation.entanglement.
+    route_designed_pairs`) calls it after those instead, so the settle sees
+    the coordinates that will be written. The report goes to
+    ``pl.settle`` with the bead-to-bond reading from before it
+    (``bead_bond_before``); ``pl.bead_bond`` is read again after.
+    """
+    before = bead_bond_gaps(pl.strands, pl.box)
+    knobs.setdefault("tol", pl.limits.bond_tol)
+    report, _frames = settle_strands(
+        pl.strands, pl.box, float(clearance), rng, bond=pl.limits.max_bond,
+        min_bond=pl.limits.min_bond, min_sep=pl.limits.min_sep, **knobs)
+    report["bead_bond_before"] = before
+    pl.settle = report
+    pl.bead_bond = bead_bond_gaps(pl.strands, pl.box)
+    return report
 
 
 def separate_coincident(placed, box, floor: float, rng, rounds: int = 8,
@@ -858,20 +1072,220 @@ def separate_coincident(placed, box, floor: float, rng, rounds: int = 8,
             "closest_pair": round(float(near.min()), 6) if len(near) else None}
 
 
-def _seat_on_shells(placed, spacing: float, blend: int) -> None:
+def bead_bond_gaps(placed, box, cutoff: float = 0.4) -> dict:
+    """Closest a bead comes to a *bond* it is not part of.
+
+    Every other reading in the gate is bead-to-bead: :func:`self_contact`
+    within one strand, :func:`separate_coincident` across the build. None of
+    them can see a bead lying on a bond. At a 0.97 design bond such a bead sits
+    0.48 sigma from each endpoint, so it clears a 0.05 bead-to-bead floor
+    comfortably and clears a 1.122 one too -- measured on the N20 build at the
+    WCA floor, the cross-chain bead-to-bond minimum is still 0.0000 after
+    every bead pair has been pushed 1.122 sigma apart.
+
+    **Reported, never gated.** It is not known to cause anything. Tracing the
+    persistent 1.3-1.4 sigma bonds that stop the push-off back to their placed
+    builds, this count does not predict them: 757 beads inside 0.05 sigma on
+    one build gave three, 18 on another gave three, and 205 on a third gave
+    none. The push-off resolves nearly all of them. It is here so that a clean
+    report cannot be read as saying no bead sits on a bond, which is a thing
+    the gate otherwise has no way to know.
+
+    ``min`` is the closest approach anywhere in the build and ``under_cutoff``
+    counts *beads*, not bead-bond pairs: one bead wedged between two strands is
+    one bead. Junctions are counted once each however many strands meet there,
+    and are compared against every bond except those of the strands they
+    terminate -- a junction wedged in a third strand's bond is the commonest
+    form of this, so excluding junctions outright would hide exactly the case
+    worth seeing.
+    """
+    from scipy.spatial import cKDTree
+
+    if not placed:
+        return {}
+    L = np.asarray(box, float).reshape(3)
+
+    # Beads each strand owns, then each junction once, under its node id.
+    pts, owner = [], []
+    for si, st in enumerate(placed):
+        b = st.beads()
+        pts.append(b)
+        owner.append(np.full(len(b), si))
+    nodes: dict = {}
+    for st in placed:
+        nodes.setdefault(st.plan.u, st.path[0])
+        if st.plan.kind != "dangling":
+            nodes.setdefault(st.plan.v, st.path[-1])
+    node_ids = list(nodes)
+    at = {n: -2 - k for k, n in enumerate(node_ids)}   # owner tag per junction
+    if node_ids:
+        pts.append(np.asarray([nodes[n] for n in node_ids], float))
+        owner.append(np.asarray([at[n] for n in node_ids]))
+    P = np.vstack(pts)
+    owner = np.concatenate(owner)
+
+    # Every bond, with the strand that owns it and the junction tags it ends on.
+    segs, seg_owner, ends_u, ends_v = [], [], [], []
+    for si, st in enumerate(placed):
+        p = st.path
+        segs.append(np.stack([p[:-1], p[1:]], axis=1))
+        n = len(p) - 1
+        seg_owner.append(np.full(n, si))
+        ends_u.append(np.full(n, at.get(st.plan.u, 0)))
+        ends_v.append(np.full(n, at.get(st.plan.v, 0)))
+    S = np.concatenate(segs, axis=0)
+    seg_owner = np.concatenate(seg_owner)
+    ends_u = np.concatenate(ends_u)
+    ends_v = np.concatenate(ends_v)
+
+    a = S[:, 0, :]
+    d = S[:, 1, :] - a
+    d -= L * np.round(d / L)
+    mid = a + 0.5 * d
+    ll = np.einsum("ij,ij->i", d, d)
+
+    def wrap(X):
+        Y = np.mod(X, L)
+        return np.minimum(Y, L * (1.0 - 1e-12))
+
+    reach = float(0.5 * np.sqrt(ll.max()) + max(cutoff, 1.0))
+    near = cKDTree(wrap(mid), boxsize=L).query_ball_tree(
+        cKDTree(wrap(P), boxsize=L), r=reach)
+
+    best = np.full(len(P), np.inf)
+    for k, cand in enumerate(near):
+        if not cand:
+            continue
+        c = np.asarray(cand)
+        keep = (owner[c] != seg_owner[k]) & (owner[c] != ends_u[k]) \
+            & (owner[c] != ends_v[k])
+        c = c[keep]
+        if not len(c):
+            continue
+        q = P[c] - a[k]
+        q -= L * np.round(q / L)
+        t = (np.clip((q @ d[k]) / ll[k], 0.0, 1.0) if ll[k]
+             else np.zeros(len(c)))
+        g = np.linalg.norm(q - t[:, None] * d[k], axis=1)
+        np.minimum.at(best, c, g)
+
+    seen = best[np.isfinite(best)]
+    if not len(seen):
+        return {}
+    return {"cutoff": float(cutoff),
+            "min": round(float(seen.min()), 4),
+            "under_cutoff": int((seen < cutoff).sum()),
+            "beads": int(len(seen))}
+
+
+def _seat_on_shells(placed, spacing: float, blend: int, bond: float,
+                    limits: GuardLimits, rounds: int = 12) -> dict:
     """Spread the first beads of the strands that share a junction, in place.
 
     Loops are left out: both of a loop's ends are the same junction, and a
     shell seat that pulls its two ends apart opens the ring it was drawn to
     close.
+
+    **A junction seats all of its chains or none of them.** The spread a shell
+    delivers is the spread of every chain meeting at one node, so keeping the
+    seats whose own strand happened to pass the gate and dropping the rest
+    leaves the ones that moved sitting next to the ones that did not. That is
+    worse than never seating: measured on SC 3 at DP 60 it took sibling first
+    beads from 26 sub-sigma pairs to 45 and the worst separation from 0.887 to
+    0.402. Declining by junction can only leave the build as it was, which is
+    the weakest guarantee worth having and the one the per-strand version did
+    not give. It is the same lesson as reverting a braid by pair rather than
+    by strand (:mod:`topon.conformation.entanglement.designed`).
+
+    Strands are gated, junctions are declined, and the two ends of one chain
+    are independent -- a chain can keep a seat at ``u`` and lose one at ``v``,
+    since each is blended from its own end. Dropping a junction changes the
+    strands it touches, so it iterates to a fixed point; ``rounds`` caps it.
+
+    The seat is then absorbed by the whole strand rather than by the four
+    beads behind it. Without that nothing is ever seated at all: a strand drawn
+    at the design bond has no sideways room, the blend stretches a bond to
+    1.023-1.245 against a 0.971 ceiling, and widening the blend does not help
+    (0 of 24 DP-20 strands survive at blend 2, 4, 8, 16 or 32) because the
+    blend only looks as far as bead ``blend``. The room is there, further along
+    the contour, and the same ``floor`` then ``only_long`` relaxation
+    :func:`separate_coincident` finishes its own moved strands with reaches it.
+    Beads 0, 1, -2 and -1 are held, so the junction and the seat it was given
+    both stay exactly where they were put.
+
+    Even so, most junctions decline. The seat is largest exactly where the
+    shell is worth most -- pulling apart chains that leave a junction in nearly
+    the same direction -- so the cases with most to gain are the ones least
+    able to pay. Measured at spacing 1.0: 1 junction of 8 on SC 2 at DP 60, 4
+    of 27 on SC 3 at DP 60, none at all at DP 20 or on SC 3 at DP 100.
     """
     from topon.conformation.junction_shell import apply_junction_shells
+    from topon.conformation.paths import _relax_bonds
+
+    def settle(path, strand):
+        """Let the contour absorb the seat, holding both junctions and seats."""
+        m = np.zeros(len(path), bool)
+        m[2:-2] = True
+        if strand.plan.kind == "dangling":
+            m[-1] = True
+        if not m.any():
+            return path
+        _relax_bonds(path, bond, m, 200, 0.0, floor=limits.min_bond)
+        _relax_bonds(path, bond, m, 200, 0.0, only_long=True)
+        return path
 
     movable = [s for s in placed if s.plan.kind != "loop"]
-    if not movable:
-        return
-    paths = {i: s.path for i, s in enumerate(movable)}
-    ends = {i: (s.plan.u, s.plan.v) for i, s in enumerate(movable)}
-    out = apply_junction_shells(paths, ends, spacing=spacing, blend=blend)
+    base = [s.path for s in movable]
+    at: dict = {}
     for i, s in enumerate(movable):
-        s.path = out[i]
+        at.setdefault(s.plan.u, []).append(i)
+        at.setdefault(s.plan.v, []).append(i)
+    shared = {j for j, ks in at.items() if len(ks) > 1}
+    report = {"spacing": float(spacing), "movable": len(movable),
+              "junctions": len(shared), "seated_junctions": 0,
+              "seated_strands": 0, "declined_junctions": len(shared)}
+    if not movable or not shared:
+        return report
+
+    paths = {i: p for i, p in enumerate(base)}
+    ends = {i: (s.plan.u, s.plan.v) for i, s in enumerate(movable)}
+
+    def touched_by(active):
+        return {i for j in active for i in at[j]}
+
+    active = set(shared)
+    for _ in range(max(1, int(rounds))):
+        out = apply_junction_shells(paths, ends, spacing=spacing, blend=blend,
+                                    bond=bond, only=active)
+        drop = set()
+        for i in touched_by(active):
+            s = movable[i]
+            was, s.path = s.path, settle(out[i], s)
+            s.measure()
+            if s.failures(limits):
+                drop |= {s.plan.u, s.plan.v} & active
+            s.path = was
+            s.measure()
+        if not drop:
+            break
+        active -= drop
+        if not active:
+            break
+
+    # Only the strands of a surviving junction are rebuilt at all, so a
+    # declined junction leaves its chains byte-identical rather than merely
+    # unchanged to within the relaxation's tolerance.
+    out = apply_junction_shells(paths, ends, spacing=spacing, blend=blend,
+                                bond=bond, only=active)
+    seated = 0
+    for i in touched_by(active):
+        s = movable[i]
+        p = settle(out[i], s)
+        if not np.allclose(p, base[i]):
+            seated += 1
+        s.path = p
+        s.measure()
+    report["seated_junctions"] = len(active)
+    report["declined_junctions"] = len(shared) - len(active)
+    report["seated_strands"] = seated
+    return report

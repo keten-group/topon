@@ -34,7 +34,10 @@ class AssignmentManager:
     """
     
     def __init__(self, G: nx.MultiGraph, dims: Optional[np.ndarray],
-                 config: AssignmentConfig, max_functionality: Optional[int] = None):
+                 config: AssignmentConfig, max_functionality: Optional[int] = None,
+                 bead_density: Optional[float] = None,
+                 architecture: str = "end_linked",
+                 chains_decided: bool = False):
         """
         Initialize the assignment manager.
         
@@ -46,12 +49,28 @@ class AssignmentManager:
                 ``topology.generator.max_functionality``. Defect placement
                 needs it to know how much valence is spare. Defaults to the
                 highest degree the graph already carries (at least 4).
+            bead_density: Beads per sigma^3 of a coarse-grained build
+                (``chemistry.target_density``), which with the bead count
+                sets the length of a cell unit. The chain cover of a
+                random-crosslinked network reads it for its chord floor;
+                None (atomistic, or a direct caller) leaves the floor off.
+            architecture: ``topology.generator.architecture``. The chains
+                are covered only for ``"random_crosslinked"``, whatever tag
+                a loaded graph carries.
+            chains_decided: the graph came from a crosslinked melt
+                (``topology.source = "crosslink"``), whose strands already
+                carry their DP and chain, so neither the DP draw nor the
+                chain cover runs.
         """
         self.G = G
         self.dims = dims
         self.config = config
         self.max_functionality = max_functionality
+        self.bead_density = bead_density
+        self.architecture = architecture
+        self.chains_decided = bool(chains_decided)
         self.defect_report: dict = {}
+        self.chain_report: dict = {}
         
         # Analysis results (populated by analyze())
         self.analysis = {}
@@ -115,13 +134,20 @@ class AssignmentManager:
         # 2. Assign edge types
         self._assign_edge_types()
         
-        # 3. Assign DP distribution
-        self._assign_dp()
-        
+        # 3. Assign DP distribution (a crosslinked melt has its DP already)
+        if self.chains_decided:
+            print("  DP and chains from the crosslinked melt (stage 1), kept")
+        else:
+            self._assign_dp()
+
         # 4. Apply defects (if enabled)
         if self._defects_requested():
             self._apply_defects()
-        
+
+        # 4b. Chains through the junctions, for a random-crosslinked network
+        if self.architecture == "random_crosslinked" and not self.chains_decided:
+            self._assign_chains()
+
         # 5. Select entanglements (if enabled)
         if self.config.entanglements.enabled:
             self._select_entanglements()
@@ -199,6 +225,82 @@ class AssignmentManager:
         print(f"    chemical  P(f): {self.defect_report['chemical_degree']}")
         print(f"    beads (incl. loops and sol): "
               f"{self.defect_report['bead_budget']['total_beads']}")
+
+    def _bonds_per_unit(self) -> Optional[float]:
+        """Design bonds per cell unit of a coarse-grained build, or None.
+
+        The chemistry stage sizes the box from the bead count at
+        ``bead_density``. The count is fixed before the beads are split:
+        every chain has ``assignment.chains.dp`` beads, a junction is built
+        as one bead for all the chains passing it, and sol chains add theirs.
+        Graft beads, placed after this, are not counted.
+        """
+        if self.bead_density is None or self.dims is None:
+            return None
+        from topon.assignment.chains import KG_BOND
+
+        G = self.G
+        ends = sum(1 for n in G if G.degree(n) == 1)
+        junctions = [n for n in G if G.degree(n) >= 2]
+        passes = sum(G.degree(n) for n in junctions) // 2
+        sol = G.graph.get("sol_chains") or {}
+        if isinstance(sol, dict) and sol.get("dps"):
+            sol_beads = sum(int(d) * int(k) for d, k in sol["dps"].items())
+        else:
+            sol_beads = (int(sol.get("count", 0)) * int(sol.get("dp", 0))
+                         if isinstance(sol, dict) else 0)
+        beads = (ends // 2) * int(self.config.chains.dp) - passes \
+            + len(junctions) + sol_beads
+        cell = float(np.prod(np.asarray(self.dims, float)))
+        scale = (beads / float(self.bead_density) / cell) ** (1.0 / 3.0)
+        return scale / KG_BOND
+
+    def _assign_chains(self) -> None:
+        """Cover a random-crosslinked graph's strands with chains.
+
+        Every strand's ``dp`` becomes the beads between its crosslinks on
+        its chain (:mod:`topon.assignment.chains`), replacing the per-strand
+        draw of step 3. Sol chains are chains of the same length unless
+        ``defects.sol_chains.dp`` says otherwise, and the bead budget the
+        defects stage recorded is counted again with them.
+        """
+        print("  Assigning chains through the junctions...")
+        from topon.assignment import chains, defects
+
+        cfg = self.config.chains
+        sol = self.G.graph.get("sol_chains")
+        if isinstance(sol, dict) and self.config.defects.sol_chains.dp is None:
+            sol["dp"] = int(cfg.dp)
+            rec_sol = (self.G.graph.get("defects") or {}).get("sol_chains")
+            if isinstance(rec_sol, dict):
+                rec_sol["dp"] = int(cfg.dp)
+        seed = (int(cfg.seed) if cfg.seed is not None
+                else int(np.random.randint(0, 2 ** 31 - 1)))
+        bpu = self._bonds_per_unit() if cfg.chord_floor else None
+        rec = chains.assign_chains(
+            self.G, int(cfg.dp), np.random.default_rng(seed),
+            reactive_every=cfg.reactive_every, target=cfg.passes,
+            bonds_per_unit=bpu)
+        rec["seed"] = seed
+        rec["dp"] = int(cfg.dp)
+        rec["bonds_per_unit"] = None if bpu is None else round(bpu, 6)
+        self.chain_report = rec
+        self.G.graph["chain_assignment"] = rec
+        record = self.G.graph.get("defects")
+        if record and "bead_budget" in record:
+            sol = self.G.graph.get("sol_chains") or {}
+            record["bead_budget"] = defects.bead_budget(
+                self.G, dp_default=int(cfg.dp),
+                sol_count=int(sol.get("count", 0)) if isinstance(sol, dict) else 0,
+                sol_dp=sol.get("dp") if isinstance(sol, dict) else None)
+        print(f"    {rec['chains']} chains of {cfg.dp} beads, "
+              f"{rec['passes_mean']:.2f} junctions passed per chain "
+              f"({rec['rings_merged']} rings merged, "
+              f"{rec['exchanges_kept']} tail exchanges)")
+        if bpu is not None:
+            print(f"    chord floor at {bpu:.3f} bonds per cell unit: "
+                  f"{rec['chains_chord_unmet']} chains could not meet it, "
+                  f"{rec['strands_too_short']} strands shorter than their chord")
 
     def _select_entanglements(self) -> None:
         """Select entanglement pairs."""

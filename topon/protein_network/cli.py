@@ -144,8 +144,10 @@ def add_build_args(b: argparse.ArgumentParser) -> None:
     b.add_argument("--crosslink-residue", default=None,
                    help="Y (dityrosine, default) or C (disulfide).")
     b.add_argument("--crosslink-method", choices=CROSSLINK_METHODS, default=None,
-                   help="BFM crosslinking: adjacent (default), winding_safe, distance, "
-                        "or none (uncrosslinked, for in-situ crosslinking).")
+                   help="melt (default: a residue-level melt, crosslink residues "
+                        "joined where they touch), or the BFM node lattice: adjacent, "
+                        "winding_safe, distance, none (uncrosslinked, for in-situ "
+                        "crosslinking).")
     b.add_argument("--snapshot", default=None,
                    help="Snapshot to build: gel_point (default), post_gel_N, or an index.")
     b.add_argument("--allow-no-gel", action="store_true", default=None,
@@ -167,6 +169,10 @@ def add_build_args(b: argparse.ArgumentParser) -> None:
     b.add_argument("--n-extra-snapshots", type=int, default=None)
     b.add_argument("--snapshot-delta-conv", type=float, default=None)
     b.add_argument("--min-intrachain-sep", type=int, default=None)
+    b.add_argument("--contact-radius", type=float, default=None,
+                   help="melt: crosslink residues this close may crosslink, in lattice "
+                        "units of about one residue step (1.5, face and edge "
+                        "neighbours; 1.8 adds the corners).")
     b.add_argument("--no-physical-backbone", dest="physical_backbone", action="store_const",
                    const=False, default=None,
                    help="CHARMM: place atoms by jitter instead of internal coordinates.")

@@ -81,16 +81,41 @@ def _min_chord(p: np.ndarray) -> float:
 
 
 def shell_radius(n: int, spacing: float = 1.0,
-                 points: np.ndarray | None = None) -> float:
+                 points: np.ndarray | None = None,
+                 bond: float | None = None) -> float:
     """Radius that seats ``n`` chains at least ``spacing`` apart.
 
     Solved from the actual spread rather than the asymptotic formula, since
     the counts here are small enough that the two disagree.
+
+    ``bond`` floors it. Without that floor this function bought an angular
+    spread the bond length already provided, by shortening the bond that
+    provides it. At ``spacing`` 1.0 the unfloored radius runs 0.577 (f=3),
+    0.612 (4), 0.707 (6), 0.854 (8), 0.951 (12) -- all under a 0.97 design
+    bond, so those chains had their first bead pulled 2 to 40 % closer to the
+    junction, and seating at the bond spreads them 1.680 sigma (f=3) to 1.020
+    (f=12) instead, at or above the 1.0 asked for. The floor costs nothing
+    there and the unfloored radius bought nothing.
+
+    It is *not* true at every functionality, because :func:`spread_points`
+    relaxes numerically and is not monotone in ``n``: its minimum chord goes
+    1.0727 (n=10), 0.9779 (11), 1.0515 (12), against Tammes optima of about
+    1.0107 and 0.9165. So f=11 asks 1.0226, above the bond, and the floor
+    leaves it alone -- correctly, since at the bond eleven chains would sit
+    only 0.9485 apart. An eleven-functional junction is reachable on the
+    ``MIX`` networks this module was written for, and it is the one case where
+    the radius is doing real work.
+
+    Measured on a 14-cubed SC lattice carrying the N20 degree spec, the
+    unfloored radius rejected about 4610 of 4644 strands with ``bond_min``
+    pinned exactly at ``spacing / min_chord``, which is the signature of the
+    radius being the binding constraint rather than the geometry.
     """
     if n <= 1:
         return 0.0
     p = spread_points(n) if points is None else points
-    return spacing / _min_chord(p)
+    r = spacing / _min_chord(p)
+    return r if bond is None else max(r, float(bond))
 
 
 def junction_directions(chord_dirs: np.ndarray) -> np.ndarray:
@@ -124,7 +149,8 @@ def junction_directions(chord_dirs: np.ndarray) -> np.ndarray:
 
 def apply_junction_shells(paths, ends, spacing: float = 1.0,
                           blend: int = 4, max_radius: float | None = None,
-                          carry: bool = False):
+                          carry: bool = False, bond: float | None = None,
+                          only=None):
     """Seat the beads next to each junction on a spread shell.
 
     ``paths`` maps chain id to its bead array, first and last bead sitting
@@ -152,6 +178,32 @@ def apply_junction_shells(paths, ends, spacing: float = 1.0,
     occur, which is a high-functionality mix; at functionality 4 a junction
     has few enough chains that the local seat is sufficient.
 
+    ``bond`` floors the seat radius at the design bond length; see
+    :func:`shell_radius` for why leaving it unset shortens the junction bond
+    to buy a spread that bond already provides. Pass it.
+
+    ``only``, when given, is the set of junctions to seat; the rest are left
+    alone. It exists because **a seat is a property of a junction, not of a
+    chain**. The spread this delivers is the spread of all the chains meeting
+    at one node, so seating some of them and leaving the others on their
+    chords is worse than seating none: the ones that moved land next to the
+    ones that did not. Measured on SC 3 at DP 60, keeping only the seats whose
+    own strand passed the gate took sibling first beads *closer* than not
+    seating at all -- 26 sub-sigma pairs to 45, worst separation 0.887 to
+    0.402. A caller that gates must therefore accept or decline a whole
+    junction, which is what ``only`` is for and what
+    :func:`topon.conformation.place` does.
+
+    What this does *not* do is check that a strand has the room to be moved
+    sideways, and mostly it has none. The placement lays its bonds at the
+    design length, so the longest drawn bond is already at the gate's ceiling
+    to within about 1e-3. Displacing the first bead by the 0.195 to 1.319
+    sigma a seat asks for has to be absorbed by the blend behind it, which
+    stretches a bond to 1.023-1.245 against a 0.971 ceiling. Widening the
+    blend does not rescue it (0 of 24 DP-20 strands survive at blend 2, 4, 8,
+    16 or 32), though a relaxation along the whole contour does -- see
+    :func:`topon.conformation.place`.
+
     Junctions themselves never move. They carry the network's topology and
     the box, and a junction that drifts changes the network rather than
     its conformation.
@@ -169,7 +221,7 @@ def apply_junction_shells(paths, ends, spacing: float = 1.0,
 
     for node, members in at.items():
         f = len(members)
-        if f < 2:
+        if f < 2 or (only is not None and node not in only):
             continue
 
         # Each chain carries its own copy of this junction. Paths are built
@@ -187,7 +239,7 @@ def apply_junction_shells(paths, ends, spacing: float = 1.0,
         dirs = np.asarray(dirs)
 
         pts = spread_points(f)
-        r = spacing / _min_chord(pts)
+        r = shell_radius(f, spacing, pts, bond)
         if max_radius is not None:
             r = min(r, max_radius)
         seats = junction_directions(dirs) * r

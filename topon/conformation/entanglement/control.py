@@ -21,7 +21,7 @@ not a final-state number is not a calibration entry.
 That is also why the acceptance test for this loop is reproducibility across
 seeds at the final state, not constancy of Z between stages. Constancy is the
 wrong gate; the right gate is the protocol's own, zero bonds above 1.2 sigma at
-every stage (Task 05).
+every stage.
 
 The response curve
 ------------------
@@ -44,6 +44,7 @@ __all__ = [
     "CalibrationPoint",
     "CALIBRATION",
     "FLOORS",
+    "REMEASURED",
     "RoundPlan",
     "RoundResult",
     "actuator_name",
@@ -72,12 +73,36 @@ class CalibrationPoint:
     checked against with a shorter protocol, and a caller that wants them has
     to say ``close_on: "build"``.
 
-    ``protocol`` is ``"limit"`` for the crossing-free push-off of Task 05 and
+    ``protocol`` is ``"limit"`` for the crossing-free push-off and
     ``"hardcore_min"`` for the minimiser that preceded it. The minimiser
     stretched 85 bonds to 1.70 sigma and left 57 threaded, which added
     crossings of its own (N20 went 0.19 -> 0.24 through the protocol), so its
     final-state points describe the minimiser as much as the placement and are
     not used to steer.
+
+    ``"pushoff"`` is the protocol's own name for the same deck ``"limit"``
+    names here, and
+    the duplication is deliberate rather than tidy. Renaming the older rows
+    would fold them in with the one row measured under ``pushoff``, and
+    :func:`seed_actuator` prefers ``"limit"`` over ``"hardcore_min"``: at DP 20
+    the walk route would go from a three-point power-law fit to a single row,
+    which fixes a level and not a slope. That is a worse seed, so the label
+    stays split until the other four DP-20 rows are re-measured and the whole
+    set can move together. Renaming then is a one-line change here and nothing
+    outside this module reads the field.
+
+    ``builder`` is what drew the coordinates: ``"script"`` for
+    ``bond_create_validation/scripts/``, ``"place"`` for
+    :func:`topon.conformation.place`. Every row below is ``"script"``, which
+    is worth saying out loud, because the controller steers ``place()`` builds
+    with a table measured on somebody else's placement. The two are not the
+    same placement: on the same graph and density the validation script and
+    ``place()`` put the placed-state Z at 0.0526 and 0.0287 respectively. That
+    difference washes out -- both jump in stage 1 and stay flat, to 0.186 and
+    0.215 -- which is why the table is keyed on post-protocol states and not
+    on the build. It is still a gap between what was measured and what is
+    being steered, and a row that does not say which side it came from hides
+    it. Re-measuring the DP-20 rows with ``place()`` is open and needs MD.
     """
 
     dp: int
@@ -88,6 +113,7 @@ class CalibrationPoint:
     protocol: str = "limit"
     graph: str = ""
     source: str = ""
+    builder: str = "script"
 
 
 #: What has actually been measured, and where it came from. Every entry is a
@@ -104,6 +130,19 @@ class CalibrationPoint:
 #: report's "2.8". The competing readings give 1.61 (mean of the per-strand
 #: ratios) and 1.45 (contour over the median chord), and neither reproduces the
 #: 2.8.
+#:
+#: All but one row is ``builder="script"``: the coordinates were drawn by
+#: ``bond_create_validation/scripts/``, not by :func:`topon.conformation.place`,
+#: which is what the controller actually steers. The exception is the DP-20
+#: walk pair at rho 0.035, measured with ``place()`` on 2026-09-21 and labelled
+#: ``"pushoff"``; the four DP-20 rows above it stayed script-built because their
+#: re-measurement stopped at stage 2 on the push-off's own bond gate.
+#:
+#: A second ``place()``-built point exists and is deliberately not a row:
+#: DP 100 walk, rho_build 0.0894, final-state Z1+ 1.3081 against the reference
+#: 1.32, KS p = 1.0000 on the per-strand histogram. Adding it would move the
+#: DP-100 fit the controller extrapolates on, and confirming that did no harm
+#: means re-running the controller, which needs MD.
 #:
 #: An earlier figure of 1.9 at rho 0.05 came from the DP-30 6x6x6 pilot cell
 #: and was never recomputed for the N20 one, where the value is 1.5. The table
@@ -124,7 +163,7 @@ CALIBRATION: tuple[CalibrationPoint, ...] = (
                      "N20_MIX90_4sh",
                      "data/measure_N20_v3_stage3_build.json"),
     # Random walk, minimiser protocol. Build-state column of REPORT.md 4; these
-    # are the three the task brief names, and they are what the floor rests on.
+    # are the three the specification names, and they are what the floor rests on.
     CalibrationPoint(20, "walk", 0.145, 0.300, "build", "hardcore_min",
                      "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r145"),
     CalibrationPoint(20, "walk", 0.095, 0.250, "build", "hardcore_min",
@@ -140,6 +179,24 @@ CALIBRATION: tuple[CalibrationPoint, ...] = (
     CalibrationPoint(20, "meander", 1.274, 0.225, "final", "hardcore_min",
                      "N20_MIX90_4sh", "REPORT.md 4, runs/N20_..._r030_meander"),
 
+    # --- the one DP-20 row measured with place() -------------------------
+    # Re-measuring the five DP-20 rows with place() was authorised and run on
+    # 2026-09-21. Four of the five stopped at stage 2 on the push-off's own
+    # bond gate, with 3 to 6 persistent 1.3-1.4 sigma bonds that the placed
+    # build did not have; those four stay script-built above and provisional.
+    # This one passed every gate with zero threaded bonds, and it lands on the
+    # script's number: final 0.2598 against 0.262, build 0.2388 against 0.232.
+    # Labelled "pushoff" so it does not steer on its own -- see
+    # CalibrationPoint for why that is deliberate.
+    CalibrationPoint(20, "walk", 0.035, 0.2598, "final", "pushoff",
+                     "N20_MIX90_4sh",
+                     "tests/output/v54_2/recal_w0035/controller.json",
+                     builder="place"),
+    CalibrationPoint(20, "walk", 0.035, 0.2388, "build", "pushoff",
+                     "N20_MIX90_4sh",
+                     "tests/output/v54_2/recal_w0035/controller.json",
+                     builder="place"),
+
     # --- DP 100, N100 SC 8-shell graph, final box rho 0.3015 ---
     CalibrationPoint(100, "walk", 0.060, 1.17, "final", "limit",
                      "N100_SC_8sh", "REPORT.md 4.4, runs/N100_v3"),
@@ -147,7 +204,7 @@ CALIBRATION: tuple[CalibrationPoint, ...] = (
                      "N100_SC_8sh", "REPORT.md 4.4, runs/N100_v3b"),
     CalibrationPoint(100, "walk", 0.060, 1.00, "build", "limit",
                      "N100_SC_8sh", "data/measure_N100_v3_stage3_build.json"),
-    # The task brief's "DP 100 walk 0.05 -> 1.19 preliminary": the minimiser
+    # The specification's "DP 100 walk 0.05 -> 1.19 preliminary": the minimiser
     # protocol, and its 108 bonds above 1.2 sigma say how preliminary.
     CalibrationPoint(100, "walk", 0.050, 1.19, "final", "hardcore_min",
                      "N100_SC_8sh", "REPORT.md 4.1, runs/N100_sc8sh_r050"),
@@ -176,6 +233,18 @@ FLOORS: dict[tuple[int, str], dict] = {
                               "excess on the meander's kinks per strand, so "
                               "fewer waves (conformation.meander_waves) is "
                               "the untried lever below this."},
+}
+
+
+#: Routes whose rows were re-measured with :func:`topon.conformation.place`
+#: and did not come back, and what stopped them. The rows of such a route
+#: describe the validation scripts' placement only, and anything seeded from
+#: them (``topon fit``) says so.
+REMEASURED: dict[tuple[int, str], str] = {
+    (20, "meander"): ("the place()-built meander builds at coil 1.40 and 1.51 "
+                      "stopped at stage 2 on the push-off bond gate, each "
+                      "with 3 persistent bonds at 1.3-1.4 sigma, so "
+                      "neither DP-20 meander row has a place() counterpart"),
 }
 
 

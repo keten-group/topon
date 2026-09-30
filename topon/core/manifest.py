@@ -1,7 +1,8 @@
 """The run manifest: what a pipeline run asked for and what it got.
 
 One JSON file per run directory, ``manifest.json``, written stage by
-stage as the pipeline goes. It is the machine-readable half of
+stage as the pipeline goes, plus a ``run`` entry naming the process that
+writes it (pid, host, start time). It is the machine-readable half of
 ``topon inspect``: the stage outputs say what landed on disk, the
 manifest says what was requested, what came back and how long it took.
 
@@ -81,6 +82,43 @@ def record_stage(run_dir, stage: str, entry: dict, study: Optional[str] = None) 
     if study is not None:
         manifest["study"] = study
     manifest.setdefault("stages", {})[stage] = entry
+    manifest["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return write_manifest(run_dir, manifest)
+
+
+def drop_stage(run_dir, *stages: str) -> None:
+    """Remove sections an earlier run of the same study left behind.
+
+    ``record_stage`` merges, so a section only one kind of run writes (the
+    atomistic strand record) outlives a rerun of the study as the other kind
+    and would describe a data file that is no longer there. Nothing to do
+    when there is no manifest or no such section.
+    """
+    manifest = read_manifest(run_dir)
+    if not manifest or not any(s in manifest.get("stages", {}) for s in stages):
+        return
+    for s in stages:
+        manifest["stages"].pop(s, None)
+    manifest["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    write_manifest(run_dir, manifest)
+
+
+def record_run(run_dir, entry: dict, study: Optional[str] = None) -> Path:
+    """Record who is writing ``run_dir`` under the manifest's ``run`` key.
+
+    ``entry`` is :func:`topon.utils.processes.this_process` (pid, host,
+    start time). Written when a pipeline run starts, before any stage, so
+    a second process started on the same directory can see the first and
+    say so; the stage sections are kept.
+    """
+    manifest = read_manifest(run_dir) or {
+        "manifest_version": MANIFEST_VERSION,
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "stages": {},
+    }
+    if study is not None:
+        manifest["study"] = study
+    manifest["run"] = dict(entry)
     manifest["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return write_manifest(run_dir, manifest)
 

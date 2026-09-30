@@ -3,9 +3,12 @@
 ``build_protein_network`` is the entry point behind ``topon protein`` and
 ``python -m topon.protein_network build``. It takes a one-letter sequence (a
 repeat block with ``repeats``, or a whole chain), lays the chain out on the
-BFM lattice with a crosslinkable node at every crosslink residue
-(:func:`sequence.plan_chain`), grows and crosslinks the network
-(:mod:`bfm`), and builds it with either model:
+residue-level lattice melt, one site per residue, crosslinks the
+crosslink residues that touch (``crosslink_method="melt"``, the default
+since 0.4.0, :func:`bfm.generate_melt_topology`), or lays the chain out on the
+BFM node lattice with a crosslinkable node at every crosslink residue
+(:func:`sequence.plan_chain`) and crosslinks it there (``adjacent`` and the
+other :mod:`bfm` methods), and builds it with either model:
 
 * ``model="charmm"``: CHARMM36m all-atom (TIP3P and NaCl if hydrated), the
   crosslink applied as its RTF patch (DITY for Tyr, DISU for Cys), every term
@@ -30,7 +33,7 @@ from pathlib import Path
 from . import bfm, sequence, topology_io
 
 MODELS = ("charmm", "martini")
-CROSSLINK_METHODS = ("adjacent", "winding_safe", "distance", "none")
+CROSSLINK_METHODS = ("adjacent", "winding_safe", "distance", "none", "melt")
 #: Residues each model knows how to crosslink.
 CROSSLINK_RESIDUES = {"charmm": ("Y", "C"), "martini": ("Y", "C")}
 
@@ -43,7 +46,7 @@ class ProteinNetworkSettings:
     repeats: int = 1
     chains: int = 8
     crosslink_residue: str = "Y"
-    crosslink_method: str = "adjacent"
+    crosslink_method: str = "melt"
     snapshot: str = "gel_point"
     #: build the last snapshot when the one asked for (the gel point by
     #: default) was not reached, instead of stopping
@@ -57,6 +60,9 @@ class ProteinNetworkSettings:
     n_extra_snapshots: int = 2
     snapshot_delta_conv: float = 0.05
     min_intrachain_sep: int = 2
+    #: melt only: crosslink residues this close (lattice units, one unit a
+    #: residue step) may crosslink; 1.5 is face and edge neighbours
+    contact_radius: float = 1.5
     water_content: float = 0.0
     salt_conc: float = 0.15
     target_density: float = 0.85
@@ -79,6 +85,8 @@ class ProteinNetworkSettings:
             raise ValueError(
                 f"the {self.model} model crosslinks {CROSSLINK_RESIDUES[self.model]} "
                 f"(dityrosine, disulfide), not {x!r}")
+        if not 1.0 <= self.contact_radius <= 6.0:
+            raise ValueError("contact_radius is in lattice units, 1 to 6")
         if not 0.0 <= self.water_content < 100.0:
             raise ValueError("water_content is a weight percent in [0, 100)")
         if self.chains < 1 or self.repeats < 1:
@@ -128,10 +136,12 @@ def _pick_snapshot(topology: dict, wanted: str | int, method: str, allow_no_gel:
                  f"{c['n_clusters']} clusters, the largest holding "
                  f"{c['largest_cluster_chains']} of {c['n_chains']} chains")
         if not allow_no_gel:
+            knob = ("a larger --contact-radius" if method == "melt"
+                    else "more --equil-steps")
             raise ValueError(
                 f"snapshot {wanted!r} was not reached, so the chains do not form one "
-                f"network: {state}. Use more chains or repeats, another --seed or more "
-                f"--equil-steps, or pass --allow-no-gel to build that snapshot anyway.")
+                f"network: {state}. Use more repeats, another --seed or {knob}, or "
+                f"pass --allow-no-gel to build that snapshot anyway.")
         note = f"snapshot {wanted!r} was not reached; built the last one instead: {state}"
         warnings.warn(note, RuntimeWarning, stacklevel=3)
         return snap, note
@@ -164,16 +174,28 @@ def build_protein_network(settings: ProteinNetworkSettings | None = None, *,
         print(f"[protein] {s.model}: {s.chains} chains x {plan.n_residues} residues, "
               f"{len(plan.y_positions)} crosslink sites per chain ({plan.layout} layout)")
 
-    topology = bfm.generate_topology_for_plan(
-        plan, s.chains,
-        target_packing=s.target_packing, equil_steps=s.equil_steps,
-        n_extra_snapshots=s.n_extra_snapshots, snapshot_delta_conv=s.snapshot_delta_conv,
-        min_intrachain_sep=s.min_intrachain_sep, seed=s.seed, verbose=verbose,
-        crosslink_method=s.crosslink_method,
-    )
+    if s.crosslink_method == "melt":
+        # one lattice site per residue, so the builders map node i to residue i
+        topology = bfm.generate_melt_topology(
+            plan, s.chains, target_packing=s.target_packing,
+            n_extra_snapshots=s.n_extra_snapshots, snapshot_delta_conv=s.snapshot_delta_conv,
+            min_intrachain_sep=s.min_intrachain_sep, contact_radius=s.contact_radius,
+            seed=s.seed, verbose=verbose)
+        node_to_res = {i: i for i in range(plan.n_residues)}
+        layout, n_nodes = "residues", plan.n_residues
+    else:
+        topology = bfm.generate_topology_for_plan(
+            plan, s.chains,
+            target_packing=s.target_packing, equil_steps=s.equil_steps,
+            n_extra_snapshots=s.n_extra_snapshots, snapshot_delta_conv=s.snapshot_delta_conv,
+            min_intrachain_sep=s.min_intrachain_sep, seed=s.seed, verbose=verbose,
+            crosslink_method=s.crosslink_method,
+        )
+        node_to_res = plan.node_to_res
+        layout, n_nodes = plan.layout, plan.n_nodes
     topology["config"]["sequence"] = plan.sequence
     topology["config"]["crosslink_residue"] = plan.crosslink_residue
-    topology["config"]["layout"] = plan.layout
+    topology["config"]["layout"] = layout
     snapshot, note = _pick_snapshot(topology, s.snapshot, s.crosslink_method, s.allow_no_gel)
     conn = _connectivity(snapshot)
     if verbose:
@@ -184,8 +206,8 @@ def build_protein_network(settings: ProteinNetworkSettings | None = None, *,
     base = "protein_network"
     summary: dict = {
         "settings": asdict(s),
-        "chain": {"n_residues": plan.n_residues, "layout": plan.layout,
-                  "n_lattice_nodes": plan.n_nodes,
+        "chain": {"n_residues": plan.n_residues, "layout": layout,
+                  "n_lattice_nodes": n_nodes,
                   "crosslink_residue_indices": list(plan.crosslink_residue_indices),
                   "terminal_sites_skipped": list(plan.skipped_terminal_sites)},
         "snapshot": {"label": snapshot["label"], "conversion": snapshot["conv"],
@@ -200,10 +222,11 @@ def build_protein_network(settings: ProteinNetworkSettings | None = None, *,
     if s.model == "charmm":
         topo_path = out / f"{base}_topology.json"
         topology_io.save_topology(topology, str(topo_path))
-        summary.update(_build_charmm(s, plan, snapshot, out, base, verbose))
+        summary.update(_build_charmm(s, plan, snapshot, out, base, verbose, node_to_res))
         summary["files"]["topology_json"] = str(topo_path)
     else:
-        summary.update(_build_martini(s, plan, topology, snapshot, out, base, verbose))
+        summary.update(_build_martini(s, plan, topology, snapshot, out, base, verbose,
+                                      node_to_res))
 
     # Bonds already threaded through a ring in the as-built structure; the
     # soft stage clears most of them, and check-bonds reports what is left
@@ -225,7 +248,7 @@ def build_protein_network(settings: ProteinNetworkSettings | None = None, *,
     return summary
 
 
-def _build_charmm(s, plan, snapshot, out, base, verbose) -> dict:
+def _build_charmm(s, plan, snapshot, out, base, verbose, node_to_res) -> dict:
     from .charmm.charmm_ff import CHARMMForceField
     from .charmm.workflow import DEFAULT_PRM, DEFAULT_RTF, DEFAULT_CMAP, write_charmm_system
 
@@ -241,7 +264,7 @@ def _build_charmm(s, plan, snapshot, out, base, verbose) -> dict:
     ff = CHARMMForceField(prm, rtf, *[f for f in extra if not f.lower().endswith(".cmap")])
     cmap = next((f for f in extra if f.lower().endswith(".cmap")), DEFAULT_CMAP)
     res = write_charmm_system(
-        ff, snapshot, list(plan.residues), plan.node_to_res, out,
+        ff, snapshot, list(plan.residues), node_to_res, out,
         prefix=base, water_content_pct=s.water_content, salt_conc_M=s.salt_conc,
         target_density=s.target_density, physical_backbone=s.physical_backbone,
         xpro_cis_fraction=s.xpro_cis_fraction, cmap_file=cmap, seed=s.seed,
@@ -259,7 +282,7 @@ def _build_charmm(s, plan, snapshot, out, base, verbose) -> dict:
             "counts": counts, "files": files_out}
 
 
-def _build_martini(s, plan, topology, snapshot, out, base, verbose) -> dict:
+def _build_martini(s, plan, topology, snapshot, out, base, verbose, node_to_res) -> dict:
     from .martini_ff import MartiniLibrary
     from .martini_topology import chain_template_for_sequence
     from .workflow import run_protein_network
@@ -295,7 +318,7 @@ def _build_martini(s, plan, topology, snapshot, out, base, verbose) -> dict:
         water_bead_type=s.water_bead, n_na_ions=n_na, n_cl_ions=n_cl,
         hierarchical_stage1=s.hierarchical_stage1, use_itp_template=True,
         chain_itp_path=str(chain_itp), library=library, verbose=verbose,
-        topology=topology, node_to_res=plan.node_to_res, strict=True, info=info,
+        topology=topology, node_to_res=node_to_res, strict=True, info=info,
     )
     if info.get("n_na", 0) != n_na or info.get("n_cl", 0) != n_cl:
         raise RuntimeError(f"placed {info.get('n_na')} NA and {info.get('n_cl')} CL of "

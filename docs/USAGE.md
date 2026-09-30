@@ -16,6 +16,8 @@ The runtime dependencies (installed from `pyproject.toml`) are `numpy`, `network
 
 Two optional extras exist. `martini` installs polyply, which `topon protein --model martini` needs for any sequence other than the bundled resilin reference, together with cgsmiles, which polyply 1.8 needs but does not declare (`pip install -e ".[martini]"`). `validate` installs OpenMM, for comparing the CHARMM energies of the output with an independent CHARMM implementation.
 
+Z1+ (primitive-path analysis) is used by `topon analyze --z1`, `topon inspect`, `topon fit` and `topon track` when it is installed. It is not part of topon, since its license does not allow redistribution. §3.6 says how to point topon at it.
+
 ---
 
 ## 2. Quick start
@@ -90,6 +92,7 @@ topon [--version] [--help] <command> [options]
 
 ```bash
 topon generate CONFIG_PATH [--output DIR] [--dry-run] [--export-graphml] [--export-npz]
+               [--verify REFERENCE [--verify-seeds N] [--verify-only] [--relaxed DATA] [--junction-type T]]
 ```
 
 | Argument / Option | Description |
@@ -99,6 +102,11 @@ topon generate CONFIG_PATH [--output DIR] [--dry-run] [--export-graphml] [--expo
 | `--dry-run` | Validate the config and exit without running |
 | `--export-graphml` | Also write the graph (chains and entanglement edges) as `<study.name>.graphml` in the study folder. Same as `output.export_graphml` |
 | `--export-npz` | Also write the graph as `<study.name>.npz` for graph-learning pipelines. Same as `output.export_npz` |
+| `--verify REFERENCE` | After the build, regenerate the graph and compare it with a reference network (a LAMMPS data file, an NPZ dual graph or a strand graph), and write `verify.json` into the run directory (§3.6a) |
+| `--verify-seeds N` | Number of seeds `--verify` regenerates, counting up from `topology.generator.seed` (default 1) |
+| `--verify-only` | Build nothing and only regenerate and verify the graphs (stages 1 to 3, in a scratch directory) |
+| `--relaxed DATA` | With `--verify`, a relaxed end-linked data file of this build, for Z1+ per strand class against the reference |
+| `--junction-type T` | With `--verify`, the junction atom type of a reference data file that is not typed 1 end, 2 interior, 3 junction |
 
 The command runs the six-stage pipeline (Topology → Analysis → Assignment → Chemistry → Conformation → Output) and writes the LAMMPS data files and input scripts to `output_dir/study_name/`.
 
@@ -106,6 +114,7 @@ The command runs the six-stage pipeline (Topology → Analysis → Assignment �
 topon generate demos/templates/full.json
 topon generate demos/templates/full.json --output ./my_run
 topon generate demos/templates/full.json --dry-run
+topon generate ref_config.json --verify ref.data --verify-seeds 3
 ```
 
 ### 3.2 `topon validate`
@@ -145,9 +154,12 @@ topon doctor my_run.json --strict  # warns also exit 1
 |---|---|---|
 | `lattice_size_format` | error | `"lattice_size": 5` instead of `"5x5x5"` |
 | `neighbour_cutoff_vs_box` | warn | `neighbour_cutoff` above a third of a periodic axis, where three candidate edges can close a cycle around the box |
+| `site_count` | error / warn | The sites `degree_distribution` asks for do not fit the lattice (an error on SC, BCC, FCC, Diamond and a seeded `MIX`), or a `MIX` whose site count no seed fixes may not fit (a warning) |
+| `degree_sum_parity` | error / warn | A `degree_distribution` that names every degree has an odd degree sum, which no graph has (an error). A partial one with an odd sum over the named degrees runs in Python, but the C binary refuses it (a warning, only with `exe_path`) |
+| `diamond_dangling_ends` | warn | Degree-1 sites on Diamond at the default cutoff (four candidates per site) while most active sites are asked for degree 4, so nothing can take up the missing bonds. The exact search stops after one attempt on such a request |
 | `deprecated_mix_cutoff` | warn | `mix_cutoff` still present (it loads as `neighbour_cutoff`) |
 | `unknown_config_keys` | warn | A nested section carries a key the schema does not define, so it is ignored without notice |
-| `unknown_node_type` | warn | `assignment.node_types.degree.mapping` references a type that is not in `chemistry.node_type_map` (it would fall through to Si without notice) |
+| `unknown_node_type` | error / warn | `assignment.node_types.degree.mapping` references a type that is not in `chemistry.node_type_map`. The atomistic chemistry stage refuses such a build (an error), while a coarse-grained junction is one bead whatever its molecule (a warning) |
 | `poss_at_internal_junction` | warn | POSS mapped to degree >= 2 junctions, which gives a bond longer than half the periodic box at LAMMPS stage 1 |
 | `atomistic_graft_non_pdms` | warn | Graft density set on a non-PDMS atomistic monomer (the build skips those grafts with only a `RuntimeWarning`) |
 | `dp_below_kuhn` | warn | DP < 5 (conformation/entanglement edge cases) |
@@ -161,7 +173,7 @@ To add a rule, write `check_<name>(cfg, raw) -> list[Issue]` in `topon/diagnosti
 ### 3.3b `topon inspect <run_dir>` (post-run summary)
 
 ```bash
-topon inspect runs/my_study
+topon inspect runs/my_study [--no-z1] [--z1-exe EXE] [--config CONFIG]
 ```
 
 The command summarizes a finished run, so there is no need to read the `system.data` headers by hand. `RUN_DIR` is the study folder or its parent. The command reads each stage directory (`02_Chemistry/`, `03_Conformation/`, `04_Simulation/` in the Pipeline layout) or a flat folder with every file at the top level, and prints the following.
@@ -170,7 +182,13 @@ The command summarizes a finished run, so there is no need to read the `system.d
 - atom count, atom-type count, box dimensions
 - what the topology stage was asked for against what it produced, from the run manifest
 - per-stage status (which files landed, what they say)
+- the loops and P(f) requested against achieved, when the assignment stage recorded them
+- the network read off the most relaxed data file, when that file is in the end-linked convention or is an atomistic file with a strand record (strands by class, primary and secondary loops, chemical and effective P(f), and Z1+ when it is installed, see §3.6). `--no-z1` skips Z1+, and `--z1-exe` or `--config` say where it is
 - the next LAMMPS commands to run
+
+The data file read for the network is the furthest checkpoint in `04_Simulation/`, or
+`03_Conformation/system_relaxed.data` when no stage has run. The summary names it, because
+Z depends on the state it was read in.
 
 `Pipeline` writes the run manifest (`manifest.json`) into the run directory as
 it goes. It records what each stage was asked for, what it produced and how
@@ -193,7 +211,10 @@ A strict run records the same two rows but lists only the degrees its target
 named (the others read `-`), plus any `e:N` budget. The manifest is advisory.
 Nothing reads it back to make a decision, so a missing or half-written
 manifest only loses detail in the summary. In Python, read it with
-`topon.core.manifest.read_manifest(run_dir)`.
+`topon.core.manifest.read_manifest(run_dir)`. Its `run` entry names the
+process writing the directory (`pid`, `host` as a short hash of the machine
+name, and `started`), so that a second process started on the same directory
+warns that it is not alone (§8).
 
 ### 3.3c `topon recipes` (common use cases)
 
@@ -304,28 +325,140 @@ chain_output/
 └── 3_npt.in
 ```
 
-### 3.6 `topon analyze` (graph statistics)
+### 3.6 `topon analyze` (connectivity descriptors, Z1+ and comparison)
 
-The command analyzes a topology graph file and prints statistics.
+The command measures one network. It gives the connectivity descriptors that tell network topologies apart, the chord statistics and, when Z1+ is installed, the primitive-path numbers. With `--compare` it also says how far the network is from a reference.
 
 ```bash
-topon analyze GRAPH_PATH [--format text|json] [--nodes NODES_PATH]
+topon analyze PATH [--compare OTHER] [--z1] [--json OUT] [--fast]
+              [--format text|json] [--nodes NODES] [--seed N] [--strands MANIFEST]
+              [--z1-exe EXE] [--z1-distro NAME] [--config CONFIG]
 ```
 
 | Argument / Option | Description |
 |---|---|
-| `GRAPH_PATH` | Path to `.gpickle`, `.nodes`, or `.edges` file |
-| `--format`, `-f` | Output format, `text` (default) or `json` |
-| `--nodes` | Companion `.nodes` file for a `.edges` `GRAPH_PATH`. Without it, the `.nodes` file with the same stem is used |
+| `PATH` | A strand graph (`.gpickle`, `.nodes` with its `.edges`, `.edges` with `--nodes`, `.graphml`), a LAMMPS data file in the end-linked convention (below), or an atomistic data file of a topon run (read through the run's strand record, below) |
+| `--strands MANIFEST` | The run manifest (or run directory) of an atomistic data file that is not inside its run directory |
+| `--compare OTHER` | Reference to compare against, a graph, an end-linked data file or a report written by `--json` |
+| `--z1` | Run Z1+ on `PATH`, which must then be a data file |
+| `--json OUT` | Also write the report to `OUT`, and the distributions beside it as `OUT` with `.npz` |
+| `--fast` | Skip the cycle spectrum, the effective resistance and the edge betweenness (most of the time on a large network) |
+| `--format`, `-f` | `text` (default) or `json` on stdout |
+| `--seed` | Seed of the sampled betweenness and path lengths (default 0) |
+| `--z1-exe`, `--z1-distro`, `--config` | Where Z1+ is (see *Z1+* below) |
 
 ```bash
 topon analyze network.gpickle
-topon analyze network.nodes
-topon analyze network.edges --nodes network.nodes
-topon analyze network.gpickle --format json
+topon analyze 04_Simulation/stage5_final_quench.data --z1 --json final.json
+topon analyze network.gpickle --compare final.json
+topon analyze run/03_Conformation/system_relaxed.data --z1     # atomistic
 ```
 
-The CLI calls `topon.analysis.report.analyze_graph()` and prints the degree distribution, connectivity and topology statistics. The same function can be imported in Python.
+**Input.** A graph is read in the strand convention. Nodes are junctions and the free ends of dangling strands, edges are strands, a primary loop is a self-loop and a secondary loop a parallel edge. A node's `kind` attribute (`junction` or `end`) says which it is. Graphs from topon's generators carry none, and there a degree-1 node is a dangling end and a degree-0 node an empty lattice site, which is dropped.
+
+A data file must be in the end-linked convention of `fix bond/create` datasets (type 1 chain end, 2 interior, 3 junction, one molecule per chain and one per junction), which topon writes with `output.lammps_convention: "endlinked"` or `topon.writers.write_endlinked`. A file typed another way is read from Python with `read_endlinked(path, junction_type=T)` (or with `topon fit --junction-type T`). The atoms of type `T` are then the junctions, and each connected run of the other atoms is a chain whose ends come from its bonds. Each chain is a bridge (its two ends on two different junctions), a loop (both on one), dangling (one end bonded) or free (sol). Free chains are counted but are not in the graph.
+
+A network crosslinked along its chains, whose junctions are chain beads, is read from Python with `topon.analysis.crosslinked.read_crosslinked(path, crosslink_bond_types=...)`. Any bead with three or more bonds is a junction bead, junction beads bonded to each other form one junction, each run of the other beads is a strand with its `dp`, and each strand carries its chain and its place along it. `from_bfm_snapshot` reads a snapshot of the bond-fluctuation generator of `topon.protein_network.bfm` in the same way. The result is a strand graph like any other, so `describe`, `compare` and `topon fit` (from a saved `.gpickle`) take it.
+
+**Atomistic data files.** A DREIDING or CHARMM data file puts every atom in one molecule and types atoms by chemistry, so it cannot be read into strands on its own. Stage 4 writes a strand record into the run's `manifest.json` (section `strands`, in LAMMPS atom ids, which LAMMPS keeps through every stage), and `topon analyze` reads any data file of the run with it. The manifest is looked for in the file's folder and the two folders above it, and `--strands` names it otherwise. The record holds, per strand, its class, its DP, the junction atom at each bonded end, its backbone in order from the bonded end (bridge atoms included), one atom per repeat unit, a dangling strand's free end, and its heavy atoms and hydrogens as id ranges. Per node it holds its atoms, junction caps included. The strand graph then describes the same network as the coarse-grained build of the same config (every descriptor that does not sample is equal, and chords come out in Å), and the report gives the backbone bonds against their equilibrium lengths in place of the bead statistics. For Z1+ a strand is one point per repeat unit (the Si of each Si-O pair in PDMS) with the junction Si at each bonded end, so a DP-N bridge exports N + 2 points, as a bead-spring bridge of N beads does. `topon.analysis.atomistic` has the reader (`read_atomistic`) and `measure_atomistic`.
+
+**What is measured, and on what.** Counts and degrees are taken on the whole network. Everything else is taken on the *core*, the largest connected component with self-loops removed, parallel strands merged, and degree-1 nodes pruned until none are left (the elastically active backbone). `lambda2` and the path lengths grow or shrink with the number of junctions, so they compare only between networks of matched size. Everything in the composite is size-free.
+
+The counts and degrees are listed below.
+
+| Descriptor | Definition |
+|---|---|
+| `n_junctions`, `n_end_nodes` | Junction nodes, and free ends of dangling strands (one per dangling strand) |
+| `n_vacancies` | Lattice sites with no strand, left out of everything else |
+| `n_bridging_chains`, `n_dangling_chains`, `n_sol_chains` | Strands between two junctions, strands with a free end, and chains bonded to nothing (from the data file, or `G.graph["sol_chains"]`) |
+| `n_primary_loops` | Strands that leave a junction and return to it (self-loops) |
+| `n_secondary_loops` | Extra strands on a junction pair that is already joined (a pair with three strands counts two) |
+| `deg_chem_*` | Chemical functionality of each junction, a primary loop counting twice. The histogram (`_dist`), mean, standard deviation, Shannon entropy of the histogram (natural log), skewness, and Sarle's bimodality coefficient (g^2 + 1) / (k + 3(n-1)^2 / ((n-2)(n-3))) with g the skewness and k the excess kurtosis (above 5/9 suggests two modes) |
+| `deg_eff_*` | The same for the effective functionality, primary loops left out |
+| `n_components`, `giant_frac_junctions` | Connected components, and the fraction of junctions in the largest |
+| `cycle_rank`, `cycle_rank_per_junction` | Independent cycles of the largest component, E - N + 1 (edges minus nodes plus one), and per junction |
+| `core_nodes`, `core_edges`, `core_deg_*` | Size and degree histogram of the core |
+| `frac_active_junctions` | Core nodes over junctions, the fraction that is elastically active |
+| `core_cycle_rank_per_node` | E - N + 1 of the core, per core node |
+
+The structure of the core is described by the descriptors below.
+
+| Descriptor | Definition |
+|---|---|
+| `edge_shortest_cycle_*` | For each strand, the length of the shortest cycle through it (one plus the shortest path between its two junctions with the strand removed). `_dist` is the histogram, `_mean` the mean over strands on a cycle |
+| `frac_odd_cycles` | Fraction of strands on a cycle whose shortest cycle is odd. It is 0 on any bipartite scaffold (SC, BCC and Diamond at their first shell) |
+| `frac_edges_in_cycle_le4`, `_le6` | Fraction of all core strands whose shortest cycle has at most 4 (or 6) strands |
+| `transitivity_core` | Three times the triangles over the connected triples |
+| `avg_clustering_core` | Mean over nodes of the fraction of neighbor pairs that are joined |
+| `square_clustering_core` | Mean over nodes of the square clustering coefficient (the fraction of possible squares through a node that exist, as NetworkX defines it) |
+| `assortativity_core` | Pearson correlation of the degrees at the two ends of a strand |
+| `lambda2_full`, `lambda2_core` | Algebraic connectivity (the second-smallest eigenvalue of the graph Laplacian) of the largest component and of the core. Size-dependent |
+| `graph_energy_core_per_node` | Sum of the absolute adjacency eigenvalues over the node count (cores up to 6,000 nodes) |
+| `spectral_radius_core` | Largest adjacency eigenvalue |
+| `avg_path_core`, `diameter_core_est` | Mean shortest-path length in strands from 200 sampled nodes to every other, and the largest distance seen from them (a lower bound on the diameter). Size-dependent |
+| `*_betweenness_core`, `betweenness_gini_core` | Node betweenness (the normalized fraction of shortest paths through a node, estimated from 400 sampled sources), as maximum, mean and Gini coefficient. The Gini coefficient is 0 when every node carries the same load and approaches 1 when one carries all of it |
+| `edge_betweenness_gini_core`, `_cv_core` | The same for strands, as a Gini coefficient and a coefficient of variation |
+| `mean_eigvec_cent_core`, `eigvec_cent_cv_core` | Mean and coefficient of variation of eigenvector centrality |
+| `edge_eff_resistance_mean`, `_cv` | Effective resistance between the two junctions of each strand when every strand is a unit resistor, from the pseudo-inverse of the Laplacian (cores up to 4,000 nodes). Low and uniform means many parallel load paths |
+| `kirchhoff_per_node` | The Kirchhoff index (the sum of the resistance over all node pairs) over the node count, which is the trace of the Laplacian pseudo-inverse |
+| `n_bridges_core`, `n_articulation_core` | Strands, and nodes, whose removal splits the core |
+| `mean_k_core`, `max_k_core` | Mean and largest k-core number |
+
+When the graph carries positions and a cell (a data file always does, in sigma, and a topon graph in lattice units), two geometric descriptors are added.
+
+| Descriptor | Definition |
+|---|---|
+| `chord_mean`, `_sd`, `_cv`, `_p5`, `_p50`, `_p95`, `_max` | Minimum-image distance between the two junctions of each bridge |
+| `orientation_eigs` | Eigenvalues of the mean of u u^T over the unit chord vectors u (1/3 each for an isotropic network) |
+
+The distributions behind the scalars (effective and core degrees, path lengths, betweenness, eigenvector centrality, shortest cycle per strand, effective resistance, edge betweenness, chords) go into the `.npz` that `--json` writes.
+
+**Comparison.** `--compare` (`topon.analysis.compare(a, b)`) reports the Jensen-Shannon divergence of the two shortest-cycle spectra (base 2, lengths 3 to 15, 0 for identical and 1 for disjoint), the Kolmogorov-Smirnov statistic of every distribution both carry, and a composite. The composite is the mean of eleven terms, namely the cycle divergence, the KS statistic of the core betweenness, and the relative deviation |a - b| / |b| of the odd-cycle fraction and of eight size-free scalars (transitivity, square clustering, assortativity, betweenness Gini, resistance CV, graph energy, mean shortest cycle, fraction on cycles of at most 4). It is 0 for identical networks and grows the further apart they are. The second network is the reference, so the measure is not symmetric. A term that the reference has at zero cannot be scaled this way and is left out and named (e.g., comparing against an SC lattice drops transitivity and the odd fraction). `--fast` leaves out the cycle and resistance terms too, so compare composites only over the same terms. Given a population (the descriptors of a whole sweep), `compare(a, b, population=...)` divides each scalar by max(|b|, its standard deviation over the population) instead.
+
+**Z1+.** Z1+ (Kröger's primitive-path analysis) is not part of topon, since its license does not allow redistribution. Install it yourself and name the binary with `analysis.z1plus.executable` in a config (read with `--config`), or with `--z1-exe`. The default is `~/z1/Z1+`. Z1+ ships for Linux, so on Windows it runs inside WSL (`analysis.z1plus.wsl` is `auto`, `always` or `never`, and `wsl_distro` names the distribution), and the path is a Linux path. When Z1+ cannot be reached, `--z1` reports why and the rest of the report is unchanged. Every chain is exported junction to junction (with the junction bead at each bonded end and the two end beads moved by 1e-3 sigma, so that chains sharing a junction do not share a coordinate, which Z1+ cannot take), unwrapped bead by bead, in molecule order, and Z1+ runs with `-SP+`. The report gives Z per chain over the whole system and per class (bridge, loop, dangling, free), the entanglement length from the classical Kuhn, modified Kuhn and coil estimators, and the chain-chain partner graph (pairs of chains with at least one entanglement between them, and partners per chain). Z1+ counts the kinks of the shortest paths between the current junction positions, so it changes through equilibration and compression even where nothing crosses. Compare two measurements only at the same density and temperature. From Python, `topon.analysis.z1plus.measure_checkpoint(path)` measures a checkpoint, and `run_z1(chains, box)` runs Z1+ on any set of unwrapped chains.
+
+`topon.analysis.report.analyze_graph()`, which gave the capacity counts (triangle-closing edges, parallel strands, entanglement pairs) that this command printed before 0.4.0, is still there for Python callers.
+
+### 3.6a `topon fit` (a config that regenerates an existing network)
+
+The command reads a network, measures it and writes a topon config whose generated networks match it, with a report of what was measured, what was chosen and what could not be matched. The check is `topon generate CONFIG --verify REFERENCE`.
+
+```bash
+topon fit REFERENCE [--out CONFIG] [--junction-type T]
+          [--lattice SC|BCC|FCC|Diamond|MIX] [--mix 0.9,0.05,0.05]
+          [--sweep-cutoffs 1.74,2.01] [--seeds 2]
+          [--seed 1] [--max-functionality F] [--dp N] [--density RHO]
+          [--no-z1] [--z1-exe EXE] [--z1-distro NAME] [--name NAME]
+          [--no-control] [--quiet]
+topon generate CONFIG --verify REFERENCE [--verify-seeds 3] [--relaxed DATA]
+```
+
+| Argument / Option | Description |
+|---|---|
+| `REFERENCE` | An end-linked LAMMPS data file (the `fix bond/create` convention, or topon's `endlinked` output), an NPZ dual graph (schema 1, or topon's own schema 2, see *The NPZ dual graph* in Appendix A), or a strand graph (`.gpickle`, `.graphml`, `.nodes`/`.edges`) |
+| `--out`, `-o` | The config to write (default `<reference stem>_config.json`). The report goes beside it as `<stem>.fit.json` |
+| `--junction-type T` | For a data file typed other than 1 end, 2 interior, 3 junction. The atoms of type `T` are the junctions, every connected run of the other atoms is a chain, and a chain's ends are found from its bonds. A junction bonded to the middle of a chain is refused (that is a crosslink along a chain, not an end-linked network) |
+| `--lattice`, `--mix` | Lattice of the fitted cell, SC by default, or `MIX` with its SC,BCC,FCC fractions (the two go together). The cutoff candidates are simple-cubic shell radii in cell units. On BCC, FCC and Diamond they are ranges without a shell meaning, and the report says so |
+| `--sweep-cutoffs` | Cutoffs to sweep in place of the ones the rule of thumb gives |
+| `--seeds`, `--seed` | Builds per candidate cutoff, and the first seed. The config is pinned to `--seed`, so its graph is the sweep's first build of the chosen cutoff |
+| `--max-functionality` | Junction ceiling, by default the reference's highest degree. One below the reference's highest effective degree is refused, and one below its highest chemical degree is flagged, since the loops that would pass it go unplaced |
+| `--dp`, `--density` | For a graph file, which carries neither (the fallbacks are the schema's DP 25 and a bead density of 0.85, both flagged) |
+| `--no-z1` | Skip Z1+ on the reference, so no entanglement target is written |
+| `--no-control` | Skip the nearest-neighbor control row of the sweep |
+
+**What is measured.** The strand classes (bridge, primary loop, dangling, sol), the effective and chemical P(f), the secondary loops with the effective degrees of the junction pairs they join, the primary loops by the effective degree of the junction that carries them, DP (mean, polydispersity and histogram), bead density, the descriptors of §3.6 and, with coordinates, the junction-junction separation of the bridges (mean, CV, 95th percentile) and the strand end-to-end distance. From a data file with Z1+ installed it adds Z1+ per strand class. The sculpt target is the P(f) in topon's site convention (i.e., degree 1 counts the dangling-chain ends and the junctions with one other strand).
+
+**The cell and the cutoff.** The cell is the smallest cube whose lattice holds the active sites (for a `MIX`, whose site count is a draw, with three standard deviations to spare), and the junction-only cell is reported beside it. The cutoff comes from a rule of thumb, cutoff ≈ p95(junction separation) / site spacing, with the site spacing the reference box over the cell's edge count. The candidates are the outermost three simple-cubic shells whose radius is within the rule, and a short sweep decides between them. Every candidate is built through the pipeline's own stages 1 to 3 on each seed (`Pipeline.run_graph_stages`, so it is exactly the graph `topon generate` builds from that config and seed), described, and scored with the composite of `compare`. The composite that chooses divides each term by max(|reference|, its spread over the sweep's graphs), because a reference value near zero would otherwise turn seed noise into the ranking. The spread is taken over this sweep's graphs (the candidates and the control), so `--no-control` or other `--sweep-cutoffs` give other numbers. The report and `--verify` also give the composite over the reference value alone, the default of `compare`. A nearest-neighbor row (cutoff 1.0) is scored as a control and never chosen. Without coordinates (topon's own NPZ, or a graph without positions) there is no rule, and the sweep covers the shells 2, 3, 4, 6 and 8 whose radius is within a third of the box. The sweep seeds the global random streams for each build (and restores them), so a polydisperse DP draws the same way every time.
+
+**What the config holds.** `topology.generator` holds the cell, the chosen cutoff, every degree count, `search: "exact"` and the seed. `assignment.dp_distribution` holds the mean and PDI (the Schulz-Zimm form the schema holds, so a polydisperse reference is matched in its first two moments and flagged, because `topon generate` draws those DPs from the global stream that no config seed pins), with `endlinked_dangling` for a data file or NPZ. `assignment.defects` holds the primary loops placed by effective degree, the secondary loops with the reference's endpoint degrees and the sol chains. `chemistry` is coarse-grained at the reference density, `simulation` uses the push-off protocol compressing to that density, and `output.lammps_convention` is `"endlinked"`. When Z1+ measured the reference, `conformation` holds the placement route, its build knob and `entanglement.target_Z` and `target_hist` per bridge. The route is the random walk when the target is at or above the lowest final-state Z the walk has reached at that DP, and the meander below it. The knob is where the controller would start (`seed_actuator`) on the calibration rows of this DP, or of the nearest DP when this one has none (flagged, since Z per strand grows steeply with DP). Below the route's floor the knob is the one that measured lowest. Every one of these is a final-state number that only MD can check.
+
+**What is flagged.** A degree above `max_functionality` (refused), Diamond at its canonical cutoff with dangling ends and half or more of the sites four-fold (the `diamond_dangling_ends` doctor rule, refused when no candidate is left), an entanglement target below the route's floor, calibration rows that were not built with `place()`, loops on junctions the lattice route cannot hold (a junction with loops only is a vacancy to the sculptor, and one with a single other strand reads as a dangling end, so their loops go to other junctions and the chemical P(f) moves), the bead count against the reference's, a choice inside the seed scatter, and every warning `topon doctor` gives on the written config.
+
+**NPZ dual graphs.** A dual graph records which crosslinkers a chain reaches, not how many of its ends bond each one. In a schema-1 file a primary loop and a dangling chain both reach one crosslinker and cannot be told apart, so `topon fit` reads them all as dangling, fits no primary loops and says how many chains that covers. Such files carry crosslinker coordinates in sigma and get the rule of thumb. topon's own NPZ (schema 2, coordinates NaN) is read the way its writer writes it. Every graph node is a crosslinker row, so a row with one chain is a dangling-chain end site and a chain reaching one crosslinker can only be a primary loop, and the file measures like the data file of the same build except for the sol chains the writer leaves out. Its box is the lattice cell, so it has no density (pass `--density`) and gets the wider sweep. No NPZ has a Z target.
+
+**The verification.** `topon generate CONFIG --verify REFERENCE` runs the build as usual, then regenerates the graph on `--verify-seeds` seeds (from the config's own) and measures each the way the reference is measured. It reports requested against achieved P(f) (exact or not, per seed), the defects asked for against those placed, the bead count, the chemical P(f) against the reference's, the composite with its per-descriptor table, and the reach of the bridges as built (lattice positions scaled to the box the density gives, labeled as the built state). When one term makes up much of the composite it is named, with the composite without it. The graph regenerated for the config's own seed is compared with the one the pipeline just built, edges and DPs, which checks that the build is deterministic. The config is taken as the pipeline took it (validated, legacy keys renamed, defaults filled), and a loaded topology has no P(f) to verify. The entanglement part needs a relaxed system, and `topon generate` runs no MD. With `--relaxed DATA` (an end-linked data file of the relaxed build) it adds Z1+ per strand class with KS p-values against the reference, the per-bridge histogram against `target_hist`, partners per strand and the reach and end-to-end distance after relaxation, and it flags a density or temperature that differs from the reference's, since Z1+ compares only between matched states.
+
+From Python, `topon.inverse.fit(path, ...)` returns the config, the report and the reference measurement, `topon.inverse.verify(config, reference, seeds=...)` the verification report, and `topon.inverse.measure` and `read_reference` the measurement alone.
 
 ### 3.7 `topon protein` (protein network from a sequence)
 
@@ -334,17 +467,33 @@ topon protein [--config CONFIG_PATH] [--sequence SEQ] [--repeats N] [--chains N]
               [--output DIR] [options]
 ```
 
-The sequence comes from `--sequence` or from the config file. The command builds a crosslinked protein network from an amino-acid sequence, in CHARMM36m (all-atom) or Martini 3 (coarse-grained). It lays the chains on a lattice with a crosslinkable node at every crosslink residue, grows and crosslinks the network, builds it in the chosen model and writes the data file, the coefficient includes, the groups and three relaxation scripts. It does not run LAMMPS. §4.3 lists every option and the output.
+The sequence comes from `--sequence` or from the config file. The command builds a crosslinked protein network from an amino-acid sequence, in CHARMM36m (all-atom) or Martini 3 (coarse-grained). It grows the chains as a lattice melt with one site per residue, crosslinks the crosslink residues that touch, builds the network in the chosen model and writes the data file, the coefficient includes, the groups and three relaxation scripts. It does not run LAMMPS. §4.3 lists every option and the output.
+
+The default crosslinking changed in 0.4.0. Earlier versions laid each chain on the node lattice of the bond-fluctuation model (one node for every few residues) and crosslinked nodes on neighboring sites. The residue-level melt (`--crosslink-method melt`, now the default) has no lattice-parity rule and merges no residues onto one site, so the same command gives a different network, and its crosslink count can differ a good deal (e.g., the elastin-like example of §5.5 makes 11 crosslinks instead of 21). `--crosslink-method adjacent` (or `"crosslink_method": "adjacent"` in a config, as in the demos of `demos/protein/`) builds exactly what earlier versions built.
 
 ```bash
 topon protein --sequence GGRPSDSYGAPGGGN --repeats 18 --chains 8 \
               --model martini --seed 42 --output runs/resilin_martini
 topon protein --sequence GGRPSDSYGAPGGGN --repeats 12 --chains 8 \
-              --model charmm --water-content 35 --seed 42 --output runs/resilin_charmm
+              --model charmm --water-content 35 --seed 3 --output runs/resilin_charmm
 topon protein --config demos/protein/charmm/config.json --output runs/charmm
 ```
 
 `python -m topon.protein_network build ...` is the same command.
+
+### 3.8 `topon track` (a page for atomistic relaxation runs)
+
+```bash
+topon track RUN_DIR... [-o PAGE] [--seeds N] [--no-energies] [--lmp LMP] [--omp N]
+            [--title TITLE] [--label LABEL ...] [--z1-exe EXE] [--config CONFIG]
+```
+
+The command writes one self-contained HTML page (`relaxation_tracker.html` by default) for one or more study folders of the atomistic route. For every checkpoint it shows the network as Z1+ reads it, and through the stages it plots Z per bridge, the backbone passages, the energy under the full force field, temperature, density and the longest backbone bond. The energies need LAMMPS (`--lmp`, one zero-step run per checkpoint) and the Z columns need Z1+. Appendix A (*Watching a relaxation*) describes the page.
+
+```bash
+topon track output/pdms_dp30
+topon track runs/z1 runs/z2 --label "Z = 1" --label "Z = 2" -o z.html --omp 4
+```
 
 ### Global options
 
@@ -491,9 +640,9 @@ chain_workflow(
 - `--model charmm` builds CHARMM36m all-atom chains from the bundled RTF and PRM files and applies each crosslink as its RTF patch (`DITY` for dityrosine, `DISU` for a disulfide). A hydrated build adds TIP3P water and NaCl, and `fix shake` holds the water rigid in the stage-3 MD. The CMAP grids are written from the parameter file. `topon/protein_network/charmm/data/README.md` lists the bundled files and their sources. Every term is looked up by `topon.forcefield.charmm`, and a missing one stops the build.
 - `--model martini` builds Martini 3 chains with the Martini3-IDP bonded terms. The chain topology is the bundled polyply ITP for the resilin reference, and for any other sequence it is generated with `polyply gen_params -lib martini3` (polyply is the optional `martini` extra). Tryptophan is refused, because Martini 3 represents it with a virtual site, which LAMMPS lacks.
 
-The chains are grown on a cubic lattice with the bond-fluctuation model (`bfm.py`), as self-avoiding walks with excluded volume that Monte Carlo moves then equilibrate. Crosslink residues on neighboring lattice sites then react in random order, one bond at a time. The build keeps a snapshot at the gel point, where one cluster first holds every chain, and a few snapshots beyond it. Crosslinks are dityrosine (`--crosslink-residue Y`) or disulfide (`C`) bonds and nothing else.
+By default (`--crosslink-method melt`) every residue is a site of a self-avoiding melt on a cubic lattice, grown one chain after another at the target packing by `topon.topology.chain_crosslinking`. Every pair of crosslink residues that touch (face or edge neighbors, within `--contact-radius`) is then crosslinked in random order, one bond at a time, and the builders place every residue where the melt put it. The other methods use the node lattice of the bond-fluctuation model (`bfm.py`), where each chain is a self-avoiding walk of nodes that stand for a few residues each, Monte Carlo moves equilibrate the walks, and crosslink residues on neighboring nodes react. Either way the build keeps a snapshot at the gel point, where one cluster first holds every chain, and a few snapshots beyond it. Crosslinks are dityrosine (`--crosslink-residue Y`) or disulfide (`C`) bonds and nothing else.
 
-The crosslink residue sets the lattice layout. A block with one crosslink residue away from its ends puts one crosslink node on the lattice per block. Any other sequence (two sites per block, a site at a block end, a chain without repeats) gets one lattice node per crosslink residue, with the chain ends as the other anchors. The build is deterministic for a given `--seed` (lattice, Monte Carlo, placement, water and ions).
+On the node lattice the crosslink residue sets the layout. A block with one crosslink residue away from its ends puts one crosslink node on the lattice per block. Any other sequence (two sites per block, a site at a block end, a chain without repeats) gets one lattice node per crosslink residue, with the chain ends as the other anchors. The melt needs no layout, and it has no lattice-parity rule (with one crosslinkable node in two, the node lattice can never crosslink a chain to itself). The build is deterministic for a given `--seed` (lattice, Monte Carlo, placement, water and ions).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -502,7 +651,7 @@ The crosslink residue sets the lattice layout. A block with one crosslink residu
 | `--chains` | `8` | Number of chains |
 | `--model` | `martini` | `charmm` (CHARMM36m all-atom) or `martini` (Martini 3) |
 | `--crosslink-residue` | `Y` | `Y` (dityrosine) or `C` (disulfide) |
-| `--crosslink-method` | `adjacent` | `adjacent`, `winding_safe` (no crosslink that closes a cycle around the periodic box), `distance`, or `none` (an uncrosslinked melt, to crosslink during the simulation, e.g., with `fix bond/react`) |
+| `--crosslink-method` | `melt` | `melt` (a residue-level melt, crosslink residues joined where they touch), or on the node lattice `adjacent` (the default before 0.4.0), `winding_safe` (no crosslink that closes a cycle around the periodic box), `distance`, or `none` (an uncrosslinked melt, to crosslink during the simulation, e.g., with `fix bond/react`) |
 | `--snapshot` | `gel_point` | Snapshot to build (`gel_point`, `post_gel_N` or an index). If it was not reached, the build stops and says how many clusters the chains form. |
 | `--allow-no-gel` | off | Build the last snapshot instead of stopping when the one asked for was not reached. The summary then notes it. |
 | `--seed` | `42` | Seed of every random step |
@@ -510,11 +659,12 @@ The crosslink residue sets the lattice layout. A block with one crosslink residu
 | `--water-content` | `0` | Water as a weight percent of the system |
 | `--salt-conc` | `0.15` | NaCl in the water (mol/L). Counter-ions are always added to neutralize the protein. |
 | `--target-density` | `0.85` | Initial density used to size the box (g/cm³) |
-| `--equil-steps` | `20000` | Monte Carlo steps on the lattice |
+| `--equil-steps` | `20000` | Monte Carlo steps on the node lattice (not used by `melt`) |
 | `--target-packing` | `0.45` | Packing fraction of the lattice |
-| `--segs-per-block`, `--residues-per-segment` | `2`, auto | Lattice steps per block, and residues per lattice step for the anchor layout |
+| `--segs-per-block`, `--residues-per-segment` | `2`, auto | Lattice steps per block, and residues per lattice step for the anchor layout (node lattice only) |
 | `--n-extra-snapshots`, `--snapshot-delta-conv` | `2`, `0.05` | Snapshots kept past the gel point, and their spacing in conversion |
 | `--min-intrachain-sep` | `2` | Smallest gap between two crosslink sites of one chain that may react |
+| `--contact-radius` | `1.5` | `melt` only. Crosslink residues this close (in lattice units, about one residue step) may crosslink. 1.5 takes the face and edge neighbors and 1.8 adds the corners, and a larger radius makes more crosslinks and gels more often |
 | `--no-physical-backbone` | off | CHARMM only. Place atoms by jitter instead of from the RTF internal coordinates. |
 | `--xpro-cis-fraction` | `0` | CHARMM only. Fraction of X-Pro peptide bonds seeded cis. |
 | `--charmm-files` | bundled | CHARMM only. RTF, PRM, stream and CMAP files to use instead of the bundled CHARMM36m. They are the whole force field, and nothing bundled is read with them. |
@@ -525,7 +675,9 @@ The crosslink residue sets the lattice layout. A block with one crosslink residu
 
 The output folder holds the data file, the coefficient includes, `protein_network.in.groups`, `relaxation/protein_network_stage{1,2,3}.in`, the lattice snapshots (`protein_network_topology.json`) and `protein_network_summary.json`. The summary records the inputs, the snapshot used (with the number of clusters the chains form, the largest one and the lattice packing), the atom and term counts, the net charge and the files. CHARMM adds `charmm36m.cmap` and two more includes (`.in.settings.soft` for the soft stage and `.in.settings.lj` for the LJ ramp). Martini adds `protein_network_chain.itp`, the chain topology used.
 
-Short chains gel less often than long ones. With one crosslink site per repeat, 8 chains of 12 repeats gel at the default seed where 8 chains of 8 do not, and the lattice edge (at least 9 sites, odd) keeps small systems below the target packing.
+Short chains gel less often than long ones. On the node lattice, with one crosslink site per repeat, 8 chains of 12 repeats gel at the default seed where 8 chains of 8 do not, and the lattice edge (at least 9 sites, odd) keeps small systems below the target packing.
+
+On the resilin reference the melt makes about as many crosslinks as the node lattice and gels about as often, and it also closes loops within a chain. A Martini build from the melt starts with two to three times more bonds threaded through rings, which the soft stage has to clear (a CHARMM build starts with fewer).
 
 The three stages run in order from `relaxation/`.
 
@@ -550,12 +702,12 @@ The same build from Python is below.
 from topon.protein_network.network import build_protein_network
 
 summary = build_protein_network(sequence="GGRPSDSYGAPGGGN", repeats=12, chains=8,
-                                model="charmm", water_content=35.0, seed=42,
+                                model="charmm", water_content=35.0, seed=3,
                                 output_dir="runs/resilin_charmm")
 print(summary["counts"]["n_atoms"], summary["counts"]["total_charge"])
 ```
 
-The demos in `demos/protein/{charmm,martini}/` run this entry point on a `config.json`.
+The demos in `demos/protein/{charmm,martini}/` run this entry point on a `config.json`. Their configs set `"crosslink_method": "adjacent"`, so they build what they built before 0.4.0.
 
 #### CHARMM36m
 
@@ -778,6 +930,21 @@ pipe.run()
 from topon.config import load_config, validate_config
 errors = validate_config(load_config("config.json"))
 
+# topon fit and topon generate --verify equivalents
+from topon.inverse import fit, verify, write_fit
+result = fit("ref.data", seeds=2)            # .config, .report, .measurement
+write_fit(result, "ref_config.json")         # and ref_config.fit.json beside it
+report = verify(result.config, "ref.data", seeds=[1, 2, 3],
+                measured=result.measurement)
+
+# a network crosslinked along its chains, without the pipeline
+from topon.topology.chain_crosslinking import ChainType, crosslink_chains
+melt = crosslink_chains([ChainType.every(200, 100, every=3)], crosslinks=600, seed=1)
+G = melt.graph                    # strand graph with dp, chain and chain_index per strand
+melt.positions, melt.crosslinks   # the melt, and the crosslinks in the order made
+G_half = melt.graph_at(300)       # the network after its first 300 crosslinks
+resilin = ChainType.from_sequence("GGRPSDSYGAPGGGN", count=8, repeats=12)
+
 # topon simbox equivalent
 from topon.simbox.workflow import run_workflow
 run_workflow("simbox_output", n_epoxy=600, n_amino=300, n_poss=0,
@@ -792,7 +959,7 @@ chain_workflow("chain_output", chain_smiles="[Si](C)(C)O", dp=20,
 # topon protein equivalent
 from topon.protein_network.network import build_protein_network
 build_protein_network(sequence="GGRPSDSYGAPGGGN", repeats=12, chains=8,
-                      model="charmm", seed=42, output_dir="runs/resilin_charmm")
+                      model="charmm", seed=3, output_dir="runs/resilin_charmm")
 ```
 
 To call individual stages, see ARCHITECTURE.md §2, where each stage names the module that drives it.
@@ -808,9 +975,67 @@ To call individual stages, see ARCHITECTURE.md §2, where each stage names the m
 | `demos/run_via_api.py` | Runs a demo config through `topon.pipeline.Pipeline` directly, as a starting point for scripting the pipeline |
 | `demos/topology/end_linking/python/run.py` | Generates a 6x6x6 SC topology with the pure-Python generator |
 | `demos/topology/end_linking/c/run.py` | The same topology through the compiled C generator (set `TOPON_GENERATOR_EXE` to the binary) |
-| `demos/workflows/batch_polymer_topology/run.py` | Generates 25 seeded lattice graphs, exports each as `.nodes`/`.edges`, GraphML and NPZ, and writes one CSV of per-graph properties |
+| `demos/workflows/batch_polymer_topology/run.py` | Generates 25 seeded lattice graphs, exports each as `.nodes`/`.edges`, GraphML and NPZ, and writes one CSV of per-graph properties. A second run resumes (§8) |
 | `demos/protein/charmm/run.py` | Builds the CHARMM36m resilin network of its `config.json`, dry and at 35 wt% water |
 | `demos/protein/martini/run.py` | Builds the Martini 3 resilin network of its `config.json` |
+
+---
+
+## 8. Windows, LAMMPS and long runs
+
+### LAMMPS on Windows runs OpenMP only
+
+The Windows LAMMPS installer (`LAMMPS 64-bit <version>`) is a serial build with the OPENMP package. It ships `libgomp` and no MPI library, so run it threaded, with the suffix and the thread count on the command line.
+
+```powershell
+lmp -sf omp -pk omp 8 -in minimize_2_parallel.in
+```
+
+`mpiexec -np 8 lmp -in ...` does not run in parallel. It starts eight independent serial copies of the whole input, each writing the same log and data files, which looks like a slow run with scrambled output. The same goes for `use_mpi=True` or `n_procs` in `topon.simulation` (`SimulationRunner`, `protocols.StagedRun`), which prepend `mpirun -np` and are meant for a cluster build. On Windows use `StagedRun(..., omp=8)`, which adds `-sf omp -pk omp 8` and sets `OMP_NUM_THREADS`. Under `-sf omp` a quartic bond needs the `suffix off` and `suffix on` wrapper that the generated stage-6 script already carries (see *Deformation runs* in Appendix A), because `bond_style quartic/omp` leaves the subtracted LJ term out of the energy and the pressure.
+
+### Z1+ runs under WSL
+
+Z1+ is a Linux binary, so on Windows topon runs it inside WSL (as `wsl.exe -e bash -lc "~/z1/Z1+ ..."`). Three things follow.
+
+- The `.Z1` file and any scratch directory must be on a drive WSL can see. Fixed drives are mounted under `/mnt/<letter>`, and `wsl.exe -e wslpath -a <path>` translates a Windows path. A network share, a removable drive or a path WSL has not mounted comes back empty, and the run fails with "could not map path into WSL". Copy the file to a local fixed drive first.
+- Z1+ writes its output (`Z1+summary.dat`, `Z_values.dat` and others) into its working directory, so every concurrent run needs its own directory, or the second overwrites the first. `topon.analysis.z1plus` makes one per call.
+- Text coming back from `wsl.exe` can carry NUL bytes (UTF-16 from the launcher), so strip `\x00` before parsing it.
+
+### One writer per output directory
+
+Two processes writing one run directory overwrite each other's stage files and manifest, and two sweep drivers sharing an output folder rerun each other's cases. Give every concurrent run its own study name or `output_dir`, and every concurrent C generator run its own `--output-dir`.
+
+The run manifest records the writer. When a pipeline run starts, it writes `pid`, `host` (a short hash of the machine name, so a shared manifest does not carry the name) and `started` under `run` in `manifest.json`. If the entry already there names another process on this machine that is still running, the run prints a warning with that pid and how to stop it. It warns rather than stops, since Windows reuses process ids and a false alarm must not block a build.
+
+### Resuming a sweep
+
+A sweep driver should record every case it finishes, a failure as much as a success, and skip both when it is started again. With a fixed seed a failed case fails the same way every time, so rerunning it only costs time, and two copies of a driver that each rerun what they see as unfinished end up building everything twice. The batch workflow (`demos/workflows/batch_polymer_topology/run.py`) works this way. Each graph leaves `record.json` (outcome, seed, pid), a rerun builds only the graphs without one, `--retry-failed` builds the failures again (e.g., after raising the trial budget), and `summary.csv` is rebuilt from the records. The script also holds its output folder in `output/.writer.json` while it runs and refuses to start while another live process holds it.
+
+```bash
+python demos/workflows/batch_polymer_topology/run.py                 # resumes
+python demos/workflows/batch_polymer_topology/run.py --retry-failed  # and redoes failures
+```
+
+### Listing and stopping topon processes on Windows
+
+`wmic` is deprecated, and grepping its output (or that of `tasklist`) from Git Bash matches nothing, because it is UTF-16. PowerShell returns objects, so filter those instead.
+
+```powershell
+# every python, generator and LAMMPS process, with its command line
+Get-CimInstance Win32_Process |
+  Where-Object { $_.Name -match '^(python|generator|lmp)' } |
+  Select-Object ProcessId, CreationDate, CommandLine | Format-List
+
+# anything whose command line mentions topon (topon generate, a script
+# under a topon folder, and the shells that started them)
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -match 'topon' } |
+  Select-Object ProcessId, Name, CreationDate
+
+Stop-Process -Id 12345          # the pid from the list, or from manifest.json
+```
+
+The Microsoft Store Python runs as `python3.12.exe`, which the `^python` pattern covers. `Get-Process -Id <pid>` shows the one process a manifest names.
 
 ---
 
@@ -827,7 +1052,8 @@ The top-level sections are listed below.
   "assignment":   { ... },
   "chemistry":    { ... },
   "conformation": { ... },
-  "output":       { ... }
+  "output":       { ... },
+  "analysis":     { ... }
 }
 ```
 
@@ -847,9 +1073,10 @@ it. `simulation`, `execution` and `experimental` are raw-only.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `source` | `"generate"` \| `"load"` | `"load"` | Generate a new topology or load an existing one |
+| `source` | `"generate"` \| `"load"` \| `"crosslink"` | `"load"` | Generate a new topology, load an existing one, or grow a melt and crosslink it along its chains |
 | `generator` | object | - | Settings for the C / Python generator (when `source="generate"`) |
 | `existing_files` | object | - | File paths (when `source="load"`) |
+| `crosslinking` | object | - | Chains, target and melt (when `source="crosslink"`, see below) |
 
 #### `topology.generator`
 
@@ -869,25 +1096,71 @@ it. `simulation`, `execution` and `experimental` are raw-only.
 | `degree_distribution` | string | `"0:0,1:0"` | Target degree distribution |
 | `search` | `"strict"` \| `"exact"` \| null | `null` | Which sculptor runs. `null` picks `exact` when the degree distribution pins every degree and `strict` otherwise (see below) |
 | `min_giant_fraction` | float | `0.99` | Exact search only. Smallest allowed fraction of active sites in the largest component |
+| `odd_walks` | bool \| null | `null` (on) | Exact search only. Close attempts that end short on a scaffold with odd cycles by a second walk search (see below). `false` gives the graphs of earlier versions |
+| `seed` | int \| null | `null` | Pins the generated graph (0 to 2^32 - 1). `null` draws from the global random streams (see below) |
+| `architecture` | `"end_linked"` \| `"random_crosslinked"` | `"end_linked"` | What an edge is. With `random_crosslinked` the junctions are crosslinks along longer chains, degree-1 sites are chain ends, and stage 3 covers the strands with chains of `assignment.chains.dp` beads (see below). Junction degrees above 2 must then be even |
 
-`topology.generator` refuses unknown keys, as do the per-class blocks under
-`assignment.defects` and the whole `conformation` section. Other sections
-drop an unrecognized key without notice. There is no `seed` key under
-`topology.generator`, so `"seed": 7` there is refused. To make a generated
-graph reproducible, seed the global random streams before generating.
+**`seed` pins stage 1.** With `"seed": 42` the Python generator draws
+from its own streams seeded with 42, so two runs of the config build the
+same graph with the same edge order, and the global streams are left
+alone. The draws are the ones that seeding the global streams by hand
+just before generating gave, so a graph pinned that way is the graph
+`"seed": 42` builds.
 
 ```python
 import random, numpy as np
-random.seed(42); np.random.seed(42)          # then build
+random.seed(42); np.random.seed(42)          # what "seed": 42 replaces
 ```
 
-`topon.workflows.cg_network.run(seed=...)` does this itself. `Pipeline(config)`
-does not, so a direct API build needs the two lines above. In the other
-sections, `topon doctor` reports ignored keys under the `unknown_config_keys`
-rule instead of refusing to load, because a config may carry parameters for
-other tools under `topology`.
+On the C route (`exe_path` set) the binary gets a `TOPON_SEED` drawn from
+a stream seeded with the same number, and the strict C search is seeded
+too (without a seed it takes its seed from the clock). The seed covers
+only the topology. The DP draws and edge types still draw from the global
+streams, and `assignment.defects.seed` pins the defects, so a
+byte-identical LAMMPS file still needs the global streams seeded, which
+`topon.workflows.cg_network.run(seed=...)` does. The conformation noise
+needs no seed. It comes from a stream keyed on the study name, so the same
+study writes the same `system_relaxed.data` whenever everything before it
+is pinned. The run manifest records the seed as `generator_seed`.
+
+`topology.generator` refuses unknown keys, as do the per-class blocks under
+`assignment.defects`, the whole `conformation` section and `analysis`.
+Other sections drop an unrecognized key without notice. The refusal matters
+because `"seed": 7` under `topology.generator` validated and did nothing
+before `seed` was a field, so a config that looked pinned was not. In the
+other sections, `topon doctor` reports ignored keys under the
+`unknown_config_keys` rule instead of refusing to load, because a config may
+carry parameters for other tools under `topology`.
 
 In the degree distribution, `"d:N"` requires N nodes of degree d, `"e:N"` requires N edges in total, and omitted degrees are unconstrained (e.g., `"0:15,1:30,e:371"`).
+
+**The degree sum must be even.** Every edge adds 2 to it, so a request
+that names every degree from 0 to `max_functionality` with an odd sum
+describes no graph, and both searches refuse it before the first trial.
+A partial request such as `"0:13,1:25"` is not checked in Python, because
+the degrees it leaves out take up the parity. The strict search of the C
+binary refuses any odd sum over the named degrees, so that request runs in
+Python but not with `exe_path` set.
+
+**Degree counts for another cell.** Absolute counts belong to one site
+count. To carry a P(f) to a different lattice (a smaller cell, or a `MIX`
+draw), rescale it.
+
+```python
+from topon.topology.degree_matching import (
+    rescale_degree_counts, format_degree_distribution)
+
+ref = {0: 8, 1: 217, 2: 356, 3: 153, 4: 1975}      # 2709 sites
+counts = rescale_degree_counts(ref, n_sites=216, vacancy_fraction=0.02)
+format_degree_distribution(counts)                 # "0:4,1:18,2:27,3:12,4:155"
+```
+
+The vacancies come first (`round(vacancy_fraction * n_sites)`, or the
+reference's own share when the fraction is left out), the active sites are
+shared out by the largest-remainder rule, and an odd degree sum is fixed by
+moving one site to the adjacent degree that keeps the counts closest to the
+exact shares. The result sums to `n_sites`, so it is a full
+`degree_distribution` for either search.
 
 ##### Which sculptor (`search`)
 
@@ -970,6 +1243,17 @@ The exact search has the following properties.
   move only if it loses no edge. Connectivity failures do not count toward
   the switch. The attempts before the switch are unchanged, so a target the
   random deal reaches gives the same graph for the same seed.
+- Odd walks close what the marked walk misses. The augmenting walk marks a
+  site the first time it reaches it and never returns to its start. On a
+  scaffold with odd cycles (SC or BCC beyond the first shell, FCC, `MIX`)
+  that loses walks that exist, and on a small dense cell many attempts end
+  short (about half of them on SC 4x4x4 at three shells, each then retried).
+  When an attempt's repair ends short on such a scaffold, the odd walks
+  search again over (site, next move) states, draw no random number, and
+  close what they find, so the attempt lands. An attempt that reached its
+  target is not affected, but a seed whose earlier attempt ended short now
+  lands on that attempt, with a different graph than earlier versions gave.
+  `odd_walks: false` (C `--odd-walks=off`) gives the earlier graph.
 
 Both searches exist in both generators. With `exe_path` set, an exact
 request runs the C port in `topon/topology/csrc/` (`--search=exact`,
@@ -985,6 +1269,35 @@ achieved counts. The one exception is an exact request that forces double
 edges or reserves capacity for triangles and four-cycles (the
 `assignment.defects` keys below). Only the Python search accepts those, so
 the pipeline keeps such a request on Python and reports this.
+
+**Random-crosslinked networks** (`architecture: "random_crosslinked"`). In a
+network crosslinked along its chains (vulcanized, randomly crosslinked, or a
+protein network) a junction is a crosslink point that chains pass through,
+not a crosslinker at chain ends. A crosslink between two chain beads is a
+junction of degree 4 (two chains passing), a junction of degree 2 carries a
+primary loop (a crosslink within one chain with nothing between its beads),
+and every chain end is a degree-1 site. The sculpt is the same exact search
+on the same shell lattice, so the `degree_distribution` holds the crosslinks
+at 4 (and 2 for the loop carriers) and the chain ends at 1, and
+`assignment.defects` adds the loops. What changes is stage 3, which covers
+the strands with chains (`topon.assignment.chains`, set in
+`assignment.chains`). The strands meeting at each junction are paired at
+random, each pair a chain passing through, and following the pairs from a
+chain end leads to another chain end. Rings left over are merged into
+chains, tails are exchanged at junctions until the number of junctions per
+chain follows the binomial distribution of random crosslinking, and each
+chain's crosslinked beads are drawn uniformly from its reactive beads, so
+the strands get the beads between them. Every edge then carries `dp`,
+`chain` and `chain_index`, and `G.graph["chains"]` lists each chain's
+strands and junctions in order. The coarse-grained builder still builds a
+junction as one bead the chains share (as the bond-fluctuation model merges
+two crosslinked beads onto one site) and each strand as its own molecule.
+The chain record is in the graph and in the run manifest (`chains`). A
+strand drawn this way can be shorter in contour than its lattice chord,
+since the lattice has no two junctions closer than one site spacing, and
+`assignment.chains.chord_floor` is there for that. To grow the chains and
+crosslink them where they touch instead, use `topology.source: "crosslink"`
+(see `topology.crosslinking` below).
 
 `PythonTopologyGenerator.generate` takes a `double_pairs={(a, b): count}`
 argument (exact search only). It places parallel edges between sites of
@@ -1097,6 +1410,21 @@ The C generator takes the same range as an optional ninth argument (e.g.,
 range is part of its own argument. Runs with `topology.generator.exe_path`
 pass it through automatically.
 
+**Running the C binary by hand.** `--seed=N` fixes its whole random stream
+(the same stream as `TOPON_SEED=N`, which the flag overrides), and
+`--output-dir=DIR` says where the `.nodes` and `.edges` files go (default
+`output` in the working directory, created if missing). Without a seed the
+binary seeds from the clock and the process id and prints the seed it used.
+The file names carry only the lattice size and the trial number, so
+concurrent runs must write into separate directories, or they overwrite each
+other's networks. Two runs with the same seed and arguments write identical
+files. `--odd-walks=on|off` switches the odd walks of the exact search (on by
+default). The full command line is in `topon/topology/csrc/README.md`.
+
+```bash
+generator.exe 8x8x8 111 4 1000 1 "0:20,1:40" 0 SC --seed=7 --output-dir=runs/seed7
+```
+
 ##### Boundaries (`periodicity`)
 
 `periodicity` takes one digit per axis, `1` for periodic and `0` for open.
@@ -1205,6 +1533,39 @@ itself, which is why 1.0 is the default. Raising it admits further shells
 on the mixed point set, as on the pure lattices (see *Neighbor shells*
 above).
 
+**The site count is a draw.** A 5x5x5 mixture at 0.5/0.3/0.2 averages
+237.5 sites with a spread of about 9, so a `degree_distribution` with
+absolute counts fits one draw and not the next. Work the counts out for
+the lattice that is actually built. `count_sites(config, seed)` in
+`topon.topology.generator_python` returns the site count for a seed (the
+same draw the generator makes, so `topology.generator.seed` with that
+number builds exactly that many sites), and `rescale_degree_counts`
+carries a P(f) to it.
+
+```python
+from topon.config.schema import GeneratorConfig
+from topon.topology.generator_python import count_sites
+from topon.topology.degree_matching import (
+    rescale_degree_counts, format_degree_distribution)
+
+cfg = GeneratorConfig(lattice_type="MIX", lattice_size="5x5x5",
+                      mix_fractions={"SC": 0.5, "BCC": 0.3, "FCC": 0.2}, seed=7)
+n = count_sites(cfg)                                   # this seed's sites
+spec = format_degree_distribution(
+    rescale_degree_counts({0: 5, 1: 10, 2: 20, 3: 25, 4: 40}, n))
+```
+
+Seed 7 draws 247 sites there and seed 8 draws 219. A request that does not
+fit is refused before the first trial with both numbers (the counts that seed 7
+gives, run with `"seed": 8`, are refused as 235 active sites on a lattice of
+219). The strict search needs the counts of a
+request that names every degree to add up to the lattice exactly, and those
+of a partial one not to exceed it. The exact search takes any vacancy count
+and only needs the active sites to fit. `topon doctor` runs the same check
+(`site_count`) and warns about a `MIX` that no seed fixes. The C binary draws
+its `MIX` sites from its own stream, so `count_sites` describes the lattice
+of the Python generator only.
+
 #### `topology.existing_files`
 
 Give either `gpickle_file` or both `nodes_file` and `edges_file`.
@@ -1236,6 +1597,101 @@ Diamond, whose basis sites sit at fractional offsets (e.g., 4.5 for a
 about a third of BCC edges (a quarter of FCC) are then built at twice their
 true bond length. Files that topon generates always have the header, so
 this matters only for hand-written or external files.
+
+#### `topology.crosslinking`
+
+This block is read when `topology.source` is `"crosslink"`. It builds a
+network crosslinked along its chains (a randomly crosslinked or vulcanized
+polymer, or a protein whose crosslinkable residues the sequence places) the
+way the chemistry does. The chains are grown one after another as
+self-avoiding walks on a periodic cubic lattice (one bead per site, with
+`packing` of the sites filled), and reactive beads that touch are then
+crosslinked in random order until the target is met
+(`topon.topology.chain_crosslinking`). A crosslink joins two beads, so every
+junction has functionality 4, a primary loop is a crosslink within one chain
+with no other between its beads, and every strand's `dp` is the number of
+beads strictly between its two crosslinked beads (one less than their
+distance along the chain). The chains and the DP are decided here, in stage
+1, so stage 3 keeps them. It assigns types, entanglements, grafts and
+copolymers as for any graph, but draws no `dp_distribution` and runs no
+chain cover. `assignment.defects` and `topology.generator.architecture:
+"random_crosslinked"` are refused with this source, since the melt makes its
+own loops and sol.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `chains` | list | required | Chain types, each with `count` and its reactive beads from exactly one of `reactive_every` (with `reactive_start`, default 1), `reactive` (bead indices) or `sequence` (with `repeats` and `crosslink_residue`, default `"Y"`, one bead per residue). `dp` is the beads per chain unless a sequence gives it. `site_type` labels the reactive beads for `pairs` (a sequence labels them with its residue) |
+| `crosslinks` / `conversion` / `per_chain` | int / float / float | one required | The target, as a crosslink count, as the fraction of the reactive beads that react (every reactive bead the chains carry, including those left out next to a chain end), or as crosslinked beads per chain (a crosslink counts on both chains). It is met exactly, or the run stops and says how many it could make |
+| `packing` | float | `0.4` | Fraction of the lattice sites the melt fills (at most 0.6). This is a physical parameter, since a fuller lattice spreads the crosslinks more evenly |
+| `persistence` | float \| null | `null` (0.2) | Weight of a straight step against a quarter of the rest for each turn (0.2 weighs the five open directions alike) |
+| `c_inf` | float \| null | `null` | The chains' characteristic ratio in lattice bonds, in place of `persistence`, which is then solved for on a small melt at the same packing |
+| `contact_radius` | float | `1.5` | Reactive beads this close (in lattice units) may crosslink. 1.5 takes the face and edge neighbors, 1.0 the face neighbors only (the rule of the bond-fluctuation generator, see below) |
+| `max_radius` | float | `3.0` | How far the candidate shells go out when the contacts cannot make the count (at most 6) |
+| `min_gap` | int | `6` | Fewest bonds between two beads of one chain that crosslink each other (at least 3, so a primary loop keeps two beads) |
+| `pairs` | list \| null | `null` | Site types that may pair (e.g., `[["A", "B"]]`). `null` lets any pair react |
+| `keep_windings` | bool | `false` | Refuse a crosslink that makes a strand run across half the box, which the builder would draw the short way round. Off, such strands are made and counted (`strands_rewound`) |
+| `min_dangling_dp` | int \| null | `null` (0 coarse-grained, 1 atomistic) | Fewest beads a dangling strand keeps between its crosslink and the chain's end bead. Reactive beads closer to a chain end are left out, and 0 lets a crosslink sit on the bead next to a chain end. The atomistic route needs at least 1 |
+| `seed` | int \| null | `null` | Pins the melt and the crosslinks. `null` takes a seed from the global NumPy stream |
+
+```json
+"topology": {"source": "crosslink", "crosslinking": {
+  "chains": [{"count": 200, "dp": 100, "reactive_every": 3}],
+  "crosslinks": 600, "seed": 1}},
+"chemistry": {"model_type": "coarse_grained", "target_density": 0.85}
+```
+
+A protein chain type is `{"count": 8, "sequence": "GGRPSDSYGAPGGGN",
+"repeats": 12}`, which makes 180 beads per chain with the tyrosines reactive
+(a tyrosine at a chain end is skipped). Two reactive types that only pair
+with each other are two chain types with their own `site_type` and
+`"pairs": [["A", "B"]]`.
+
+Three rules keep the build sound. Every strand's chord is at most its
+contour at the scale of the coarse-grained build (`dp + 1` bonds of 0.97
+sigma in the box that `chemistry.target_density` gives, with one bead per
+crosslink, since a crosslink is built as one bead), so no strand starts
+stretched. No two crosslinks sit on neighboring beads of a chain (they
+would form one junction of functionality 6). And a chain's end bead never
+crosslinks.
+
+On the coarse-grained route a crosslink may sit on the bead next to a chain
+end, and the builder then bonds the end bead straight to the junction (a
+dangling strand of no beads). The atomistic route joins a strand to its
+junction through a monomer, so there `min_dangling_dp` stays 1, the beads
+next to a chain end are left out, and the run reports how many. Sol chains
+of several lengths are built at their lengths.
+
+The graph keeps its melt. `topology/crosslinked_melt.npz` holds every
+chain's beads on the lattice (`positions`, `lengths`), the crosslinks as
+`(chain, bead, chain, bead)` rows in the order they were made, and the
+`box`, and the `topology` section of the manifest records the counts, the
+measured `c_inf`, the rejections by rule and the timing. From Python,
+`crosslink_chains(..., positions=..., lattice=L)` crosslinks a melt made
+elsewhere on the same lattice (each chain's beads as unwrapped integer
+coordinates) instead of growing one.
+
+**The contact rule and the parity of the lattice.** A walk on the cubic
+lattice changes sublattice at every step, so with face contacts
+(`contact_radius: 1.0`) two beads of one chain touch only across an odd
+number of bonds, and beads on one sublattice never touch each other (a
+sequence with one reactive residue in two would crosslink only between
+chains of opposite sublattice). Face and edge contacts, the default, have no
+such rule and give about twice the primary loops. Use 1.0 to reproduce a
+bond-fluctuation network, whose loops follow the parity. Against such
+references the default makes about twice the primary loops, which at low
+crosslink density lengthens the paths through the network and leaves more
+small pieces.
+
+Growing the chains first matters. A pairing of crosslinks with no
+positions gives a network that is far too uniform, and the same pairing on
+phantom walks (chains that overlap freely) gives one that is too stringy,
+because an ideal-gas density clusters the crosslinks. Grown with excluded
+volume at the packing and growth step of bond-fluctuation references and
+crosslinked by their contact rule, the builds show no significant
+difference from nine such networks in the composite of §3.6, `lambda2`,
+the mean path, the loops or the chain statistics (the mean chord aside,
+since a crosslink sits at its two beads' midpoint).
+
 
 ### `assignment`
 
@@ -1503,6 +1959,46 @@ shells up is allowed but does not give more entanglements there.
 > gives a 50:50 split (e.g., a request for A=0.1 still gives A=0.50). For two
 > monomers at equal fractions and even DP it is byte-identical to `block`.
 
+#### `assignment.chains`
+
+This block is read only when `topology.generator.architecture` is
+`"random_crosslinked"`. The DP of every strand comes from here and
+overwrites `dp_distribution`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `dp` | int | required | Beads per chain, its two end beads and its crosslinked beads included |
+| `reactive_every` | int | `1` | Beads that may carry a crosslink, every n-th from bead 1 (`1` is every interior bead) |
+| `passes` | list of float \| null | `null` | Target probability that a chain passes k junctions, for k = 1, 2, .... `null` is the binomial distribution of random crosslinking with the graph's mean |
+| `chord_floor` | bool | `true` | Coarse-grained builds only. Every strand gets at least the beads that span its chord at the 0.97 sigma design bond, in the box that `chemistry.target_density` gives. Off, the crosslinked beads are uniform along each chain |
+| `seed` | int \| null | `null` | Pins the cover and the split of the beads. `null` takes a seed from the global NumPy stream |
+
+```json
+"topology": {"source": "generate", "generator": {
+  "lattice_type": "SC", "lattice_size": "10x10x10", "neighbour_cutoff": 1.42,
+  "max_functionality": 4, "search": "exact", "min_giant_fraction": 0.95,
+  "degree_distribution": "0:0,1:400,2:59,3:0,4:541",
+  "architecture": "random_crosslinked"}},
+"assignment": {
+  "defects": {"primary_loops": {"count": 59, "placement": "by_effective_degree"},
+              "secondary_loops": {"count": 73, "endpoint_degrees": {"4,4": 68, "2,4": 5}}},
+  "chains": {"dp": 100, "reactive_every": 3, "seed": 1}}
+```
+
+A degree-2 junction left without a loop is a chain passing a site where
+nothing crosslinks it, so the loop count should match the degree-2 count.
+A primary loop gets at least two beads and a dangling strand at least one
+(the coarse-grained builder bonds neither shorter one to its junction), and
+the sol chains of `assignment.defects.sol_chains` are chains of `dp` beads
+unless their own `dp` is set. The chain cover refuses a junction of odd
+degree, a component with no chain end, and a mean number of junctions per
+chain above what `dp` beads can carry. With the chord floor on, the run
+prints how many chains could not meet it (their beads are then split
+without it) and how many strands are still shorter than their chord. Both
+numbers are in the `chains` section of the manifest, with the histogram of
+passes before and after the tail exchanges.
+
+
 ### `chemistry`
 
 | Key | Type | Default | Description |
@@ -1527,6 +2023,8 @@ With `force_field: "charmm"`, a node type and a monomer each take `charmm_residu
 ```
 
 The built-in molecule names are `"Si"`, `"POSS"` (Si₈O₁₂ cage) and `"POSS_AM0270"` (AM0270 aminopropyl POSS). Any SMILES string is also accepted.
+
+On the atomistic route every node type the graph uses must be in the map, and a molecule must be an element symbol, a built-in name or a SMILES that RDKit parses. Anything else stops the chemistry stage with the unmatched types and the keys the map has (before 0.4.0 such a node became a bare Si without notice). A coarse-grained junction is one bead whatever its molecule, so the coarse-grained route does not check. A junction built as a bare Si with fewer strands than its four bonds (an effective degree 2 or 3 site, or a crosslinker that carries one strand) gets methyls on the rest, so a trifunctional junction is MeSi(O-)3 and a crosslinker with one strand is Me3Si-O-, as on the workflow route. Before 0.4.0 the pipeline filled those valences with hydrogen, giving a Si-H that PDMS does not have.
 
 #### `chemistry.edge_type_map`
 
@@ -1566,7 +2064,7 @@ With `auto_bridge`, a bridge atom is inserted automatically when the chain head 
 
 ### `conformation`
 
-This section configures stage 5. It holds two unrelated sets of keys, and a config uses one or the other.
+This section configures stage 5. It holds three sets of keys, for the data-file route, the bead-spring route and the atomistic placement.
 
 The first three keys drive `ConformationManager`, which rewrites a data file that already has coordinates (the atomistic and legacy CG route).
 
@@ -1574,7 +2072,7 @@ The first three keys drive `ConformationManager`, which rewrites a data file tha
 |---|---|---|---|
 | `overlap_cutoff` | float | `0.01` | Separation below which two atoms are pushed apart, in the data file's own units |
 | `overlap_max_iters` | int | `10` | Passes of the overlap resolver before it gives up |
-| `noise_magnitude` | float | `1e-4` | Uniform jitter on every atom, to break lattice degeneracy |
+| `noise_magnitude` | float | `1e-4` | Uniform jitter on every atom, to break lattice degeneracy. It is drawn from a stream keyed on the study name, so it is the same on every run |
 
 The other keys drive `topon.conformation.place`, which draws a bead-spring build from the graph itself.
 
@@ -1588,8 +2086,23 @@ The other keys drive `topon.conformation.place`, which draws a bead-spring build
 | `min_bond` | float | `0.85` | Shortest bond a placed strand may carry |
 | `min_self_separation` | float \| null | `null` | Closest a bead may come to a non-adjacent bead of its own chain. `null` uses the route's own floor (1.0 sigma for a drawn path, 0.05 for a walk) |
 | `path_jitter` | float | `0.02` | Gaussian jitter on the interior beads of a straight path |
-| `junction_shell_spacing` | float \| null | `null` | Seat the first bead of every chain leaving a junction on a spread shell at least this far apart |
+| `junction_shell_spacing` | float \| null | `null` | Seat the first bead of every chain leaving a junction on a spread shell at least this far apart. All or nothing per junction, and most junctions decline (read `guard_report()["junction_shells"]` for what was seated) |
+| `junction_jitter` | float | `0.0` | Move every junction by a Gaussian offset per axis before the strands are drawn, as a fraction of the site spacing. It breaks the exact chord crossings of a lattice, and `0` leaves every junction on its site |
+| `settle_clearance` | float \| null | `null` | Once the strands are drawn, part the bonds of different strands to this bond-to-bond distance (in sigma), holding the junctions and never moving one bond through another. `null` is off |
 | `entanglement` | object | see below | Target, distribution, designed pairs and the controller |
+
+The last two keys are for the atomistic route (`Pipeline` with `chemistry.model_type: "atomistic"`, DREIDING or CHARMM).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `atomistic_placement` | `"straight"` \| `"meander"` \| `"walk"` \| null | `"meander"` | Draw each strand's backbone as a chain at the force field's bond lengths and settle it. `null` keeps the placement of earlier versions (and with it the `soft_push` stages). A network with POSS nodes falls back to the earlier placement unless this is set by name |
+| `atomistic_clearance` | float | `1.5` | With `atomistic_placement`, settle every backbone to its bond lengths and angles with no two backbone bonds closer than this (in Å), moving nothing through anything. `0` skips it |
+
+The placement of earlier versions spaces every heavy atom of a strand, methyls included, evenly on the straight chord and puts each hydrogen within about 0.3 Å of its carbon, so the soft first stage of the relaxation is what makes a molecule of the build (on a 4x4x4 three-shell DP-10 PDMS cell the Si-O bonds come out between 0.07 and 5.2 Å, against r0 = 1.587 Å). With `atomistic_placement` set, the backbone of every strand (junction to junction through the bridge O, Si-O-Si for PDMS) is drawn with the bead-spring path routines at the strand's mean equilibrium bond length, and every other atom is set from its placed neighbor at its bond length in tetrahedral directions. The same cell then has every Si-O bond at 0.96 to 1.02 of r0 and every Si-C and C-H bond at r0. `meander_waves`, `min_bond`, `min_self_separation` and `path_jitter` keep their meaning, read in units of the backbone bond over 0.97, so a shape means the same on both routes. Here `straight` is the planar zigzag between the junctions at bond length, and it is meant for taut strands. On a slack strand the zigzag keeps every bond at r0 by closing its angles, so use `meander` or `walk` for a coiled network. A primary loop is a ring through its junction (`closed_meander`), and an entangled pair keeps the path its method draws.
+
+A network drawn this way is not yet ready for the first stage, for two reasons. Strands are drawn one at a time, so two of them can pass through the same point, and a path drawn in bead-spring units has nearly straight angles where DREIDING PDMS wants 104.5 and 109.5 degrees. Left like that, the first stage pushes pairs of backbone bonds through each other. So between drawing the backbones and placing everything else, the pipeline settles them (`topon.conformation.atomistic.settle_backbones`). Each round pushes every pair of bonds closer than `atomistic_clearance` apart along the line between their closest points, moving a short Gaussian stretch of each strand so that its bonds barely change, and then pulls every bond and every 1-3 distance towards its equilibrium (from the force field's bond angle, reached over the first 40 rounds), with no atom moving more than 0.2 Å per round. Last, the round is read as a trajectory with the geometry of the crossing detector (`topon.conformation.segments`), and the atoms of any two bonds that passed through each other are put back. Two bonds drawn exactly touching have no side to keep and are parted by a hair on a random side first, which is the only choice the pass makes. Junctions and end caps are held. The manifest's `placement.settle` records the pairs closer than the clearance before and after, the angle error before and after, the rounds, the largest shift, the moves put back, and the passages over the whole pass read again as a trajectory, which must be 0. On a DP-30 PDMS cell of 36,248 atoms the pass takes about 40 s, takes 2,434 pairs closer than 1.5 Å to none and the mean angle error from 62 degrees to 0.14, and leaves the bonds between 0.975 and 1.018 of r0, with no passage.
+
+The chord guard reads the chord against the backbone's extended length, the farthest its ends can be at its equilibrium bond lengths and angles (0.79 of the contour for DREIDING PDMS at any DP), since an atomistic backbone cannot reach its contour. At 0.97 of it the strand is drawn straight, and a chord longer than the contour is warned about, as no relaxation can build it without stretching every bond. The run manifest's `placement` section records the routines used, how many strands were taut or over their contour and the backbone bond ratios (with the earlier placement, the chord ratios only). For PDMS on a 4x4x4 SC cell at three shells and 0.97 g/cm³, the body-diagonal strands are taut up to DP 7, and chords pass the contour at DP 4. POSS nodes are refused, since their cage has no path routine.
 
 `coil_ratio` and `build_density` set the same thing, and setting both is an error. The box scales as `rho^(-1/3)` and the contour does not change, so `coil_ratio = contour / chord` scales as `rho^(1/3)`. On a given graph at a given DP, fixing one fixes the other. `place` takes exactly one, and the controller converts the one given into the one it adjusts.
 
@@ -1638,6 +2151,8 @@ building a coiled network.
 - Every bond is at or above `min_bond`.
 - No bead is within `min_self_separation` of a non-adjacent bead of its own chain.
 
+`guard_report()` also carries `bead_bond`, which is reported and never gated. It is the closest a bead comes to a bond of another strand, and how many beads are inside 0.4 sigma of one. Every other reading is between beads (`self_contact` within a strand, `separate_coincident` across the build), and none of them can see a bead lying on a bond, which at a 0.97 bond sits 0.48 sigma from each end. On a DP-20 reference build the closest bead-to-bond distance across chains is still 0.0000 after every bead pair has been pushed a full WCA core apart. The count does not predict the stretched bonds that stop the push-off protocol, and the push-off resolves nearly all of them, so it is there only so that a clean report cannot be read as saying no bead sits on a bond. `guard_report()["chord_triples"]`, also never gated, counts the places where three strands start crowded together (see *Chords that cross* below).
+
 `place` reports failures instead of raising them, so a sweep over
 densities completes without an exception. `guard_report()` gives the
 extremes over the build, how many strands failed and why, the realized
@@ -1671,6 +2186,80 @@ eight rounds. `junction_shell_spacing` prevents the problem at the source
 by seating the chains leaving one crosslink on a spread shell, so the beads
 near the ends are off the chord.
 
+The seat radius is `max(bond, spacing / min_chord)`. The floor matters
+because `spacing / min_chord` alone is below a 0.97 bond at most
+functionalities (0.577 at f = 3, 0.951 at f = 12), so without it the seat
+would buy its spread by shortening the bond that gives it. At the bond
+length the spread is already 1.680 sigma at f = 3 and 1.020 at f = 12, at or
+above the 1.0 asked for (f = 11 is the one case where the radius does real
+work, since `spread_points` relaxes numerically and is not monotone in `n`).
+
+A junction seats all of its chains or none of them. The spread a shell
+gives is the spread of every chain meeting at one node, so keeping only the
+seats whose own strand passed the gate would leave moved chains beside
+unmoved ones, which is more crowded than not seating at all. `place`
+therefore gates strands but declines whole junctions, iterating to a fixed
+point, so the build it returns is never more crowded than the one it started
+from. The two ends of a chain are independent, so a chain may keep its seat
+at one junction and lose it at the other. The seat is absorbed by the whole
+contour and not by the few beads behind it (with the relaxation that
+`separate_coincident` uses on its own moved strands), and the junction and
+its seat stay exactly where they were put.
+
+Most junctions decline, and at DP 20 all of them do. With spacing 1.0 at
+build density 0.05, a 2x2x2 SC cell at DP 60 seated 1 of its 8 junctions
+and a 3x3x3 cell 4 of 27, while none were seated at DP 20 or DP 100. The seat is
+largest where the shell is worth most (chains that leave a junction in
+nearly the same direction), so the cases with most to gain are the ones
+least able to pay for it. Read `guard_report()["junction_shells"]`
+(`seated_junctions`, `declined_junctions`, `seated_strands`) rather than
+assuming the option did anything.
+
+#### Chords that cross (`junction_jitter` and `settle_clearance`)
+
+On a lattice with several neighbor shells many chords cross exactly. Every
+pair of sites symmetric about one point has its chord's midpoint there, so
+several chords can pass through one point, and a meander with a whole number
+of waves has a node at its middle, so the strands pass through it too. Three
+strands that start at one point can jam there in the push-off, and which of
+the close chord triples jam depends on the velocity seed.
+`guard_report()["chord_triples"]` counts them, as the pairs and triples of
+bridge chords pairwise within 0.5, 1.0 and 1.5 sigma (chords that share a
+junction are not a pair). It is always reported and never gated.
+
+`junction_jitter` moves every junction by a Gaussian offset per axis, that
+fraction of the site spacing, before the strands are drawn. It breaks the
+exact crossings and leaves random near-triples (0.10 to 0.15 takes the
+triples within 0.5 sigma of a DP-20 reference graph from 128 to between 2
+and 6). The graph does not change, but the chords, the reach and the coil
+ratio do. An offset that would take a strand past 0.97 of its contour (or
+past its lattice chord, if that was longer), or bring two junctions within 1
+sigma, is halved, and `guard_report()["junction_jitter"]` gives the reach
+before and after and the junctions held back. `Placement.coil_ratio` stays
+the lattice value.
+
+`settle_clearance` parts the bonds of different strands to that distance
+once everything is drawn (`topon.conformation.placement.settle_strands`,
+the bead-spring counterpart of the atomistic `settle_backbones`). Junctions
+are held, bonds stay within 0.03 sigma of their drawn length and inside the
+gate's band, every strand keeps its self-contact floor, and every round is
+read back with the geometry of the crossing detector, so that any bond that
+passed through another is put back. Pairs within two bonds of a junction
+that both strands share are exempt (their angle sets how close they are). A
+pass that does not converge is kept only if no strand that passed the gate
+fails it afterwards, and otherwise the build goes back to what was drawn
+(`kept` and `gate_broken` in `guard_report()["settle"]`). Called as
+`place(..., settle_clearance=c)` it runs last. After designed braids, call
+`settle_placement(pl, c, rng)` instead.
+
+Use the two together. Without jitter, or with too little (0.02), the settle
+does not converge on a graph where up to five strands pass through one
+point, and it puts the build back as drawn. With 0.05 to 0.15 it converges
+in one to two minutes on a DP-20 reference graph of 4,644 strands, and no
+two bonds of different strands are then closer than 1 sigma outside the
+exempt pairs. Both keys are off by default, and the default build is
+unchanged.
+
 #### `conformation.entanglement`
 
 ```json
@@ -1686,7 +2275,7 @@ near the ends are off the chord.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `target_Z` | float \| null | `null` | Mean Z1+ per strand **at the final state**, or null for no target |
-| `close_on` | `"final"` \| `"build"` | `"final"` | Which state the controller compares against. `"build"` is cheaper to reach and is right only when the build state is itself what is being matched |
+| `close_on` | `"final"` \| `"build"` | `"final"` | Which state the controller compares against. `"build"` is cheaper to reach and is right only when the build state is itself what is being matched. It does not predict the final state, since Z jumps in stage 1 and stays flat afterwards |
 | `target_hist` | list \| null | `null` | Per-strand Z distribution to compare against, as fractions. Reported as a KS p-value, and nothing is tuned to it |
 | `shells` | object | `{}` | Neighbor-shell mix the designed pairs are drawn from, numbered from 1 |
 | `pairs` | list | `[]` | Named pairs as `[chain_a, chain_b, windings]` |
@@ -1727,7 +2316,7 @@ manifest = controller(graph, config.conformation, runner, dp=20)
 
 `runner` is a callable supplied by the caller. It receives a `RoundPlan` (the round number, the placement, which setting was changed and to what, the DP and the seed) and must return a `RoundResult` or a dict with at least `z_final`. The runner builds the system, runs the relaxation protocol and measures Z1+. Keeping these out of the module keeps the conformation stage free of LAMMPS and lets the loop be tested against a known response.
 
-A driver for a real protocol writes the build and the five-stage push-off with `topon.writers`, runs and gates it with `topon.simulation.protocols.StagedRun`, and measures Z1+ with its own primitive-path code. Z1+ cannot be redistributed, so such a driver does not ship with topon.
+A driver for a real protocol writes the build and the five-stage push-off with `topon.writers`, runs and gates it with `topon.simulation.protocols.StagedRun`, and measures each checkpoint with `topon.analysis.z1plus.measure_checkpoint` through an installed Z1+ (§3.6).
 
 The controller starts from the shipped calibration (`topon.conformation.entanglement.CALIBRATION`), which holds the measured (actuator, Z) pairs with the state and protocol of each. Only final-state points from the crossing-free protocol steer the controller. Points from the minimizer protocol are kept and labeled but do not steer, because that protocol stretches bonds and adds crossings of its own. Over the measured range Z follows a power law in the actuator (exponent 0.87 for the DP-20 meander, 0.30 for the DP-100 walk), so two rounds fix the curve for the graph at hand.
 
@@ -1741,7 +2330,11 @@ DP 20 (0.262, at build_density 0.035). ... Switch conformation.placement to
 
 #### Designed pairs, and when they are refused
 
-Designed pairs are only partly working. The contour budget check is complete, but the routing does not yet pass the gate on a strand already drawn as a meander. Adding a braid to such a strand leaves beads two to five places apart at 0.5 to 1.0 sigma where the braid meets the meander, which is the threaded-bond problem the gate catches. With `strict` (the default) the strand keeps the path the placement drew, and the request is refused with the reading that failed. For delivered windings, use the pipeline route (`assignment.entanglements` with `method: "waypoint"`), which builds the braided strand *from its chord*.
+A named pair comes back carrying the winding it was asked for, checked on the paths as drawn. On SC 6x6x6 at DP 60, with one request per strand, 8 of 8 pairs were delivered at coil ratio 2.84 with linking numbers of 1.02 to 1.03, and 4 of 8 at coil ratio 3.85. The same machinery with no braid asked for gives a linking number of 0.00 on the same strands.
+
+A braided strand is redrawn from its chord, not added onto the meander the placement gave it. Adding it does not work, because the meander flattens its wave across the braided stretch and the free run on either side then has to carry the whole contour in less room, and folds. The strand therefore loses the shape the placement drew, which is a fair price for a handful of designed pairs in a build of thousands, and the report says so. A winding that falls short is reported as such, and a strand that already fails the gate is not braided.
+
+There are three limits, all refusals rather than surprises. Above a coil ratio of about 3.5 the free run's wave takes the braid apart, so the pair is drawn but does not wind. Only one braid fits on one stretch of chord, since two blending into each other collapse the winding of both. And the budgets below apply.
 
 Each winding costs contour. The two partners leave their chords, wind around each other and come back, and a strand has only `n_bonds * bond` of contour. `route_designed_pairs` measures the routed path before drawing anything and refuses a request that does not fit, naming the smallest DP that would carry it.
 
@@ -1774,6 +2367,21 @@ The minimum DP in a refusal holds only *at that geometry*. Rebuilding at a highe
 always writes the data file and the input scripts, and it writes no HTML
 visualization, analysis-report file or `.gpickle`.
 
+#### The NPZ dual graph (`export_npz`)
+
+The NPZ file holds one network as a dual graph, with a node per strand (`type` 0) and per crosslinker (`type` 1), strand rows first. `edge_index` holds 0-based rows in both directions, and `edge_type` is 0 for a chemical edge (strand to crosslinker) and 1 for an entanglement (strand to strand). topon writes schema 2 and stamps it (`schema_version`), with ten feature columns (`type, length (DP), contour_length, rg, COMX, COMY, COMZ, chem_degree, phys_degree, frac_ext`). The conformation columns are NaN until a LAMMPS run fills them.
+
+`topon.topology.loader.read_npz(path)` returns the arrays in schema 2, and `load_npz(path)` rebuilds the topon graph (junctions as nodes, strands as edges). Both check the schema first. A stamp other than 1 or 2, or a feature width that does not match it, is refused. A file with no stamp and eight columns is schema 1, the layout of earlier `fix bond/create` datasets, and is upgraded on the way in.
+
+| Schema 1 column | Schema 2 |
+|---|---|
+| `type`, `rg`, `COMX/Y/Z`, `chem_degree` | copied |
+| `n_interior` (18 for a DP-20 strand) | `length` = n_interior + 2 on strand rows (the DP counts the two chain ends) |
+| `ree2` (mean square end-to-end distance) | kept as a separate `ree2` array, with `contour_length` and `frac_ext` NaN |
+| (none) | `phys_degree`, counted from the `edge_type` 1 edges |
+
+The `n_polymer` and `n_crosslinker` values of a schema-1 file are not the row counts, so both are recounted from `type`. `load_npz` skips the strands that do not join two crosslinkers (dangling and sol chains), since the graph has no node for a free chain end, and keeps one entanglement partner per strand.
+
 #### `output.lammps_convention`
 
 | Value | Atom types | Molecules |
@@ -1791,6 +2399,25 @@ For a bead-spring build that skips the chemistry stage,
 `topon.conformation.place` placement, with image flags that reconstruct the
 coordinates it was given.
 
+### `analysis`
+
+This section is read by `topon analyze --config`, `topon inspect --config` and `topon track --config`, and the pipeline ignores it. Its one block, `analysis.z1plus`, says where Z1+ is (§3.6). Z1+ is not distributed with topon.
+
+```json
+"analysis": {
+  "z1plus": {"executable": "~/z1/Z1+", "wsl": "auto", "wsl_distro": null}
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `z1plus.executable` | `"~/z1/Z1+"` | Path to the Z1+ binary, a Linux path inside WSL when it runs there. A leading `~/` is the home directory of the account it runs under |
+| `z1plus.wsl` | `"auto"` | Run Z1+ inside WSL. `auto` does so on Windows and not elsewhere, and the other values are `always` and `never` |
+| `z1plus.wsl_distro` | `null` | WSL distribution to run in. `null` is the default one |
+| `z1plus.timeout` | `7200` | Seconds one Z1+ run may take |
+
+Unknown keys are refused, so a misspelled `executable` fails to load rather than pointing at the default.
+
 ### `simulation` (raw section, not schema-validated)
 
 This section controls the LAMMPS scripts written by stage 6.
@@ -1798,6 +2425,8 @@ This section controls the LAMMPS scripts written by stage 6.
 | Key | Default | Description |
 |---|---|---|
 | `protocol` | `"pushoff"` | Coarse-grained relaxation protocol (see below) |
+| `atomistic_protocol` | `"hard_backbone"` on a settled build, else `"soft_push"` | Atomistic relaxation (DREIDING or CHARMM). `"hard_backbone"` never lets the backbone go soft, and `"soft_push"` is the earlier deck, kept selectable and prone to crossings (see *Atomistic stages and gates* below). The default is the one `Pipeline` sets, while the workflow route and a direct `LammpsInputGenerator` keep `"soft_push"` |
+| `backbone_dump_every` | `10` on a settled build, else `0` | Atomistic stages only. Dump the backbone atom types every N steps (minimizer iterations included) into `traj_stage<k>.lammpstrj` with unwrapped coordinates, for the crossing detector. 0 writes no dump |
 | `rho_final` | `null` | Number density (beads per sigma³) stage 4 compresses to. `null` makes stage 4 a settle. This is not `chemistry.target_density`, which sizes the build box |
 | `final_bond_style` | `"fene"` | `"quartic"` adds stage 6, for deformation runs |
 | `pair_style` | `"attractive"` | `lj/cut 2.5`, or `"repulsive"` for WCA. Ignored by `pushoff`, which pins WCA |
@@ -1874,7 +2503,11 @@ measure_stages(sim, gen.stages("cg"))    # or gate a run that already happened
   bond is checked. `mode="instant"` (the default) fails on any such bond.
   `mode="persistent"` fails only on a bond that is long at more than one
   stage, which separates a threaded bond from a thermal excursion. Both
-  counts are always reported.
+  counts are always reported. Persistence is judged over every stage
+  measured, stage 1 included (stage 1 itself cannot fail a run), and each
+  long bond (up to 8 per stage) is described by the nearest bead of another
+  molecule, its index along its own strand and its distance from the bond's
+  midpoint, which tells a threaded bond from one pinched at a junction.
 - Z1+ must not change between stage 3 and stage 5. This gate applies only
   to a run that did not compress and has a Z1+ measurement. Under
   compression Z1+ moves by 10-20 % with no crossing anywhere, because it
@@ -1894,6 +2527,54 @@ chain statistics both depend on it. A comparison across a temperature
 difference would measure that difference. Z1+ is not included in this
 repository (its license forbids redistribution), so pass its results in
 with `z_by_stage=`.
+
+#### Atomistic stages and gates
+
+On the `Pipeline` route (`topon generate`, `Pipeline`) an atomistic build is placed with the settled meander (`conformation.atomistic_placement`) and relaxed on the hard-backbone stages (`simulation.atomistic_protocol: "hard_backbone"`), with its backbone dumped every 10 steps, so every run can be checked for passages. Through stages 1 and 2 the backbone-backbone pairs (Si3 and O_3 for PDMS, taken from the strand record) keep a fixed soft core (60 kcal/mol out to 3 Å) in stage 1 and are at full depth from the first step of the ramp. Only pairs with a methyl C or an H are soft and ramped (each to its own depth, `fix adapt ... scale yes`), and both stages are capped under a 300 K Langevin thermostat. Stage 3 is the earlier one, with its minimization capped. The parameters sit under `experimental.atomistic.hard_backbone` (`core` 60 kcal/mol, `core_cutoff` 3 Å, `light_cutoff` 1 Å, `light_max` 30, `temperature` 300 K, `tdamp` 100 fs, `stage1.steps` 5 000, `stage1.limit` 0.05 Å, `stage2.steps` 5 000, `stage2.limit` 0.1 Å). `experimental.atomistic.dynamics.run_steps` overrides `stage2.steps` when it is given, and `experimental.atomistic.stage3.minimize` sets stage 3's minimization as `"etol ftol maxiter maxeval"` (default `"1.0e-6 1.0e-8 2000 20000"` on the hard-backbone stages, `"1.0e-8 1.0e-10 10000000 100000000"` for DREIDING and `"1.0e-6 1.0e-8 100000 1000000"` for CHARMM on the earlier ones). On the CHARMM route the same two stages are written in CHARMM styles, stage 1 with the `.soft` settings (bonded terms, 1-4 weights 0) and stage 2 as `lj/cut/coul/long` with the `.lj` settings and arithmetic mixing. The hard-backbone stages expect `conformation.atomistic_placement`, and the pipeline warns when they meet the earlier placement, whose backbone atoms start a third of a bond apart.
+
+`atomistic_placement: null` gives the build and stages of earlier versions (`soft_push`), and the workflow route (`topon.workflows.atomistic_network`) and a direct `LammpsInputGenerator` keep them too. The earlier stages are prone to strands passing through each other. On a DP-30 PDMS network the `soft_push` stages let hundreds of backbone bonds pass through each other in stage 1, even from a settled build, while the hard-backbone stages on the settled build let none through at any stage. Both ramps now scale each pair's own depth (before 0.4.0 the DREIDING ramp ran every pair's well from 0.001 to 1 kcal/mol whatever its DREIDING depth).
+
+The dumps are large (about 200 MB a stage on a 36,248-atom network). `AtomisticRun` gzips each one once it has read it (`compress_dumps=False` keeps them as LAMMPS wrote them), and the crossing detector reads either.
+
+`topon.simulation.protocols.atomistic` gates the three atomistic stages, in atomistic units and through the run's strand record.
+
+```python
+from topon.simulation.protocols.atomistic import AtomisticRun, measure_run
+
+report = AtomisticRun(run_dir, omp=4).run()   # the three stages, gating after each
+print(report.render())
+measure_run(run_dir)                          # or gate the checkpoints already there
+```
+
+- No backbone bond more than 15 % over its r0 at two stages, junction to junction along every strand, from stage 1 on (`mode="persistent"`, the atomistic default, while `mode="instant"` fails on one). A single checkpoint can be hot, so one long bond at one stage does not fail the run. The build is reported and not gated, and is not counted towards persistence.
+- No backbone bond passes through another, at any stage, stage 1 included. This is read from each stage's backbone dump with the crossing detector below (`simulation.backbone_dump_every`). One passage fails the stage, and the report gives the count by kind, the step of the first, its two bonds and their strands. `AtomisticRun` reads each stage's dump as soon as the stage ends and, with `stop_on_fail`, stops there. A designed entanglement (`assignment.entanglements`, whose partner strand the strand record names) is kept if no bond of either of its strands passed through the other, and the report says so pair by pair.
+- Backbone Z1+ per bridge is measured at every checkpoint over `z1_seeds` seeds of the exporter's junction jitter (4 by default) and reported as their mean and spread. A partner pair counts as new or lost only when it is found at every seed of one checkpoint and at none of the other. When any stage is dumped, Z1+ is not gated, since it moves as chains settle with nothing crossing and so cannot certify a state. Without dumps the earlier Z gate runs instead (Z per bridge held from the end of the epsilon ramp at every checkpoint at the same density, with a tolerance of 1.5 / n_bridges and the bead-spring 0.01 as the floor). A gated checkpoint with no backbone bond read against an r0 fails rather than passing empty.
+
+The checkpoints are `stage0_build` (`03_Conformation/system_relaxed.data`), `stage1_soft`, `stage2_ramp`, `stage3_min`, `stage3_nvt` and `stage3_npt`. Density is in g/cm³, and temperature is in K from the velocities with real masses. Z1+ runs when it is installed and is skipped otherwise.
+
+A single Z1+ run cannot be read pair by pair. The exporter moves each junction by 1e-3 Å so that Z1+ does not crash on shared points, and another seed for that move changes 10 to 15 of 55 partner pairs on an identical DP-30 configuration. Compare Z1+ between checkpoints averaged over several seeds (`topon.analysis.z1plus.measure_seeds`, which the gates use), and the pairs present in every seed.
+
+#### Watching a relaxation (`topon track`)
+
+```bash
+topon track output/pdms_dp30
+topon track runs/z1 runs/z2 --label "Z = 1" --label "Z = 2" -o z.html --omp 4
+```
+
+The command writes one self-contained HTML page (`relaxation_tracker.html` by default) for one or more atomistic study folders. For each run and each checkpoint (the build, stage 1, the ramp, and the minimized, NVT and NPT states of stage 3) it shows the network as Z1+ reads it. Every strand is drawn as a curve from junction through one point per repeat unit to junction, with the crosslinks, the Z1+ kinks and the primitive paths, in a view that rotates and zooms and names a strand's entanglement partners when it is hovered. Beside it, through the stages, are Z per bridge over `--seeds` Z1+ seeds (8 by default, and 0 leaves Z1+ out) with its spread, how many of the build's robust pairs are still seen, the backbone passages of each stage dump, the energy density under the full force field with its bonded, van der Waals and Coulomb parts, temperature, density and the longest backbone bond. Below, Z over its build value is plotted for every run in the page, with the LAMMPS time of each. The energy is every checkpoint evaluated again with a zero-step LAMMPS run under the run's own stage-3 styles and settings (`--lmp`, `--omp`, and `--no-energies` skips it), so stages 1 and 2 are not read under their soft or ramped potentials. The build's energy is very high, since only its backbone is settled, so the charts start after it. A run that stopped early shows the checkpoints it wrote. The page loads nothing from anywhere (its fonts are local font stacks) and nothing is uploaded.
+
+#### Did a strand pass through another? The crossing detector
+
+Z1+ cannot say whether an entanglement state survived, because it moves as chains settle with nothing crossing. `topon.analysis.crossings` watches for the one event that changes topology, two backbone bonds passing through each other between two frames of a trajectory. Every atom is taken to move in a straight line between frames, and a passage is a moment at which the four atoms of the two bonds are coplanar and the two segments meet. Bonds that share an atom are never a pair, and a passage is classed `self` (one strand), `shared` (two strands that end on the same junction, which can wind round each other there) or `apart`.
+
+```python
+from topon.analysis.crossings import crossings_of_run
+
+for stage, rep in crossings_of_run(run_dir).items():   # traj_stage1..3 in 04_Simulation
+    print(stage, rep.transitions, rep.max_step, rep.counts())
+```
+
+It needs `simulation.backbone_dump_every` (10 keeps an atom within about 1 Å between frames in every stage). Coordinates are unwrapped per atom and each bond is taken in its shortest image, since topon's data files carry no image flags. As a check, a 3x3x3 DP-6 network run with no pair interaction at all at 2000 K for 20 ps gives 489 passages, and the same network through either relaxation deck gives none.
 
 #### Deformation runs
 

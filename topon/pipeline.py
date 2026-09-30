@@ -131,17 +131,22 @@ class Pipeline:
 
     Reproducibility
     ---------------
-    ``Pipeline`` does not seed the random streams. The topology generators draw
-    from the global ones, documented at
-    ``topon/topology/generator_python.py:564``, so a build is reproducible only
-    if the caller sets ``random.seed(n)`` and ``np.random.seed(n)`` first.
-    ``topon.workflows.cg_network.run(seed=...)`` does; a direct
-    ``Pipeline(config).run()`` does not, and two runs of the same config then
-    give different graphs -- measured on SC 5x5x5 at neighbour_cutoff 1.5, 261
-    edges and then 279. With the global streams seeded the graph and its edge
-    order are identical, which is what makes a chain index mean the same strand
-    twice (``topon.conformation.strand_plans``, and the ``pairs`` of a
-    conformation config).
+    ``Pipeline`` does not seed the global random streams.
+    ``topology.generator.seed`` pins stage 1: the generator then draws from
+    its own streams seeded with it (the graph ``random.seed(n)`` and
+    ``np.random.seed(n)`` before generating gave), and the C route gets a
+    seed drawn from the same number. Without it the generators draw from
+    the global streams, so a graph is reproducible only if the caller sets
+    ``random.seed(n)`` and ``np.random.seed(n)`` first, which
+    ``topon.workflows.cg_network.run(seed=...)`` does. Unpinned, two runs of
+    the same config give different graphs -- measured on SC 5x5x5 at
+    neighbour_cutoff 1.5, 261 edges and then 279. With the seed the graph
+    and its edge order are identical, which is what makes a chain index mean
+    the same strand twice (``topon.conformation.strand_plans``, and the
+    ``pairs`` of a conformation config). The DP draws and edge types still
+    draw from the global streams. The conformation stage's noise and
+    overlap pushes do not; they come from streams keyed on the study name,
+    so the same study builds the same relaxed file on every run.
     """
 
     # Overlap-resolver defaults. These live in ConformationConfig now, and
@@ -177,6 +182,7 @@ class Pipeline:
         """Run the complete pipeline end-to-end."""
         print(f"=== Topon Pipeline: {self.config.study.name} ===")
         print(f"Output directory: {self.output_dir}")
+        self._claim_run_directory()
         print()
 
         self._run_topology_stage()
@@ -188,6 +194,22 @@ class Pipeline:
 
         print()
         print("=== Pipeline Complete ===")
+
+    def run_graph_stages(self):
+        """Stages 1 to 3 only: topology, analysis and assignment.
+
+        Returns the graph the chemistry stage would be handed, with its DP,
+        types and defects in place. Nothing is written but what those three
+        stages write themselves (the run manifest's topology section).
+        ``topon fit`` sweeps its candidate cutoffs through this and
+        ``topon generate --verify`` regenerates its seeds with it, so both
+        measure the graph ``run`` builds from rather than a copy of the
+        logic.
+        """
+        self._run_topology_stage()
+        self._run_analysis_stage()
+        self._run_assignment_stage()
+        return self.graph
 
     def run_from_graph(
         self,
@@ -206,9 +228,9 @@ class Pipeline:
         topology (e.g. graphml-load vs npz-load), seed both
         :mod:`random` and :mod:`numpy.random` before calling this. The
         chemistry stage uses ``np.random.randn`` for graft-perp
-        directions, and the conformation stage uses noise from
-        ``numpy.random`` -- without seeding, byte-equivalence cannot be
-        guaranteed.
+        directions -- without seeding, byte-equivalence cannot be
+        guaranteed. The conformation stage's noise comes from a stream
+        keyed on the study name and needs no seed.
 
         Args:
             graph: NetworkX MultiGraph with crosslink nodes (``pos``) and
@@ -225,6 +247,7 @@ class Pipeline:
         print(f"=== Topon Pipeline (rebuild from graph): "
               f"{self.config.study.name} ===")
         print(f"Output directory: {self.output_dir}")
+        self._claim_run_directory()
         print(f"  Skipping stages 1-3 (graph supplied directly).")
         print(f"  Nodes: {self.graph.number_of_nodes()}, "
               f"Edges: {self.graph.number_of_edges()}")
@@ -237,6 +260,35 @@ class Pipeline:
         print()
         print("=== Pipeline Complete (rebuild) ===")
 
+    def _claim_run_directory(self) -> None:
+        """Record this process as the run directory's writer, after a look.
+
+        One writer per run directory: two processes on one directory
+        overwrite each other's stage files and manifest, which is how the
+        end-linked validation sweep lost an hour. The manifest's ``run``
+        entry names the writer (pid, host, start time). A live writer
+        other than this process is reported with the way to stop it; the
+        run goes on, because a pid can be reused and a false alarm must
+        not block a build. Like the rest of the manifest this is
+        advisory, so a directory that refuses the file costs nothing.
+        """
+        from topon.core.manifest import read_manifest, record_run
+        from topon.utils.processes import other_live_writer, stop_hint, this_process
+
+        try:
+            previous = (read_manifest(self.output_dir) or {}).get("run")
+            other = other_live_writer(previous)
+            if other:
+                print(f"  WARNING: process {other['pid']} (started "
+                      f"{other.get('started', '?')}) is still writing this run "
+                      f"directory. Two writers overwrite each other's files; "
+                      f"stop one, or give each run its own study name or "
+                      f"output_dir. {stop_hint(other['pid'])}.")
+            record_run(self.output_dir, this_process(),
+                       study=self.config.study.name)
+        except Exception as exc:
+            print(f"  (could not record the run in the manifest: {exc})")
+
     # ------------------------------------------------------------------
     # Stage 1: Topology
     # ------------------------------------------------------------------
@@ -247,8 +299,16 @@ class Pipeline:
         started = time.time()
         if self.config.topology.source == "generate":
             self._generate_topology()
+        elif self.config.topology.source == "crosslink":
+            self._crosslink_topology()
         else:
             self._load_existing_topology()
+        arch = self.config.topology.generator.architecture
+        if arch != "end_linked":
+            # Only a non-default architecture is recorded, so an end-linked
+            # graph and its manifest are exactly what they were.
+            self.graph.graph["architecture"] = arch
+            self._topology_manifest["architecture"] = arch
         print(f"  Nodes: {self.graph.number_of_nodes()}")
         print(f"  Edges: {self.graph.number_of_edges()}")
         self._record_topology_manifest(time.time() - started)
@@ -307,6 +367,8 @@ class Pipeline:
         )
         if gen_cfg.lattice_type == "MIX":
             self._topology_manifest["mix_fractions"] = dict(gen_cfg.mix_fractions)
+        if gen_cfg.seed is not None:
+            self._topology_manifest["generator_seed"] = int(gen_cfg.seed)
 
         # Which sculptor runs is decided before the generator is chosen.
         # Both searches exist in both generators, so a configured
@@ -337,8 +399,17 @@ class Pipeline:
             # The Python exact search draws its seed from the global NumPy
             # stream, so np.random.seed(n) pins it; hand the binary a seed
             # drawn the same way so the C route is just as reproducible.
-            seed = (int(np.random.randint(0, 2 ** 31 - 1))
-                    if search == "exact" else None)
+            # With topology.generator.seed the draw comes from a stream
+            # seeded with it, which is what np.random.seed(seed) gave, and
+            # then the strict search is seeded too (unseeded, the strict C
+            # route has always taken its seed from the clock).
+            if gen_cfg.seed is not None:
+                seed = int(np.random.RandomState(int(gen_cfg.seed))
+                           .randint(0, 2 ** 31 - 1))
+            elif search == "exact":
+                seed = int(np.random.randint(0, 2 ** 31 - 1))
+            else:
+                seed = None
             nodes_path, edges_path = run_generator(
                 gen_cfg, topology_dir, exe_path=gen_cfg.exe_path, seed=seed
             )
@@ -510,6 +581,85 @@ class Pipeline:
             entry["seed"] = int(seed)
         self._topology_manifest["sculpt"] = entry
 
+    def _crosslink_topology(self) -> None:
+        """Stage 1 for ``topology.source = "crosslink"``: a crosslinked melt.
+
+        Grows the chains of ``topology.crosslinking`` on a lattice and
+        crosslinks the reactive beads that touch
+        (:mod:`topon.topology.chain_crosslinking`). The graph comes back with
+        every strand's DP and chain, which stage 3 then leaves alone. On the
+        coarse-grained route every chord is held to its contour in the box
+        ``chemistry.target_density`` gives, and a crosslink may sit next to
+        a chain end (the builder bonds the end bead straight to the
+        junction). On the atomistic route a strand joins its junction
+        through a monomer, so reactive beads next to a chain end are left
+        out (``min_dangling_dp``). Sol chains of several lengths are built
+        at their lengths. The melt (every chain's beads on the lattice, the
+        crosslinks in the order made) is written beside the graph as
+        ``topology/crosslinked_melt.npz``.
+        """
+        from topon.topology.chain_crosslinking import ChainType, crosslink_chains
+
+        cfg = self.config.topology.crosslinking
+        chem = self.config.chemistry
+        types = []
+        for i, c in enumerate(cfg.chains):
+            name = c.name or f"type{i + 1}"
+            if c.sequence is not None:
+                types.append(ChainType.from_sequence(
+                    c.sequence, c.count, repeats=c.repeats,
+                    crosslink_residue=c.crosslink_residue, name=name))
+            elif c.reactive is not None:
+                types.append(ChainType(count=c.count, dp=c.dp, reactive=tuple(c.reactive),
+                                       site_types=c.site_type, name=name))
+            else:
+                types.append(ChainType.every(c.count, c.dp, every=c.reactive_every,
+                                             start=c.reactive_start,
+                                             site_type=c.site_type, name=name))
+        seed = (int(cfg.seed) if cfg.seed is not None
+                else int(np.random.randint(0, 2 ** 31 - 1)))
+        cg = chem.model_type == "coarse_grained"
+        min_dangling = cfg.min_dangling_dp
+        if min_dangling is None:
+            min_dangling = 0 if cg else 1
+        elif min_dangling < 1 and not cg:
+            raise ValueError(
+                "topology.crosslinking.min_dangling_dp 0 needs the coarse-grained "
+                "route: the atomistic builder joins a strand to its junction "
+                "through a monomer, so a dangling strand keeps at least one")
+        melt = crosslink_chains(
+            types, crosslinks=cfg.crosslinks, conversion=cfg.conversion,
+            per_chain=cfg.per_chain, packing=cfg.packing,
+            persistence=cfg.persistence, c_inf=cfg.c_inf,
+            contact_radius=cfg.contact_radius, max_radius=cfg.max_radius,
+            min_gap=cfg.min_gap, pairs=cfg.pairs,
+            build_density=float(chem.target_density) if cg else None,
+            min_dangling_dp=min_dangling, keep_windings=cfg.keep_windings, seed=seed)
+        rec = melt.record
+        topology_dir = self.output_dir / "topology"
+        topology_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            topology_dir / "crosslinked_melt.npz",
+            positions=np.concatenate(melt.positions).astype(np.float32),
+            lengths=np.array(melt.lengths, dtype=np.int64),
+            crosslinks=np.array(melt.crosslinks, dtype=np.int64).reshape(-1, 4),
+            box=melt.box)
+        self._topology_manifest.update(generator="crosslink", crosslinking=rec,
+                                       architecture="random_crosslinked")
+        s = rec["strands"]
+        print(f"  Crosslinked melt: {rec['chains']} chains, {rec['beads']} beads on a "
+              f"{rec['lattice']}^3 lattice (packing {rec['packing']:.3f}, c_inf "
+              f"{rec['c_inf']:.2f})")
+        print(f"    {rec['crosslinks']} crosslinks (conversion {rec['conversion']:.3f}, "
+              f"seed {seed}): {s.get('bridge', 0)} bridges, {s.get('dangling', 0)} "
+              f"dangling, {s.get('loop', 0)} primary loops, {rec['sol_chains']} sol "
+              f"chains, in {rec['seconds']['total']:.2f} s")
+        if rec["reactive_left_out"]:
+            print(f"    {rec['reactive_left_out']} reactive beads closer to a chain end "
+                  f"than min_dangling_dp {min_dangling} allows left out")
+        self.graph = melt.graph
+        self.dims = np.asarray(melt.box, dtype=float)
+
     def _load_existing_topology(self) -> None:
         from topon.topology.loader import load_graph
 
@@ -553,9 +703,14 @@ class Pipeline:
         print("--- Stage 2: Analysis ---")
         from topon.assignment.manager import AssignmentManager
 
+        chem = self.config.chemistry
         self._assignment_manager = AssignmentManager(
             self.graph, self.dims, self.config.assignment,
             max_functionality=self._junction_valence_ceiling(),
+            bead_density=(chem.target_density
+                          if chem.model_type == "coarse_grained" else None),
+            architecture=self.config.topology.generator.architecture,
+            chains_decided=self.config.topology.source == "crosslink",
         )
         self.analysis_report = self._assignment_manager.analyze()
         print()
@@ -790,6 +945,18 @@ class Pipeline:
                 vol = n_atoms / density
                 writer = DreidingWriter(mol_h, data_path, use_charges=False)
             writer.write()
+            self._geometry_from_dreiding(writer)
+
+        if model != "coarse_grained":
+            self._record_strands(mol_h)
+        else:
+            # An atomistic run of the same study earlier would otherwise leave
+            # its strand record describing a data file that is gone.
+            from topon.core.manifest import drop_stage
+            try:
+                drop_stage(self.output_dir, "strands", "placement")
+            except Exception as exc:
+                print(f"  (could not update the run manifest: {exc})")
 
         scale = (vol / float(np.prod(self.dims))) ** (1.0 / 3.0)
         sx = sy = sz = scale
@@ -893,7 +1060,12 @@ class Pipeline:
                 graft_coords, sx, sy, sz,
                 str(chem_dir / "system_grafts.displace"), "grafts"
             )
+        elif self._atomistic_placement() is not None:
+            # Every backbone drawn as a chain at the force field's bond
+            # lengths, everything else at bond length off it.
+            self._place_atomistic(mol_h, scale, chem_dir)
         else:
+            self._record_chords(mol_h, scale)
             # Atomistic: backbone + grafts + pendant + hydrogens. Backbone
             # path consults `entangled_with` on the (u, v, key) edge data
             # for kinked-chain placement (N+2 fix). graft_atom_map is
@@ -1038,6 +1210,18 @@ class Pipeline:
         typing = type_network(mol_h, self._builder, chem, ps)
         terms = build_terms(mol_h, typing, ps)
         CharmmWriter(mol_h, typing, terms, data_path).write()
+        self._bond_r0 = {(min(a, b), max(a, b)): float(terms.bond_params[t][1])
+                         for t, a, b in terms.bonds if t in terms.bond_params}
+        self._angle_theta0 = {}
+        for t, a, b, c in terms.angles:
+            if t in terms.angle_params:
+                th = float(terms.angle_params[t][1])
+                self._angle_theta0[(a, b, c)] = self._angle_theta0[(c, b, a)] = th
+        # the backbone's LAMMPS atom types, for the hard-backbone stages and
+        # the backbone dumps, as on the DREIDING route
+        self._backbone_types = sorted({terms.atom_types[typing.atom_type[i]]
+                                       for i in self._backbone_atoms()})
+        self._n_atom_types = len(terms.atom_types)
 
         # float sum of the RTF charges (type_network has checked it is an
         # integer); rounded past their last digit, and + 0.0 so a neutral
@@ -1061,6 +1245,330 @@ class Pipeline:
         mass = sum(a.GetMass() for a in mol_h.GetAtoms())
         return mol_h, (mass / density) * 1.66054
 
+    # ------------------------------------------------------------------
+    # Stage 4, atomistic: strands, chords and backbone placement
+    # ------------------------------------------------------------------
+
+    def _geometry_from_dreiding(self, writer) -> None:
+        """Equilibrium length of every bond and angle, from the file just written.
+
+        Keyed by 0-based atom indices of the molecule the writer wrote, which
+        are the pipeline's own. The placement draws at these lengths and the
+        chord guard reads the extended length from them.
+        """
+        r0_of = {tid: float(sig[3]) for sig, tid in writer.bond_types.items()}
+        self._bond_r0 = {(min(i, j) - 1, max(i, j) - 1): r0_of[t]
+                         for _bid, t, i, j in writer.bond_data}
+        th_of = {tid: float(sig[4]) for sig, tid in writer.angle_types.items()}
+        self._angle_theta0 = {}
+        for _aid, t, a, b, c in writer.angle_data:
+            self._angle_theta0[(a - 1, b - 1, c - 1)] = th_of[t]
+            self._angle_theta0[(c - 1, b - 1, a - 1)] = th_of[t]
+        # The LAMMPS atom types the backbones and junctions are made of (Si3
+        # and O_3 for PDMS), for simulation.atomistic_protocol "hard_backbone",
+        # which keeps every pair of them hard from the first step.
+        self._backbone_types = sorted({
+            writer.atom_types_dict[writer.atom_dreiding_types[i + 1]]
+            for i in self._backbone_atoms()})
+        self._n_atom_types = len(writer.atom_types_dict)
+
+    def _backbone_atoms(self) -> set:
+        """RDKit indices of every backbone and junction atom."""
+        ids = set()
+        for edge, path in self._builder.edge_backbone_path.items():
+            ids |= set(path)
+            ids |= {a for a in self._builder.edge_ends.get(edge, ()) if a is not None}
+        return ids
+
+    def _record_strands(self, mol) -> None:
+        """Which atoms are which strand, in the run manifest.
+
+        The atomistic data file puts every atom in molecule 1, so without
+        this a strand cannot be told from its neighbours after the fact. The
+        record is the builder's strand table with LAMMPS atom ids (RDKit
+        index + 1), which LAMMPS keeps through every stage; the Z1+ export of
+        the backbone and the atomistic gates read it back
+        (:mod:`topon.analysis.atomistic`).
+        """
+        from topon.core.manifest import record_stage
+
+        table = self._builder.strand_table(mol)
+
+        def lammps(x):
+            if x is None:
+                return None
+            if isinstance(x, (list, tuple)):
+                return [lammps(i) for i in x]
+            return int(x) + 1
+
+        strands = []
+        for row in table["strands"]:
+            out = dict(row)
+            for key in ("junctions", "backbone", "repeat_heads"):
+                out[key] = lammps(row[key])
+            for key in ("free_end", "free_ends"):
+                if key in row:
+                    out[key] = lammps(row[key])
+            for key in ("heavy", "hydrogens"):
+                span = dict(row[key])
+                if span.get("range") is not None:
+                    span["range"] = lammps(span["range"])
+                if "ids" in span:
+                    span["ids"] = lammps(span["ids"])
+                out[key] = span
+            strands.append(out)
+        # A designed entanglement (assignment.entanglements) names its
+        # partner edge; the record names the partner strand, so the gates can
+        # say whether the pair kept its winding.
+        index = {}
+        for n, row in enumerate(strands, start=1):
+            u, v, key = row["edge"]
+            index[(min(u, v), max(u, v), key)] = n
+        multi = self.graph.is_multigraph()
+        for row in strands:
+            u, v, key = row["edge"]
+            try:
+                data = self.graph[u][v][key] if multi else self.graph[u][v]
+            except KeyError:
+                continue
+            partner = data.get("entangled_with")
+            if partner is None:
+                continue
+            pu, pv = partner[0], partner[1]
+            pk = partner[2] if len(partner) > 2 else 0
+            k = index.get((min(pu, pv), max(pu, pv), pk))
+            if k is not None:
+                row["partner"] = k
+                row["windings"] = int(data.get("entanglement_count", 1))
+        nodes = [{**n, "attach": lammps(n["attach"]), "atoms": lammps(n["atoms"]),
+                  "hydrogens": lammps(n["hydrogens"])} for n in table["nodes"]]
+        classes = {}
+        for row in strands:
+            classes[row["cls"]] = classes.get(row["cls"], 0) + 1
+        entry = {"ids": "LAMMPS atom ids of 02_Chemistry/system.data",
+                 "n_atoms": int(mol.GetNumAtoms()),
+                 "classes": classes, "strands": strands, "nodes": nodes}
+        try:
+            record_stage(self.output_dir, "strands", entry,
+                         study=self.config.study.name)
+        except Exception as exc:
+            print(f"  (could not write the strand record: {exc})")
+
+    def _atomistic_strand_specs(self, mol, scale: float):
+        """One :class:`~topon.conformation.atomistic.StrandSpec` per strand, in A."""
+        from topon.conformation.atomistic import StrandSpec
+
+        b = self._builder
+        box = np.asarray(self.dims, float) * scale
+        r0 = getattr(self, "_bond_r0", {}) or {}
+        th = getattr(self, "_angle_theta0", {}) or {}
+        table = {tuple(r["edge"]): r for r in b.strand_table(mol)["strands"]}
+
+        def pos(node):
+            return np.asarray(self.graph.nodes[node].get("pos", (0.0, 0.0, 0.0)),
+                              float) * scale
+
+        specs = []
+        for edge, backbone in b.edge_backbone_path.items():
+            u, v, _key = edge
+            su, sv = b.edge_ends[edge]
+            if su is None or sv is None:
+                continue
+            chain = [su] + list(backbone) + [sv]
+            r0s = [r0.get((min(x, y), max(x, y)), 1.5)
+                   for x, y in zip(chain[:-1], chain[1:])]
+            th0 = [th.get((chain[i - 1], chain[i], chain[i + 1]), 109.4712)
+                   for i in range(1, len(chain) - 1)]
+            start = pos(u)
+            vec = pos(v) - start
+            vec = vec - box * np.round(vec / box)
+            away = None
+            if u == v:
+                away = []
+                for x, y in self.graph.edges(u):
+                    if x == y:
+                        continue
+                    d = pos(y if x == u else x) - start
+                    away.append(d - box * np.round(d / box))
+            specs.append(StrandSpec(
+                edge=edge, cls=table.get(edge, {}).get("cls", "bridge"),
+                start_atom=su, end_atom=sv, backbone=list(backbone),
+                start=start, end=start + vec, r0=r0s, theta0=th0,
+                away_from=away or None))
+        return specs
+
+    def _record_chords(self, mol, scale: float) -> None:
+        """Every chord against its backbone, for the historic placement.
+
+        That placement draws nothing, so this is the whole guard it gets: the
+        manifest says how close to its extended length each strand's chord
+        sits, and a chord past the backbone's contour is warned about, since
+        no relaxation can build it without stretching every bond.
+        """
+        import warnings as _warnings
+
+        from topon.conformation.atomistic import TAUT, extended_length
+        from topon.core.manifest import record_stage
+
+        ratios, over = [], 0
+        for spec in self._atomistic_strand_specs(mol, scale):
+            if spec.cls == "loop":
+                continue
+            chord = float(np.linalg.norm(spec.end - spec.start))
+            ext = extended_length(spec.r0, spec.theta0)
+            ratios.append(chord / ext if ext else 0.0)
+            over += chord > float(np.sum(spec.r0))
+        if not ratios:
+            return
+        ratios = np.asarray(ratios)
+        entry = {"shape": "chord (historic)", "strands": int(len(ratios)),
+                 "taut": int((ratios >= TAUT).sum()), "over_contour": int(over),
+                 "chord_over_extended": {"mean": float(ratios.mean()),
+                                         "max": float(ratios.max())}}
+        if over:
+            _warnings.warn(
+                f"{over} strand chord(s) are longer than their backbone contour, "
+                f"so their bonds cannot relax to length; lower the neighbour "
+                f"cutoff, raise the DP or the density", RuntimeWarning, stacklevel=2)
+        try:
+            record_stage(self.output_dir, "placement", entry,
+                         study=self.config.study.name)
+        except Exception as exc:
+            print(f"  (could not write the placement record: {exc})")
+
+    def _atomistic_placement(self):
+        """The placement this build uses: the configured one, or the historic.
+
+        ``conformation.atomistic_placement`` defaults to ``meander``, which
+        does not place POSS cages, so a network with POSS nodes falls back to
+        the historic placement unless the placement was asked for by name
+        (then :meth:`_place_atomistic` refuses it, as before).
+        """
+        if hasattr(self, "_placement_used"):
+            return self._placement_used
+        conf = self.config.conformation
+        shape = conf.atomistic_placement
+        b = self._builder
+        poss = b is not None and bool(b.poss_usage or getattr(b, "poss_structure", None))
+        if shape is not None and poss and "atomistic_placement" not in conf.model_fields_set:
+            print("  POSS nodes: the historic atomistic placement (the default "
+                  "meander does not place POSS cages)")
+            shape = None
+        self._placement_used = shape
+        return shape
+
+    def _place_atomistic(self, mol, scale: float, chem_dir) -> None:
+        """Backbones as chains at bond length, and every other atom off them.
+
+        ``conformation.atomistic_placement`` picks the shape. The result goes
+        out through the same displacement files as the historic placement (in
+        lattice units, since the files carry the scale), so the conformation
+        stage reads it unchanged.
+        """
+        from topon.conformation.atomistic import place_network
+        from topon.conformation.entanglement.realize import entangled_backbone_paths
+        from topon.core.manifest import record_stage
+        from topon.utils import write_lammps_displacement_file
+
+        b = self._builder
+        if b.poss_usage or getattr(b, "poss_structure", None):
+            raise ValueError(
+                "conformation.atomistic_placement does not place POSS cages; "
+                "leave it unset for a network with POSS nodes")
+        conf = self.config.conformation
+        shape = self._atomistic_placement()
+        box = np.asarray(self.dims, float) * scale
+        specs = self._atomistic_strand_specs(mol, scale)
+
+        ent_cfg = self.config.assignment.entanglements
+        drawn = entangled_backbone_paths(
+            self.graph, self.dims, {s.edge: s.backbone for s in specs},
+            method=ent_cfg.method, kink_params=ent_cfg.kink_params.model_dump())
+        for s in specs:
+            if s.edge in drawn:
+                s.path = np.asarray(drawn[s.edge], float) * scale
+
+        anchors = {}
+        for node, ref in b.node_map.items():
+            anchors[int(ref)] = (np.asarray(self.graph.nodes[node].get(
+                "pos", (0.0, 0.0, 0.0)), float) * scale)
+        neighbours = {a.GetIdx(): [n.GetIdx() for n in a.GetNeighbors()]
+                      for a in mol.GetAtoms()}
+        # Drawn from the global stream, so np.random.seed pins it as it pins
+        # every other draw of a pipeline run.
+        rng = np.random.default_rng(int(np.random.randint(0, 2 ** 31 - 1)))
+        coords, report = place_network(
+            specs, neighbours, anchors, getattr(self, "_bond_r0", {}), box,
+            shape, rng, clearance=conf.atomistic_clearance, keep_frames=True,
+            waves=conf.meander_waves, min_bond=conf.min_bond,
+            min_sep=conf.min_self_separation, jitter=conf.path_jitter)
+        if report.frames is not None:
+            # The settling pass read as a trajectory: no backbone bond may
+            # have gone through another on the way.
+            from topon.analysis.crossings import Frame, find_crossings
+
+            ids, steps = report.frames
+            order = np.argsort(ids)
+            frames = [Frame(step=k, box=box, ids=ids[order] + 1, xyz=x[order])
+                      for k, x in enumerate(steps)]
+            bonds, strand = [], []
+            for k, s in enumerate(specs, start=1):
+                chain = [s.start_atom] + list(s.backbone) + [s.end_atom]
+                bonds += [(a + 1, b + 1) for a, b in zip(chain[:-1], chain[1:])]
+                strand += [k] * (len(chain) - 1)
+            passed = find_crossings(frames, np.array(bonds, int), np.array(strand, int))
+            report.settle["passages"] = len(passed.crossings)
+            report.frames = None
+
+        backbone_ids = {int(i) for s in specs for i in s.backbone}
+        files = {"backbone": {}, "grafts": {}, "pendant": {}, "hydrogens": {}}
+        for idx, xyz in coords.items():
+            if idx in anchors:
+                continue
+            key = ("backbone" if idx in backbone_ids else
+                   "hydrogens" if mol.GetAtomWithIdx(idx).GetAtomicNum() == 1
+                   else "pendant")
+            files[key][idx] = tuple(np.asarray(xyz, float) / scale)
+        missing = mol.GetNumAtoms() - len(coords)
+        for key, name in (("backbone", "system_backbone.displace"),
+                          ("grafts", "system_grafts.displace"),
+                          ("pendant", "system_pendant.displace"),
+                          ("hydrogens", "system_hydrogens.displace")):
+            write_lammps_displacement_file(files[key], scale, scale, scale,
+                                           str(chem_dir / name), key)
+        summary = report.summary()
+        summary["unplaced_atoms"] = int(missing)
+        worst = sorted((r for r in report.strands
+                        if r.get("chord_over_extended") is not None),
+                       key=lambda r: -r["chord_over_extended"])[:5]
+        summary["tautest"] = [{k: r[k] for k in ("edge", "cls", "chord", "extended",
+                                                 "contour", "routine")}
+                              for r in worst]
+        print(f"  Atomistic placement '{shape}': {summary['strands']} backbones "
+              f"{summary['routines']}, {summary['taut']} taut, "
+              f"{summary['over_contour']} over their contour, backbone bond / r0 "
+              f"{summary['backbone_bond_ratio']}")
+        c = summary.get("settle")
+        if c:
+            print(f"  Backbones settled in {c['rounds']} rounds: bond pairs closer "
+                  f"than {c['clearance']} A {c['pairs_below_before']} -> "
+                  f"{c['pairs_below_after']}, angle error (deg) "
+                  f"{c['angle_error_before']} -> {c['angle_error_after']}, largest "
+                  f"shift {c['largest_shift']:.2f} A, {c.get('passages')} passages "
+                  f"on the way")
+            if c["pairs_below_after"]:
+                import warnings as _warnings
+                _warnings.warn(
+                    f"{c['pairs_below_after']} pair(s) of backbone bonds are still "
+                    f"closer than {c['clearance']} A after {c['rounds']} rounds "
+                    f"(closest {c['closest_after']:.2f} A); the first stage may "
+                    f"push them through each other", RuntimeWarning, stacklevel=2)
+        try:
+            record_stage(self.output_dir, "placement", summary,
+                         study=self.config.study.name)
+        except Exception as exc:
+            print(f"  (could not write the placement record: {exc})")
+
     def _record_defects(self) -> None:
         """Put the defects stage's record in the run manifest.
 
@@ -1068,20 +1576,32 @@ class Pipeline:
         against the effective P(f), and the bead budget that sized the
         box. ``topon inspect`` renders it beside stage 1's sculpt record.
         As with that one, a manifest that cannot be written costs an
-        inspection detail and nothing more.
+        inspection detail and nothing more. A random-crosslinked network's
+        chain cover goes in beside it, as ``chains``, and a rerun of the
+        study as an end-linked one drops that section again.
         """
-        from topon.core.manifest import record_stage
+        from topon.core.manifest import drop_stage, record_stage
 
-        entry = self.graph.graph.get("defects") if self.graph is not None else None
-        if not entry:
+        if self.graph is None:
             return
-        try:
-            record_stage(
-                self.output_dir, "defects", dict(entry),
-                study=self.config.study.name,
-            )
-        except Exception as exc:
-            print(f"  (could not write the defects manifest: {exc})")
+        covered = (self.config.topology.generator.architecture
+                   == "random_crosslinked")
+        if not covered:
+            try:
+                drop_stage(self.output_dir, "chains")
+            except Exception as exc:
+                print(f"  (could not update the run manifest: {exc})")
+        for section, key in (("defects", "defects"), ("chains", "chain_assignment")):
+            entry = self.graph.graph.get(key)
+            if not entry or (section == "chains" and not covered):
+                continue
+            try:
+                record_stage(
+                    self.output_dir, section, dict(entry),
+                    study=self.config.study.name,
+                )
+            except Exception as exc:
+                print(f"  (could not write the {section} manifest: {exc})")
 
     # ------------------------------------------------------------------
     # Stage 5: Conformation
@@ -1138,13 +1658,23 @@ class Pipeline:
             lattice_box=None if self.dims is None else tuple(self.dims),
             periodicity=periodicity,
         )
-        noisy = cm.apply_noise(conformed, magnitude=conf_params["noise_magnitude"])
+        # The noise and the push given to two atoms that coincide come from
+        # streams of their own, keyed on the study name. From the global
+        # stream they were unseeded unless the caller seeded it, so a config
+        # with every seed pinned wrote a different relaxed file on every run.
+        study = self.config.study.name
+        noisy = cm.apply_noise(
+            conformed,
+            magnitude=conf_params["noise_magnitude"],
+            rng=_stable_rng("noise", study),
+        )
         cm.resolve_overlaps(
             noisy,
             roles,
             cutoff=conf_params["overlap_cutoff"],
             max_iters=conf_params["overlap_max_iters"],
             periodicity=periodicity,
+            rng=_stable_rng("overlap", study),
         )
         print()
 
@@ -1181,13 +1711,24 @@ class Pipeline:
                 write_npz(self.graph, str(npz_path), dims=self.dims)
                 print(f"  NPZ written to: {npz_path}")
 
-        sim_cfg = self.raw_config.get("simulation", {})
+        sim_cfg = dict(self.raw_config.get("simulation", {}))
         experimental = self.raw_config.get("experimental", {})
         # LammpsInputGenerator branches on "cg" vs "atomistic" literals
         # (see topon/writers/lammps_inputs.py); the schema's chemistry.model_type
         # uses "coarse_grained" / "atomistic". Map at the call site rather than
         # touching every comparison in the writer.
         model = "cg" if self.config.chemistry.model_type == "coarse_grained" else "atomistic"
+        placed = getattr(self, "_placement_used", None)
+        if model == "atomistic":
+            # A settled build relaxes on the hard-backbone deck with its
+            # backbone dumped for the crossing detector, unless asked
+            # otherwise; the historic placement keeps the historic deck. The
+            # writer's own defaults (soft_push, no dump) are the workflow
+            # route's and a direct caller's.
+            sim_cfg.setdefault("atomistic_protocol",
+                               "soft_push" if placed is None else "hard_backbone")
+            if placed is not None:
+                sim_cfg.setdefault("backbone_dump_every", 10)
 
         # Pass the BASE output_dir (not self.output_dir which already includes
         # study.name) — LammpsInputGenerator re-appends study.name internally.
@@ -1202,16 +1743,31 @@ class Pipeline:
         charmm_style = {}
         if ff == "charmm" and self.config.chemistry.charmm is not None:
             charmm_style = {"charmm_pair_style": self.config.chemistry.charmm.pair_style}
+        # The hard-backbone deck keeps the backbone atom types hard, so it
+        # needs to know which they are; stage 4 recorded them.
+        backbone = {"backbone_types": getattr(self, "_backbone_types", None),
+                    "n_atom_types": getattr(self, "_n_atom_types", None)}
+        if (model == "atomistic" and gen.atomistic_protocol == "hard_backbone"
+                and placed is None):
+            import warnings as _warnings
+            _warnings.warn(
+                "simulation.atomistic_protocol 'hard_backbone' with the historic "
+                "placement: backbone atoms start a third of a bond apart along "
+                "their chords, and the hard core pushes them apart from the first "
+                "step; set conformation.atomistic_placement to start them at "
+                "bond length", RuntimeWarning, stacklevel=2)
         gen.write_serial_soft_minimization(
             settings_file="system.in.settings",
             model_type=model,
             force_field=ff,
+            **backbone,
         )
         gen.write_parallel_production(
             settings_file="system.in.settings",
             model_type=model,
             force_field=ff,
             **charmm_style,
+            **backbone,
         )
         print(f"  LAMMPS scripts written to: {self.output_dir / '04_Simulation'}")
         print()

@@ -14,6 +14,7 @@ from topon.topology.degree_matching import (
     DEFAULT_ATTEMPTS,
     DEFAULT_FALLBACK_ATTEMPTS,
     DEFAULT_MIN_GIANT_FRACTION,
+    DEFAULT_ODD_WALKS,
     parse_degree_distribution,
     resolve_search,
 )
@@ -79,7 +80,8 @@ def format_generator_args(config: GeneratorConfig) -> list[str]:
     The search rides as a named flag, ``--search=exact``, added only when
     the config resolves to the exact search (see
     :func:`resolve_config_search`), with ``--min-giant-fraction=F`` when
-    that floor is not the default. A strict request gets no flag, which is
+    that floor is not the default and ``--odd-walks=on`` (or ``off``) when
+    ``odd_walks`` is set against the default. A strict request gets no flag, which is
     the binary's default, so it runs on a build older than the flag too.
 
     For the exact search one trial is one attempt. A config that leaves
@@ -115,6 +117,9 @@ def format_generator_args(config: GeneratorConfig) -> list[str]:
             # repr is the shortest string that reads back as the same
             # double, so the binary compares against exactly this floor.
             args.append(f"--min-giant-fraction={float(floor)!r}")
+        walks = getattr(config, "odd_walks", None)
+        if walks is not None and bool(walks) != DEFAULT_ODD_WALKS:
+            args.append(f"--odd-walks={'on' if walks else 'off'}")
     return args
 
 
@@ -133,7 +138,10 @@ def run_generator(
         exe_path: Path to generator executable (overrides config).
         seed: Handed to the binary as ``TOPON_SEED``, which fixes its
             whole random stream. ``None`` leaves the binary to seed itself
-            from the clock (or from a ``TOPON_SEED`` already set).
+            from the clock (or from a ``TOPON_SEED`` already set). The
+            environment variable rather than ``--seed`` because a binary
+            built before the flag (the paper's release binaries) reads the
+            variable too; both give the same stream for the same number.
 
     Returns:
         Tuple of (nodes_file_path, edges_file_path).

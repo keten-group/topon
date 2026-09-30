@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.4.0
+
+### Measuring and matching networks
+
+- `topon analyze` measures a network with a set of connectivity descriptors (the shortest cycle through each strand
+  and the fraction of odd cycles, clustering, assortativity, betweenness, effective resistance, the spectrum, the
+  elastically active core, cycle rank, and the chords and their orientation). It reads strand graphs, LAMMPS data files
+  in the end-linked convention of `fix bond/create`, and the atomistic data files of a topon run. `--compare` gives the
+  divergence of the cycle spectra, KS statistics and a composite against a reference, and `--z1` runs Z1+ when it is
+  installed, with Z per strand class and the partner graph. The capacity counts it printed before are still available
+  from Python (`topon.analysis.report.analyze_graph`).
+- New command `topon fit` reads an existing network (an end-linked data file, an NPZ dual graph or a strand graph),
+  measures it and writes a config that regenerates it. It picks the cubic cell and the neighbor cutoff by a short
+  sweep through the pipeline's own first three stages, and it flags what it cannot match. `topon generate --verify`
+  regenerates a config on several seeds and compares it with the reference.
+- `topon inspect` also reads the network off the most relaxed data file of a run (strands, loops, chemical and
+  effective P(f), and Z1+ when it is installed).
+- The NPZ reader checks `schema_version` and upgrades the older eight-column files, which it used to misread.
+- `analysis.z1plus` in a config says where Z1+ is installed. Z1+ is not shipped with topon (its license does not allow
+  redistribution), and on Windows it runs inside WSL.
+
+### Topology
+
+- `topology.generator.seed` pins the generated graph on the Python and the C route, and the C generator takes
+  `--seed` and `--output-dir` flags. A seed gives the graph that seeding the global random streams with it gave before.
+- The exact search closes attempts that end short on scaffolds with odd cycles (SC or BCC beyond the first shell, FCC,
+  `MIX`) with a second walk search, so they land instead of retrying (`odd_walks`, on by default, and C
+  `--odd-walks`). An attempt that reached its target is unchanged, but a seed whose earlier attempt ended short now
+  gives a different graph. `odd_walks: false` gives the graphs of 0.3.
+- The exact search reads its no-slack stop from the scaffold's own coordination instead of `max_functionality`, so a
+  request on a scaffold richer than `max_functionality` keeps its retries and the fallback (it used to stop after one
+  attempt with a wrong message). Its repair also stops as soon as the one site left short cannot be reached, which
+  saves time and changes no graph.
+- A strict request that names every degree with an odd degree sum is refused before the first trial, and a request
+  whose sites do not fit the lattice is refused with both numbers. `count_sites` gives the sites of a lattice (a `MIX`
+  draw included) and `rescale_degree_counts` carries a P(f) to another site count. `topon doctor` checks the site
+  count, the degree-sum parity and Diamond with dangling ends.
+- Networks crosslinked along their chains. `topology.source: "crosslink"` (`topology.crosslinking`) grows the chains
+  as a self-avoiding melt on a cubic lattice and crosslinks reactive beads that touch (every n-th bead, a list, or the
+  crosslink residues of an amino-acid sequence) to an exact count, so every strand's DP and chain follow from where the
+  crosslinks fell. `topology.generator.architecture: "random_crosslinked"` instead covers the strands of a sculpted
+  graph with chains of a given length (`assignment.chains`). `topon.analysis.crosslinked` reads such networks back.
+
+### Atomistic networks
+
+- The strands of an atomistic network are drawn at the force field's bond lengths (`conformation.atomistic_placement`,
+  a meander by default), and the backbones are settled before the first stage, so that no two backbone bonds start
+  closer than 1.5 Å and every bond and angle starts at its equilibrium, with no bond moved through another.
+- On the pipeline route the relaxation uses the hard-backbone stages by default (`simulation.atomistic_protocol:
+  "hard_backbone"`, DREIDING and CHARMM). They keep backbone pairs hard through the first two stages under a
+  thermostat, run 5,000 steps each, and cap the stage-3 minimization. `atomistic_placement: null` gives the build and
+  stages of 0.3.
+- A crossing detector (`topon.analysis.crossings`) reads each stage's backbone dump and finds every pair of backbone
+  bonds that passed through each other. `topon.simulation.protocols.atomistic` gates the three stages on it and on the
+  backbone bond lengths, and reports Z1+ over several seeds.
+- Stage 4 writes a strand record into the run manifest, through which `topon analyze` reads any DREIDING or CHARMM data
+  file of the run into strands (with one Z1+ point per repeat unit).
+- New command `topon track` writes a self-contained HTML page for one or more atomistic runs, with the network, the
+  Z1+ kinks and the numbers of every stage.
+- The chemistry stage refuses a node type that `chemistry.node_type_map` does not have (it used to build a bare Si),
+  and caps the free valences of a bare Si junction with methyls instead of hydrogens (MeSi(O-)3 at a trifunctional
+  junction). The DREIDING and CHARMM epsilon ramps scale each pair's own depth.
+- Because of these changes, an atomistic build of a given config gives different files than in 0.3.
+
+### Coarse-grained builds
+
+- `conformation.junction_jitter` and `conformation.settle_clearance` (both off by default) break the exact chord
+  crossings of a lattice with several neighbor shells and part the bonds of different strands, with every move checked
+  for passages. `guard_report()` counts the close chord triples (`chord_triples`) and the beads lying on another
+  strand's bond (`bead_bond`).
+- Designed pairs deliver their windings. A braided strand is redrawn from its chord, and its winding is measured before
+  it is reported.
+- A junction shell seats all of a junction's chains or none of them, with a radius no smaller than the bond.
+- The relaxation gates judge persistence over every stage, stage 1 included, and describe each long bond by its
+  nearest bead of another molecule.
+
+### Reproducibility
+
+- Stage 5 draws its noise from a stream keyed on the study name, so a config whose seeds are all pinned writes the same
+  relaxed data file on every run. The relaxed data file of every build therefore changes by about the size of the
+  noise (`conformation.noise_magnitude`).
+- The run manifest names the process writing the run (its pid and a hash of the machine name), and a second process
+  writing the same directory is warned about.
+
+### Protein networks
+
+- `topon protein` crosslinks a residue-level melt by default (`--crosslink-method melt`), with one lattice site per
+  residue and no lattice-parity rule. The same command therefore builds a different network, and
+  `--crosslink-method adjacent` builds what 0.3 built. `--contact-radius` sets how close two crosslink residues must be.
+  The demos in `demos/protein/` set `adjacent` and are unchanged.
+
+### Demos and documentation
+
+- The atomistic demos ship the text output of a full relaxation on the new defaults (stage scripts, LAMMPS logs, run
+  manifest and `topon track` page) with a README of the numbers of every stage.
+- The batch workflow seeds each graph with `topology.generator.seed` and resumes a stopped run.
+- `docs/USAGE.md` covers the new commands and config keys, and has a section on LAMMPS on Windows, Z1+ under WSL and
+  long runs.
+
 ## 0.3.2
 
 ### Paper companion

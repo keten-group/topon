@@ -29,10 +29,26 @@ more than one stage. Both counts are always reported, so a failure says
 which kind it is.
 
 ``persistent`` is the weaker reading and can be fooled. It cannot see a bond
-that is long only at the last checkpoint, one that straddles the limit and
-crosses it once, or anything at all when a run has a single gated stage --
-in which case nothing is reported as persistent because nothing can be.
-Prefer the default and read the persistence count beside it.
+that is long only at the last checkpoint, or one that straddles the limit and
+crosses it once. Prefer the default and read the persistence count beside it.
+
+Persistence is judged over *every* stage measured, stage 1 included, even
+though stage 1 cannot fail a run: the runner stops at stage 2, so counting
+only gated stages would report "persistence unknown" at the one moment the
+answer is wanted. A bond long at stages 1 and 2 was there before the gate
+began.
+
+A long bond is also *described*, not only counted. It is either threaded -- a
+bead of another strand driven through the gap -- or pinched, two strands
+crossing at a junction with a bead wedged off the axis; the length is the
+same for both and the neighbour is what separates them. On the DP-20
+re-measurement under the push-off every stopped bond turned out to be a mutual pinch at a
+junction, 0.60-0.65 sigma off the axis. Z1+ jumped in stage 1, as it does on
+every build, and then held (0.221 -> 0.212), so nothing crossed after the
+push-off. The pinches form during the push-off and nothing measured at
+placement predicted them, so the cause is still open; the gate was right to
+stop, and the report line now makes the pinch-or-thread distinction in one
+look.
 
 **Did the entanglement state hold?** Z1+ is a state property, not a
 topological invariant: it counts the kinks of the shortest paths between the
@@ -84,6 +100,12 @@ Z_TOLERANCE = 0.01
 RHO_SAME = 1e-3
 
 
+def _min_image(d, box):
+    """The shortest vector equal to ``d`` under the periodic boundary."""
+    box = np.asarray(box, float)
+    return d - box * np.round(d / box)
+
+
 @dataclass
 class Checkpoint:
     """What one data file says, in the units the gates need."""
@@ -98,6 +120,11 @@ class Checkpoint:
     #: nothing promises LAMMPS writes them in the same order twice, and
     #: persistence is a statement about the same bond.
     bond_pairs: list = field(default_factory=list)
+    #: Atom id -> its wrapped position and its molecule, for describing a long
+    #: bond rather than only counting it. A pinch and a thread have the same
+    #: bond length and a different neighbour.
+    positions: dict = field(default_factory=dict)
+    molecule: dict = field(default_factory=dict)
 
     @property
     def density(self) -> float:
@@ -116,6 +143,39 @@ class Checkpoint:
             return set()
         return {p for p, v in zip(self.bond_pairs, self.bond_lengths)
                 if v > limit}
+
+    def describe(self, pair) -> str:
+        """What is sitting next to this bond, and where on its own strand.
+
+        A bond over the limit is either threaded -- a bead of another strand
+        driven through the gap -- or pinched, two strands crossing at a
+        junction with a bead wedged off the axis. The length is the same for
+        both; the neighbour is what tells them apart. Measured on the DP-20
+        re-measurement, every stopped bond was a mutual pinch at a junction
+        with the wedged bead 0.60-0.65 sigma off the axis, and in five of
+        nine the partner was the junction bead itself or bead 0 or 1 of its
+        strand.
+        """
+        a, b = pair
+        xa, xb = self.positions.get(a), self.positions.get(b)
+        if xa is None or xb is None or not self.molecule:
+            return ""
+        home = {self.molecule.get(a), self.molecule.get(b)}
+        mid = xa + 0.5 * _min_image(xb - xa, self.box)
+        best, best_d = None, float("inf")
+        for i, x in self.positions.items():
+            if self.molecule.get(i) in home:
+                continue
+            d = float(np.linalg.norm(_min_image(x - mid, self.box)))
+            if d < best_d:
+                best, best_d = i, d
+        if best is None:
+            return ""
+        m = self.molecule.get(best)
+        ids = sorted(i for i, mm in self.molecule.items() if mm == m)
+        where = ids.index(best) if best in ids else -1
+        return (f"nearest foreign bead {where} of {len(ids)} on molecule {m}, "
+                f"{best_d:.2f} sigma off the bond midpoint")
 
     def summary(self) -> dict:
         return {"file": self.path.name, "atoms": self.n_atoms,
@@ -157,6 +217,10 @@ def read_checkpoint(path) -> Checkpoint:
     xcol = {"full": 4, "charge": 3, "molecular": 3, "bond": 3, "angle": 3,
             "atomic": 2}
     atom_x = 4
+    # Styles whose second column is the molecule id. `charge` has x in the
+    # same column as `molecular` but no molecule, so the column is no guide.
+    with_mol = {"full", "molecular", "bond", "angle"}
+    has_mol = True
 
     for raw in lines:
         line = raw.split("#")[0].strip()
@@ -164,7 +228,9 @@ def read_checkpoint(path) -> Checkpoint:
             continue
         if line == "Atoms":
             comment = raw.split("#", 1)[1].split() if "#" in raw else []
-            atom_x = xcol.get(comment[0] if comment else "", 4)
+            style = comment[0] if comment else "full"
+            atom_x = xcol.get(style, 4)
+            has_mol = style in with_mol or style not in xcol
         if line in known:
             # A section header is the section name alone on the line; any
             # "# full" style qualifier was stripped with the comment above.
@@ -186,11 +252,14 @@ def read_checkpoint(path) -> Checkpoint:
         raise ValueError(f"{path.name}: no box dimensions found")
 
     pos: dict[int, np.ndarray] = {}
+    mol: dict[int, int] = {}
     for line in sections.get("Atoms", []):
         p = line.split()
         # atom_style full: id mol type q x y z [ix iy iz]
         pos[int(p[0])] = np.array([float(p[atom_x]), float(p[atom_x + 1]),
                                    float(p[atom_x + 2])])
+        if has_mol:
+            mol[int(p[0])] = int(p[1])
 
     bl, pairs = [], []
     for line in sections.get("Bonds", []):
@@ -214,7 +283,7 @@ def read_checkpoint(path) -> Checkpoint:
 
     return Checkpoint(path=path, box=box, n_atoms=n_atoms or len(pos),
                       bond_lengths=np.array(bl), temperature=temperature,
-                      bond_pairs=pairs)
+                      bond_pairs=pairs, positions=pos, molecule=mol)
 
 
 @dataclass
@@ -224,6 +293,9 @@ class GateReport:
     stages: dict = field(default_factory=dict)      # tag -> checkpoint summary
     failures: list = field(default_factory=list)    # human-readable, in order
     notes: list = field(default_factory=list)       # seen, but not a failure
+    #: One line per long bond saying what sits next to it -- a pinch and a
+    #: thread have the same length and a different neighbour.
+    details: list = field(default_factory=list)
     z_by_stage: dict = field(default_factory=dict)
     z_gated: bool = False
     mode: str = "instant"
@@ -238,6 +310,7 @@ class GateReport:
     def summary(self) -> dict:
         return {"passed": self.passed, "stages": self.stages,
                 "failures": self.failures, "notes": self.notes,
+                "details": self.details,
                 "z_by_stage": self.z_by_stage, "z_gated": self.z_gated,
                 "mode": self.mode,
                 "persistent_bonds": len(self.persistent),
@@ -260,6 +333,8 @@ class GateReport:
                     f"{len(self.persistent)}")
         for line in self.notes:
             rows.append(f"  note: {line}")
+        for line in self.details:
+            rows.append(f"  {line}")
         rows.append("GATES PASSED" if self.passed else
                     "GATES FAILED:\n  " + "\n  ".join(self.failures))
         return "\n".join(rows)
@@ -287,7 +362,7 @@ def z_hold(stages: dict, tol: float = RHO_SAME) -> bool:
 
 def check(stages, z_by_stage=None, bond_limit=BOND_GATE,
           z_tolerance=Z_TOLERANCE, gate_z=None, mode="instant",
-          gate_from="stage2_pushoff") -> GateReport:
+          gate_from="stage2_pushoff", describe_limit=8) -> GateReport:
     """Run both gates over the per-stage checkpoints.
 
     Args:
@@ -300,15 +375,20 @@ def check(stages, z_by_stage=None, bond_limit=BOND_GATE,
             run that did not compress. The default is calibrated at the
             reference's scale; see :data:`Z_TOLERANCE`.
         gate_z: force the Z gate on or off. ``None`` decides from the
-            densities, which is the brief's rule.
+            densities, which is the specification's rule.
         mode: ``"instant"`` fails on any bond over the limit at any gated
             stage -- the acceptance criterion as written. ``"persistent"``
             fails only on a bond over the limit at more than one stage,
             which is what a threaded bond looks like and what a thermal
             excursion does not. Both counts are reported either way.
         gate_from: the first stage the bond gate applies to. Stage 1 is
-            excluded: it is still resolving the build's overlaps, and a bond
-            briefly above 1.2 sigma there is the push-off doing its job.
+            excluded from *failing* a run -- it is still resolving the
+            build's overlaps, and a bond briefly above 1.2 sigma there is the
+            push-off doing its job -- but it still counts as evidence for
+            whether a bond is persistent.
+        describe_limit: how many long bonds per stage to describe in the
+            report. Describing one is a scan over every bead in the
+            checkpoint, so this is capped rather than unbounded.
 
     Returns:
         A :class:`GateReport`, which is falsy on ``.passed`` if anything failed.
@@ -331,9 +411,14 @@ def check(stages, z_by_stage=None, bond_limit=BOND_GATE,
     # placement, REPORT.md 4.2). Gating there throws away a correct build.
     gated = tags[tags.index(gate_from):] if gate_from in tags else []
 
-    # Which stages each over-limit bond appears at, by atom pair.
+    # Which stages each over-limit bond appears at, by atom pair. The
+    # evidence spans *every* stage measured, stage 1 included: a bond long at
+    # stages 1 and 2 was there before the gate began and is persistent by the
+    # time the gate first looks, where counting only gated stages would
+    # report it as "persistence unknown" at exactly the moment the runner
+    # stops. Stage 1 still cannot fail a run -- only `gated` does that.
     seen_at: dict = {}
-    for tag in gated:
+    for tag in tags:
         for pair in stages[tag].stretched_pairs(bond_limit):
             seen_at.setdefault(pair, []).append(tag)
     report.persistent = {p: t for p, t in seen_at.items() if len(t) > 1}
@@ -360,6 +445,17 @@ def check(stages, z_by_stage=None, bond_limit=BOND_GATE,
             report.failures.append(line)
         else:
             report.notes.append(line)
+        # What is sitting next to each of them. A pinch and a thread have the
+        # same bond length and a different neighbour, and this is the line
+        # that told the two apart in one look on the DP-20 re-measurement.
+        cp = stages[tag]
+        for pair in sorted(cp.stretched_pairs(bond_limit))[:describe_limit]:
+            what = cp.describe(pair)
+            if what:
+                length = dict(zip(cp.bond_pairs, cp.bond_lengths)).get(pair)
+                report.details.append(
+                    f"{tag}: bond {pair[0]}-{pair[1]} at "
+                    f"{length:.3f} sigma, {what}")
 
     a = report.z_by_stage.get("stage3_build")
     b = report.z_by_stage.get("stage5_quench")

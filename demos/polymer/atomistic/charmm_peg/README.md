@@ -20,8 +20,8 @@ ordinary pipeline with `chemistry.force_field = "charmm"` instead of DREIDING.
 cd demos/polymer/atomistic/charmm_peg
 topon generate config.json
 cd output_charmm_peg/charmm_peg/04_Simulation
-lmp -in minimize_1_serial.in       # pair soft, bonded terms with 1-4 weights 0
-lmp -in minimize_2_parallel.in     # CHARMM LJ epsilon ramp (lj/cut/coul/long, arithmetic mixing)
+lmp -in minimize_1_serial.in       # push-off, backbone pairs hard, bonded terms with 1-4 weights 0
+lmp -in minimize_2_parallel.in     # LJ epsilon ramp of the light atoms (lj/cut/coul/long, arithmetic mixing)
 lmp -in minimize_3_parallel.in     # full CHARMM: lj/charmmfsw/coul/long + PPPM, minimize, NVT, NPT
 ```
 
@@ -37,7 +37,8 @@ Fourier terms, only the first of which holds the 1-4 weight). The run manifest l
 each residue kind.
 
 `expected_output/` has the three coefficient includes and the groups file of the chemistry stage, the three stage
-scripts, and the LAMMPS logs of the three stages (LAMMPS 2 Apr 2025, 4 OpenMP threads, about 4 minutes in all). Stage
-3 minimizes the energy from 12,022 to 3,869 kcal/mol and ends near 307 K. The conformation stage adds noise from the
-global random stream, so the relaxed data file is not kept and these numbers change a little from run to run (another
-run went from 10,473 to 2,187 kcal/mol and ended near 301 K).
+scripts, the LAMMPS logs of the three stages, the run manifest and the `topon track` page of the run, with a README of
+the numbers. It was made on 29 Sep 2026 with the atomistic defaults of topon 0.4.0. The backbones are placed as settled
+meanders and relaxed on the CHARMM hard-backbone stages (LAMMPS 2 Apr 2025, 4 OpenMP threads, 2.6 minutes in all), and
+no backbone bond passes through another at any stage. Stage 3 minimizes the energy from 6,420 to 2,395 kcal/mol and
+ends near 303 K after NPT. The build is seeded, but the dynamics make these numbers change a little from run to run.
