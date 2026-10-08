@@ -21,17 +21,23 @@ spatial, as built
     a fraction of a spacing, so this is most of the relaxed value, but it is
     the built state and is labelled so.
 entanglement, relaxed
-    only when a relaxed data file is given (``relaxed``): Z1+ per strand
-    class against the reference with KS p-values, the per-bridge histogram
-    against ``conformation.entanglement.target_hist``, partners, and the
-    chain statistics after relaxation. Producing that file needs MD, which
-    ``topon generate`` does not run; ``tests/workflows/
-    run_conformation_controller.py`` does, at the fitted build knob.
+    only when a relaxed build is given (``relaxed``, a data file or a run
+    directory): Z1+ per strand class against the reference with KS
+    p-values, the per-bridge histogram beside the reference's and against
+    ``conformation.entanglement.target_hist``, partners, the chain
+    statistics after relaxation, and whether it meets the acceptance
+    (:data:`Z_ACCEPT`). The file is checked first: that it is the network
+    this config builds at its seed, that LAMMPS wrote it after a run, and
+    that its units, density and temperature are the reference's. Producing
+    it needs MD, which ``topon generate`` does not run; the deck it writes
+    does, and so does the controller's driver in the development
+    repository, which builds at the fitted knob.
 """
 from __future__ import annotations
 
 import collections
 import json
+import re
 import time
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -45,6 +51,14 @@ from topon.inverse.scaffold import build_graph
 #: reference's past which the Z comparison is flagged: Z1+ is a state
 #: property and compares only between matched states (REPORT.md 4.4).
 STATE_TOLERANCE = {"density": 0.02, "temperature": 0.10}
+
+#: When a relaxed build's entanglement matches the reference's:
+#: Z1+ per bridge within this fraction of the reference's, and the per-bridge
+#: Z of the two not told apart by a two-sample KS test at this level.
+Z_ACCEPT = {"z_bridge_gap": 0.10, "hist_p": 0.05}
+
+#: Strand classes whose Z1+ is compared, in the order they are printed.
+Z_CLASSES = ("bridge", "loop", "dangling")
 
 
 def _requested(config: dict) -> dict:
@@ -145,21 +159,41 @@ def verify(config: dict, reference, *, seeds: Sequence[int],
            built: Optional[dict] = None, relaxed=None,
            junction_type: Optional[int] = None, z1_config=None,
            measured: Optional[Measurement] = None,
-           log: Optional[Callable[[str], None]] = None) -> dict:
+           log: Optional[Callable[[str], None]] = None,
+           replicates: Optional[Sequence] = None) -> dict:
     """Regenerate ``config`` on ``seeds`` and compare it with ``reference``.
 
     ``built`` maps a seed to a graph already built (the one ``topon
     generate`` just made from the config's own seed); it is regenerated
     anyway and the two are compared, which is the determinism check.
-    ``relaxed`` is an end-linked data file of the relaxed build, for the
-    Z1+ part. ``measured`` is the reference's measurement when the caller
+    ``relaxed`` is an end-linked data file of the relaxed build, or the run
+    directory it is in, for the Z1+ part; it is held against the first of
+    ``seeds``. ``measured`` is the reference's measurement when the caller
     already has it (with Z1+ per strand if ``relaxed`` is given), to save
     measuring it again. Returns the report as plain numbers.
+
+    A config that builds a network crosslinked along its chains (the
+    crosslink generator or the lattice route) is verified by
+    :func:`topon.inverse.crosslinked_verify.verify_crosslinked`, which
+    also takes ``replicates`` of the reference.
     """
     from topon.analysis.descriptors import compare
+    from topon.inverse.crosslinked_verify import (
+        is_crosslinked_config, verify_crosslinked)
 
+    if is_crosslinked_config(config) or (
+            measured is not None
+            and measured.record.get("architecture") == "crosslinked"):
+        return verify_crosslinked(config, reference, seeds=seeds, built=built,
+                                  replicates=replicates, measured=measured,
+                                  relaxed=relaxed, log=log)
+    if replicates:
+        raise ValueError("replicates are held against a build crosslinked "
+                         "along its chains; this config is end-linked")
     say = log or (lambda msg: None)
     t0 = time.perf_counter()
+    if relaxed is not None:
+        resolve_relaxed(relaxed)       # a run with no MD fails before the builds
     if measured is None:
         ref = read_reference(reference, junction_type=junction_type)
         want_z1 = relaxed is not None and ref.source == "data"
@@ -229,7 +263,8 @@ def verify(config: dict, reference, *, seeds: Sequence[int],
         "summary": _summary(per_seed, rrec, requested),
     }
     if relaxed is not None:
-        report["relaxed"] = _relaxed(relaxed, config, ref_meas, z1_config, say)
+        report["relaxed"] = _relaxed(relaxed, config, ref_meas, z1_config, say,
+                                     built=per_seed[0] if per_seed else None)
     report["flags"] = _flags(report, rrec, config)
     report["seconds"] = round(time.perf_counter() - t0, 1)
     return report
@@ -324,38 +359,293 @@ def _largest_term(rows) -> Optional[dict]:
                                      if len(without) > 1 else 0.0)}
 
 
-def _relaxed(path, config, ref_meas, z1_config, say) -> dict:
-    """Z1+ and chain statistics of a relaxed build against the reference."""
+def resolve_relaxed(path) -> Path:
+    """The relaxed data file ``path`` names: the file, or the one in a run.
+
+    A directory is either kind of run: a ``topon generate`` study folder
+    (``<output_dir>/<name>``, its checkpoints in ``04_Simulation``), that
+    ``04_Simulation`` folder, or a controller round
+    (``<validation>/data/runs/<case>_r<n>``, flat). The furthest MD
+    checkpoint in it is taken: on the push-off the stage-5 quench, or stage
+    6 when the deck converts to the quartic bond. The conformation stage's
+    ``system_relaxed.data`` has only had its overlaps removed and is never
+    taken from a directory.
+
+    Raises:
+        ValueError: a directory with no MD checkpoint in it.
+    """
+    from topon.analysis.run_summary import network_file
+
+    p = Path(path)
+    if not p.is_dir():
+        return p
+    for flat in (False, True):
+        f = network_file(p, flat=flat)
+        if f is not None and f.name != "system_relaxed.data":
+            return f
+    raise ValueError(
+        f"{p}: no MD checkpoint here or in its 04_Simulation folder (the "
+        f"push-off writes stage1_min.data to stage5_final_quench.data). Run "
+        f"the relaxation first, or name the data file.")
+
+
+def data_header(path) -> dict:
+    """What the first line of a LAMMPS data file says about where it came from.
+
+    ``write_data`` heads its file ``LAMMPS data file via write_data, version
+    ..., timestep = N, units = U``; topon's writers and other generators
+    write a first line of their own. Returns ``write_data`` (bool),
+    ``timestep`` and ``units`` (None when the line does not say) and the
+    line itself.
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        first = f.readline().strip()
+    step = re.search(r"timestep\s*=\s*(\d+)", first)
+    units = re.search(r"units\s*=\s*(\w+)", first)
+    return {"write_data": "write_data" in first,
+            "timestep": int(step.group(1)) if step else None,
+            "units": units.group(1) if units else None, "line": first}
+
+
+def _after_md(header: dict) -> bool:
+    return bool(header.get("write_data")) and (header.get("timestep") or 0) > 0
+
+
+def _graph_hash(G) -> str:
+    """A hash of a strand graph that two isomorphic graphs share.
+
+    Junctions and free ends are the nodes, labelled by kind and by the
+    primary loops they carry; the strands between two nodes are one edge
+    labelled by how many there are; the vacancies of a generated cell are
+    left out (:func:`topon.analysis.descriptors.network_view`). Weisfeiler-
+    Lehman, so equal hashes are not a proof of isomorphism, but a relaxed
+    build and the graph it was built from always agree, and two seeds of
+    one config have not been seen to.
+    """
+    import networkx as nx
+
+    from topon.analysis.descriptors import network_view
+
+    V = network_view(G)
+    loops = collections.Counter(u for u, v in V.edges() if u == v)
+    H = nx.Graph()
+    for n, d in V.nodes(data=True):
+        H.add_node(n, label=f"{d.get('kind')}:{loops.get(n, 0)}")
+    mult = collections.Counter(frozenset((u, v))
+                               for u, v in V.edges() if u != v)
+    for pair, c in mult.items():
+        u, v = tuple(pair)
+        H.add_edge(u, v, mult=str(c))
+    return nx.weisfeiler_lehman_graph_hash(H, node_attr="label",
+                                           edge_attr="mult", iterations=4)
+
+
+def _network_check(rec: dict, built: dict,
+                   same_graph: Optional[bool] = None) -> dict:
+    """The relaxed file's network against the build of the config's seed.
+
+    Relaxation moves beads and never bonds, so the strand graph of a relaxed
+    build is the one the config built, exactly. ``same_network`` asks
+    whether it is a build of this config: junctions by effective degree,
+    strands per class and the DP of bridges and loops, which the config
+    fixes whatever the seed. ``same_graph`` (given by the caller, from
+    :func:`_graph_hash`) whether it is the graph of this seed.
+    ``same_strands`` whether its other strands are the pipeline's: sol
+    chains, dangling DP and the bead count. A file of another config fails
+    the first unless that config differs only in what these do not see (a
+    cutoff that gives the same counts, for instance), another seed the
+    second, a build that dropped or shortened free-ended strands the third.
+    """
+    net, strands = [], []
+    for cls in ("bridge", "loop", "dangling"):
+        a, b = rec["chains"].get(cls, 0), built["chains"].get(cls, 0)
+        if a != b:
+            net.append(f"{a} {cls} strands against {b}")
+    pa = {int(k): int(v) for k, v in rec["pf_effective"].items()}
+    pb = {int(k): int(v) for k, v in built["pf_effective"].items()}
+    if pa != pb:
+        net.append(f"effective P(f) {_pf(pa)} against {_pf(pb)}")
+    a, b = rec["chains"].get("free", 0), built["chains"].get("free", 0)
+    if a != b:
+        strands.append(f"{a} sol chains against {b}")
+    rdp = (rec.get("dp") or {}).get("by_class") or {}
+    bdp = (built.get("dp") or {}).get("by_class") or {}
+    for cls in [c for c in Z_CLASSES + ("free",) if c in rdp and c in bdp]:
+        if abs(rdp[cls]["mean"] - bdp[cls]["mean"]) > 1e-9:
+            (net if cls in ("bridge", "loop") else strands).append(
+                f"{cls} DP {rdp[cls]['mean']:.4g} against "
+                f"{bdp[cls]['mean']:.4g}")
+    if rec.get("n_atoms") != built.get("beads"):
+        strands.append(f"{rec.get('n_atoms')} beads against "
+                       f"{built.get('beads')}")
+    return {"seed": built["seed"], "same_network": not net,
+            "same_graph": same_graph,
+            "same_strands": not strands, "differences": net + strands,
+            "built": {"chains": built["chains"], "beads": built.get("beads")}}
+
+
+def _z_against(z, zr) -> dict:
+    """Z1+ of one strand class against the reference's, with a KS p-value.
+
+    A class on one side only (a build with no loops, a reference with no sol
+    chains) is kept with its counts and no p-value rather than dropped.
+    """
+    n, rn = (0 if z is None else len(z)), (0 if zr is None else len(zr))
+    if n and rn:
+        return _ks(z, zr)
+    return {"p": None, "statistic": None,
+            "mean": float(np.mean(z)) if n else None,
+            "reference_mean": float(np.mean(zr)) if rn else None,
+            "n": n, "reference_n": rn}
+
+
+def _histogram(z, zr) -> Optional[dict]:
+    """Per-bridge Z as fractions [P(Z=0), P(Z=1), ...], relaxed and reference."""
+    if z is None or zr is None or not len(z) or not len(zr):
+        return None
+    z, zr = np.asarray(z, int), np.asarray(zr, int)
+    top = int(max(z.max(), zr.max())) + 1
+    return {side: [round(float(c) / len(x), 4)
+                   for c in np.bincount(x, minlength=top)]
+            for side, x in (("relaxed", z), ("reference", zr))}
+
+
+def _partners(z1: dict, rz1: dict) -> dict:
+    """Chain-chain entanglement partners, relaxed and reference.
+
+    ``pairs`` counts the distinct chain pairs Z1+ names at a kink, which
+    grows with the number of chains; ``per_strand`` and ``per_bridge`` are
+    the mean number of distinct partners, which compare across networks of
+    different size.
+    """
+    def per_bridge(z):
+        h = np.asarray(z.get("partner_degree_hist_bridge") or [], float)
+        if not h.sum():
+            return None
+        return float((np.arange(len(h)) * h).sum() / h.sum())
+
+    return {"pairs": {"measured": z1.get("partner_pairs"),
+                      "reference": rz1.get("partner_pairs")},
+            "per_strand": {"measured": z1.get("partner_degree_mean"),
+                           "reference": rz1.get("partner_degree_mean")},
+            "per_bridge": {"measured": per_bridge(z1),
+                           "reference": per_bridge(rz1)}}
+
+
+def _acceptance(zb: Optional[dict], this_build: bool = True,
+                state_ok: bool = True) -> Optional[dict]:
+    """Z per bridge within :data:`Z_ACCEPT` of the reference's, and the
+    per-bridge KS p above it.
+
+    ``met`` needs both, on a build of this config (``this_build``) at the
+    reference's state (``state_ok``, :func:`_state`); otherwise the two
+    numbers are kept and the verdict is withheld (``met`` False,
+    ``withheld`` saying why).
+    """
+    if not zb or zb.get("mean") is None or not zb.get("reference_mean"):
+        return None
+    gap = (zb["mean"] - zb["reference_mean"]) / zb["reference_mean"]
+    p = zb.get("p")
+    within = abs(gap) <= Z_ACCEPT["z_bridge_gap"]
+    hist_ok = p is not None and p > Z_ACCEPT["hist_p"]
+    withheld = ([] if this_build else ["another network"]) + (
+        [] if state_ok else ["not at the reference's state"])
+    return {"z_bridge": zb["mean"], "reference": zb["reference_mean"],
+            "relative_gap": float(gap), "z_within": bool(within),
+            "hist_p": p, "hist_ok": bool(hist_ok),
+            "this_build": bool(this_build), "state_ok": bool(state_ok),
+            "withheld": withheld,
+            "met": bool(within and hist_ok and not withheld),
+            "tolerance": Z_ACCEPT["z_bridge_gap"], "p_min": Z_ACCEPT["hist_p"]}
+
+
+def _state(rel: dict, rrec: dict) -> dict:
+    """Whether the relaxed file is at the reference's state, check by check.
+
+    ``after_md``: LAMMPS wrote it after a run. ``units``, ``density`` and
+    ``temperature`` each give both values and ``ok``, which is None when a
+    side does not say (no units on its first line, no bead density, no
+    Velocities section or velocities that are all zero), so a quantity that
+    was not checked is never read as matched. ``ok`` overall is False when
+    the file is not after MD or any check failed.
+    """
+    hdr, rhdr = rel.get("header") or {}, rel.get("reference_header") or {}
+    out: dict = {"after_md": _after_md(hdr)}
+    u, ru = hdr.get("units"), rhdr.get("units")
+    out["units"] = {"relaxed": u, "reference": ru,
+                    "ok": (u == ru) if u and ru else None}
+    for key, tol in STATE_TOLERANCE.items():
+        a = rel.get(key)
+        b = (rrec.get(key) if key == "density"
+             else (rrec.get("spatial") or {}).get(key))
+        ok = None if a is None or not b else bool(abs(a - b) / b <= tol)
+        out[key] = {"relaxed": a, "reference": b, "tolerance": tol, "ok": ok}
+    out["ok"] = bool(out["after_md"] and all(
+        out[k]["ok"] is not False for k in ("units", "density", "temperature")))
+    return out
+
+
+def _relaxed(path, config, ref_meas, z1_config, say, built=None) -> dict:
+    """Z1+ and chain statistics of a relaxed build against the reference.
+
+    ``path`` is the data file or a run directory (:func:`resolve_relaxed`).
+    ``built`` is the verification's row for the config's own seed: the
+    relaxed file's network is checked against it, because a file from
+    another config or seed would otherwise be compared with the reference as
+    if it were this build.
+    """
     from topon.conformation.entanglement import hist_ks
 
+    given = Path(path)
+    path = resolve_relaxed(given)
     rel = read_reference(path)
     if rel.source != "data":
         raise ValueError(f"{path}: the relaxed build has to be an end-linked "
                          f"LAMMPS data file")
-    m = measure(rel, z1=True, z1_config=z1_config)
+    # The graph is the build's; its descriptors are the seed row's already.
+    m = measure(rel, heavy=False, z1=True, z1_config=z1_config)
     rec = m.record
+    rrec = ref_meas.record
     out = {"input": str(path), "density": rec.get("density"),
            "temperature": (rec.get("spatial") or {}).get("temperature"),
-           "spatial": rec.get("spatial"), "chains": rec["chains"]}
+           "spatial": rec.get("spatial"), "chains": rec["chains"],
+           "beads": rec.get("n_atoms"), "header": data_header(path)}
+    if given != path:
+        out["given"] = str(given)
+    if rrec.get("source") == "data":
+        out["reference_header"] = data_header(rrec["input"])
+    if built is not None:
+        # read as the seed row reads it, node kinds from the end sites
+        G, _ = build_graph(config, seed=built["seed"])
+        gen = generated_reference(G, config, f"seed {built['seed']}")
+        out["network"] = _network_check(
+            rec, built,
+            same_graph=_graph_hash(gen.graph) == _graph_hash(rel.graph))
+    out["state"] = _state(out, rrec)
     rz = ref_meas.z_per_strand
-    out["z_by_class"] = {cls: _ks(m.z_per_strand[cls], rz[cls])
-                         for cls in ("bridge", "dangling", "loop")
-                         if cls in m.z_per_strand and cls in rz}
-    ent = (config.get("conformation") or {}).get("entanglement") or {}
+    out["z_by_class"] = {cls: _z_against(m.z_per_strand.get(cls), rz.get(cls))
+                         for cls in Z_CLASSES
+                         if cls in m.z_per_strand or cls in rz}
     zb = m.z_per_strand.get("bridge")
+    hist = _histogram(zb, rz.get("bridge"))
+    if hist:
+        out["histogram"] = {**hist, "p": out["z_by_class"]["bridge"]["p"]}
+    ent = (config.get("conformation") or {}).get("entanglement") or {}
     if zb is not None and ent.get("target_hist"):
         out["target_hist"] = hist_ks(zb, ent["target_hist"])
     if zb is not None and ent.get("target_Z"):
         tz = float(ent["target_Z"])
         out["target_Z"] = {"target": tz, "measured": float(np.mean(zb)),
                            "relative_gap": float((np.mean(zb) - tz) / tz)}
-    z1 = rec.get("z1") or {}
-    rz1 = ref_meas.record.get("z1") or {}
-    out["partners_per_strand"] = {"measured": z1.get("partner_degree_mean"),
-                                  "reference": rz1.get("partner_degree_mean")}
-    say(f"  relaxed: Z per bridge "
-        + (f"{out['target_Z']['measured']:.3f} against {out['target_Z']['target']:.3f}"
-           if "target_Z" in out else "n/a"))
+    out["partners"] = _partners(rec.get("z1") or {}, rrec.get("z1") or {})
+    out["acceptance"] = _acceptance(
+        out["z_by_class"].get("bridge"),
+        this_build=bool((out.get("network") or {}).get("same_network", True)),
+        state_ok=out["state"]["ok"])
+    acc = out["acceptance"]
+    say("  relaxed: Z per bridge "
+        + (f"{acc['z_bridge']:.3f} against the reference's "
+           f"{acc['reference']:.3f}" if acc else "n/a"))
     return out
 
 
@@ -395,15 +685,101 @@ def _flags(report, rrec, config) -> list:
                                 + "Pass --relaxed <final data file> to "
                                   "measure one."})
     else:
-        for key, tol in STATE_TOLERANCE.items():
-            a, b = rel.get(key), (rrec.get(key) if key == "density"
-                                  else (rrec.get("spatial") or {}).get(key))
-            if a and b and abs(a - b) / b > tol:
-                flags.append({"level": "warn", "what": f"unmatched {key}",
-                              "detail": f"relaxed {a:.4g} against the "
-                                        f"reference's {b:.4g}; Z1+ compares "
-                                        f"only at matched density and "
-                                        f"temperature"})
+        flags += _relaxed_flags(rel, rrec)
+    return flags
+
+
+def _relaxed_flags(rel: dict, rrec: dict) -> list:
+    """Why the relaxed comparison may not be read as it stands, and its verdict."""
+    flags = []
+
+    def flag(level, what, detail):
+        flags.append({"level": level, "what": what, "detail": detail})
+
+    name = Path(rel["input"]).name
+    hdr = rel.get("header") or {}
+    st = rel.get("state") or _state(rel, rrec)
+    if not st["after_md"]:
+        flag("warn", "not a relaxed state",
+             f"{name} was not written by LAMMPS after a run (its first line "
+             f"is {hdr.get('line', '')!r}), so its Z1+ is that of a build; "
+             f"the reference's is a final-state number. Pass the last "
+             f"checkpoint of the relaxation, or its run directory.")
+    u = st["units"]
+    if u["ok"] is False:
+        flag("warn", "unmatched units",
+             f"{name} is in {u['relaxed']} units and the reference in "
+             f"{u['reference']}; densities, lengths and temperatures do not "
+             f"compare")
+    elif u["ok"] is None:
+        flag("note", "units not checked",
+             ("the relaxed file's" if not u["relaxed"] else "the reference's")
+             + " first line does not name its units")
+    for key in STATE_TOLERANCE:
+        c = st[key]
+        if c["ok"] is False:
+            flag("warn", f"unmatched {key}",
+                 f"relaxed {c['relaxed']:.4g} against the reference's "
+                 f"{c['reference']:.4g}; Z1+ compares only at matched "
+                 f"density and temperature")
+        elif c["ok"] is None:
+            side = "the relaxed file" if c["relaxed"] is None else "the reference"
+            if key != "temperature":
+                why = f"{side} has no bead density"
+            elif c["relaxed"] is None or c["reference"] is None:
+                why = f"{side} has no Velocities section"
+            else:
+                why = "the reference's velocities are all zero"
+            flag("note", f"{key} not checked",
+                 f"{why}, so the state the two Z1+ numbers were measured at "
+                 f"is matched on {key} by assumption only")
+    net = rel.get("network")
+    if net and not net["same_network"]:
+        flag("warn", "not this config's network",
+             f"the relaxed file is not a build of this config (against seed "
+             f"{net['seed']}: " + "; ".join(net["differences"])
+             + "). It was built from another config, and its Z1+ is not "
+               "this fit's.")
+    else:
+        if net and net.get("same_graph") is False:
+            flag("note", "another seed",
+                 f"the relaxed file has this config's strand counts, P(f) "
+                 f"and DP but not seed {net['seed']}'s graph: a build of "
+                 f"another seed, or of another config that gives the same "
+                 f"counts")
+        if net and not net["same_strands"]:
+            flag("note", "strands differ from the pipeline's",
+                 "the network is this config's, but "
+                 + "; ".join(net["differences"]))
+    zbc = rel.get("z_by_class") or {}
+    if zbc and not any(k.get("reference_n") for k in zbc.values()):
+        flag("note", "no reference Z1+",
+             "the reference carries no Z1+ per strand (it is not a data "
+             "file, or it was measured without Z1+), so the relaxed build's "
+             "Z is listed and not compared")
+    else:
+        for cls, k in zbc.items():
+            if k.get("p") is None and bool(k.get("n")) != bool(k.get("reference_n")):
+                flag("note", f"no {cls} Z to compare",
+                     f"{k.get('n', 0)} {cls} strands in the relaxed build "
+                     f"and {k.get('reference_n', 0)} in the reference")
+    acc = rel.get("acceptance")
+    if acc:
+        detail = (f"Z per bridge {acc['z_bridge']:.3f} against "
+                  f"{acc['reference']:.3f} ({100 * acc['relative_gap']:+.1f} %, "
+                  f"{'within' if acc['z_within'] else 'outside'} "
+                  f"{100 * acc['tolerance']:.0f} %); per-bridge histogram KS "
+                  f"p {_f(acc['hist_p'])} "
+                  f"({'above' if acc['hist_ok'] else 'not above'} "
+                  f"{acc['p_min']})")
+        if acc.get("withheld"):
+            flag("warn", "entanglement verdict withheld",
+                 f"the relaxed file is {' and '.join(acc['withheld'])}, so "
+                 f"these numbers are not a verdict on this config: {detail}")
+        else:
+            flag("note" if acc["met"] else "warn",
+                 "entanglement " + ("matched" if acc["met"] else "not matched"),
+                 detail)
     return flags
 
 
@@ -437,6 +813,9 @@ def _f(x, fmt=".3f") -> str:
 
 def format_verify(report: dict) -> str:
     """The verification for the terminal."""
+    if report.get("architecture") == "crosslinked":
+        from topon.inverse.crosslinked_verify import format_verify_crosslinked
+        return format_verify_crosslinked(report)
     c, ref, s = report["config"], report["reference"], report["summary"]
     rows = report["seeds"]
     lines = [f"topon generate --verify  {ref['input']}", ""]
@@ -495,29 +874,7 @@ def format_verify(report: dict) -> str:
                      f"built state, before relaxation")
     rel = report.get("relaxed")
     if rel:
-        lines.append("")
-        lines.append(f"  relaxed   : {rel['input']} (density "
-                     f"{_f(rel.get('density'), '.4f')}, T {_f(rel.get('temperature'))})")
-        for cls, k in rel["z_by_class"].items():
-            lines.append(f"    Z {cls:<9s}: {_f(k['mean'])} against "
-                         f"{_f(k['reference_mean'])}, KS p {_f(k['p'])}")
-        if rel.get("target_hist"):
-            lines.append(f"    histogram : KS p {_f(rel['target_hist']['p'])} "
-                         f"against target_hist")
-        pp = rel.get("partners_per_strand") or {}
-        if pp.get("measured") is not None:
-            lines.append(f"    partners  : {_f(pp['measured'])} per strand "
-                         f"against {_f(pp['reference'])}")
-        rs = rel.get("spatial") or {}
-        if rs.get("chord_mean") is not None and rsp.get("chord_mean"):
-            lines.append(f"    reach     : {rs['chord_mean']:.2f} +- "
-                         f"{rs['chord_sd']:.2f} (p95 {rs['chord_p95']:.2f}) "
-                         f"against {rsp['chord_mean']:.2f} +- "
-                         f"{rsp['chord_sd']:.2f} (p95 {rsp['chord_p95']:.2f}) "
-                         f"sigma, after relaxation")
-        if rs.get("chain_ree_mean") and rsp.get("chain_ree_mean"):
-            lines.append(f"    Ree       : {rs['chain_ree_mean']:.2f} against "
-                         f"{rsp['chain_ree_mean']:.2f} sigma (bridges)")
+        lines += _format_relaxed(rel, rsp)
     if report["flags"]:
         lines.append("")
         for f in report["flags"]:
@@ -525,3 +882,78 @@ def format_verify(report: dict) -> str:
     lines.append("")
     lines.append(f"  time      : {report['seconds']:.0f} s")
     return "\n".join(lines)
+
+
+def _format_relaxed(rel: dict, rsp: dict) -> list:
+    """The relaxed block of :func:`format_verify`.
+
+    ``rsp`` is the reference's spatial record.
+    """
+    hdr = rel.get("header") or {}
+    lines = ["", f"  relaxed   : {rel['input']}",
+             f"              density {_f(rel.get('density'), '.4f')}, T "
+             f"{_f(rel.get('temperature'))}, {rel.get('beads')} beads"
+             + (f", timestep {hdr['timestep']}" if hdr.get("timestep") else "")
+             + (f", {hdr['units']} units" if hdr.get("units") else "")]
+    net = rel.get("network")
+    if net:
+        lines.append(f"    network   : "
+                     + (f"NOT a build of this config (seed {net['seed']} "
+                        f"compared)" if not net["same_network"] else
+                        f"the build of seed {net['seed']}"
+                        if net.get("same_graph") is not False else
+                        f"a build of this config, not seed {net['seed']}'s graph")
+                     + ("" if net["same_strands"] else
+                        f" ({'; '.join(net['differences'])})"))
+    for cls, k in rel["z_by_class"].items():
+        if k.get("p") is None:
+            lines.append(f"    Z {cls:<9s}: {_f(k.get('mean'))} over "
+                         f"{k.get('n', 0)} against {_f(k.get('reference_mean'))}"
+                         f" over {k.get('reference_n', 0)}, not compared")
+        else:
+            lines.append(f"    Z {cls:<9s}: {_f(k['mean'])} against "
+                         f"{_f(k['reference_mean'])} ({k['n']} and "
+                         f"{k['reference_n']} strands), KS p {_f(k['p'])}")
+    h = rel.get("histogram")
+    if h:
+        lines.append("    P(Z)      :  Z  " + " ".join(
+            f"{i:>6d}" for i in range(len(h["relaxed"]))))
+        for side in ("relaxed", "reference"):
+            lines.append(f"      {side:<10s}   " + " ".join(
+                f"{x:6.3f}" for x in h[side]))
+        lines.append(f"              KS p {_f(h['p'])} per bridge"
+                     + (f"; {_f(rel['target_hist']['p'])} against target_hist"
+                        if rel.get("target_hist") else ""))
+    pp = rel.get("partners") or {}
+    if (pp.get("pairs") or {}).get("measured") is not None:
+        lines.append(
+            f"    partners  : {pp['pairs']['measured']} pairs, "
+            f"{_f(pp['per_strand']['measured'])} per strand, "
+            f"{_f(pp['per_bridge']['measured'])} per bridge; reference "
+            f"{pp['pairs']['reference']}, {_f(pp['per_strand']['reference'])}, "
+            f"{_f(pp['per_bridge']['reference'])}")
+    tz = rel.get("target_Z")
+    if tz:
+        lines.append(f"    target Z  : {tz['measured']:.3f} per bridge against "
+                     f"the config's target_Z {tz['target']:.3f} "
+                     f"({100 * tz['relative_gap']:+.1f} %)")
+    rs = rel.get("spatial") or {}
+    if rs.get("chord_mean") is not None and rsp.get("chord_mean"):
+        lines.append(f"    reach     : {rs['chord_mean']:.2f} +- "
+                     f"{rs['chord_sd']:.2f} (p95 {rs['chord_p95']:.2f}) "
+                     f"against {rsp['chord_mean']:.2f} +- "
+                     f"{rsp['chord_sd']:.2f} (p95 {rsp['chord_p95']:.2f}) "
+                     f"sigma, after relaxation")
+    if rs.get("chain_ree_mean") and rsp.get("chain_ree_mean"):
+        lines.append(f"    Ree       : {rs['chain_ree_mean']:.2f} against "
+                     f"{rsp['chain_ree_mean']:.2f} sigma (bridges)")
+    acc = rel.get("acceptance")
+    if acc:
+        lines.append(
+            f"    accept    : Z per bridge {100 * acc['relative_gap']:+.1f} % "
+            f"(within {100 * acc['tolerance']:.0f} %: "
+            f"{'yes' if acc['z_within'] else 'no'}), KS p {_f(acc['hist_p'])} "
+            f"(above {acc['p_min']}: {'yes' if acc['hist_ok'] else 'no'}): "
+            + (f"withheld ({', '.join(acc['withheld'])})"
+               if acc.get("withheld") else "met" if acc["met"] else "NOT met"))
+    return lines

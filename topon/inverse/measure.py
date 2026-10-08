@@ -23,6 +23,17 @@ of information:
     convention of :mod:`topon.analysis.descriptors`. DP comes from the edges'
     ``dp`` when they carry one, and density is not known.
 
+A network crosslinked along its chains (two chain beads bonded, no
+crosslinker at a chain end) is read with :mod:`topon.analysis.crosslinked`
+and its :class:`Reference` has ``architecture`` ``"crosslinked"``: a data
+file the end-linked reader refuses and whose junction beads sit mid-chain,
+or a strand graph that says so (``G.graph["architecture"]`` and its
+``chains``, as the crosslinked reader and the crosslink generator write
+them), or the ``topology/crosslinked_melt.npz`` a crosslink build writes
+(:func:`read_crosslinked_melt`). Its measurement carries ``crosslinked``,
+the chains and the crosslinks along them
+(:func:`topon.inverse.crosslinked.measure_chains`).
+
 :func:`measure` turns a :class:`Reference` into the numbers a fitted config
 has to reproduce: strand classes, effective and chemical P(f), the loops with
 the degrees of the junctions they sit on, the sculpt target in topon's site
@@ -71,6 +82,7 @@ class Reference:
     n_atoms: Optional[int] = None
     notes: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    architecture: str = "end_linked"  # or "crosslinked", along the chains
 
     @property
     def has_positions(self) -> bool:
@@ -98,35 +110,68 @@ class Reference:
 # ---------------------------------------------------------------------------
 
 def read_reference(path, junction_type: Optional[int] = None,
-                   nodes: Optional[str] = None) -> Reference:
+                   nodes: Optional[str] = None,
+                   crosslinked: Optional[bool] = None,
+                   crosslink_bond_types=None) -> Reference:
     """Read ``path`` as a data file, an NPZ dual graph or a strand graph.
 
     ``junction_type`` names the junction atom type of a data file that does
     not follow the end-linked typing (see
     :func:`topon.analysis.endlinked.read_endlinked`); ``nodes`` is the
-    companion ``.nodes`` of a bare ``.edges`` file.
+    companion ``.nodes`` of a bare ``.edges`` file. ``crosslinked`` True
+    reads a data file or graph as crosslinked along its chains, False as
+    end-linked, None decides from the file (see the module doc).
+    ``crosslink_bond_types`` are the bond types of a data file's crosslinks,
+    which lets a chain carrying a crosslink within itself be walked.
     """
     p = Path(path)
     suffix = p.suffix.lower()
+    if crosslinked and junction_type is not None:
+        raise ValueError("a junction type names an end-linked file's junctions; "
+                         "a network crosslinked along its chains is read from "
+                         "its bonds")
     if suffix in DATA_SUFFIXES:
-        return _from_data(p, junction_type)
+        return _from_data(p, junction_type, crosslinked, crosslink_bond_types)
     if junction_type is not None:
         raise ValueError(f"a junction type applies to a LAMMPS data file, not "
                          f"to {p.name}")
     if suffix in NPZ_SUFFIXES:
+        if _is_crosslinked_melt(p):
+            return read_crosslinked_melt(p)
+        if crosslinked:
+            raise ValueError(f"{p.name}: an NPZ dual graph is read end-linked; "
+                             f"a crosslinked reference is a data file, a "
+                             f"strand graph with its chains or a "
+                             f"crosslinked_melt.npz")
         return read_dual_npz(p)
     if suffix in GRAPH_SUFFIXES:
-        return _from_graph(p, nodes)
+        return _from_graph(p, nodes, crosslinked)
     raise ValueError(
         f"cannot read {p.name} as a reference: use a LAMMPS data file "
         f"({', '.join(DATA_SUFFIXES)}), an NPZ dual graph (.npz) or a strand "
         f"graph ({', '.join(GRAPH_SUFFIXES)})")
 
 
-def _from_data(path: Path, junction_type: Optional[int]) -> Reference:
-    from topon.analysis.endlinked import read_endlinked
+def _from_data(path: Path, junction_type: Optional[int],
+               crosslinked: Optional[bool] = None,
+               crosslink_bond_types=None) -> Reference:
+    from topon.analysis.endlinked import NotEndLinked, read_endlinked
 
-    system = read_endlinked(path, junction_type=junction_type)
+    if crosslinked:
+        return _crosslinked_from_data(path, crosslink_bond_types)
+    try:
+        system = read_endlinked(path, junction_type=junction_type)
+    except NotEndLinked:
+        # A file the end-linked reader refuses is read as crosslinked along
+        # its chains only when nobody named its junction type, its junction
+        # beads sit mid-chain, and it has chains to walk (a network written
+        # as one molecule has none, and keeps the end-linked reader's advice)
+        if crosslinked is False or junction_type is not None:
+            raise
+        ref = _crosslinked_from_data(path, crosslink_bond_types)
+        if not _mid_chain(ref.system) or not ref.graph.graph.get("chains"):
+            raise
+        return ref
     chain_dp = collections.defaultdict(list)
     for s in system.strands.values():
         chain_dp[s.cls].append(len(s.seq))
@@ -134,6 +179,138 @@ def _from_data(path: Path, junction_type: Optional[int]) -> Reference:
                      box=np.asarray(system.box, float), units="sigma",
                      system=system, chain_dp=dict(chain_dp),
                      n_atoms=system.n_atoms)
+
+
+def _crosslinked_from_data(path: Path, crosslink_bond_types=None) -> Reference:
+    """A data file of a network crosslinked along its chains.
+
+    Without ``crosslink_bond_types``, a chain carrying a crosslink within
+    itself has no single backbone path and no order. When some chains come
+    back that way, the bond types whose every bond joins two junction beads
+    (:func:`crosslink_bond_types_of`) are taken as the crosslinks' and the
+    file is read again with them, and a note says so.
+    """
+    from topon.analysis.crosslinked import read_crosslinked
+
+    system = read_crosslinked(path, crosslink_bond_types=crosslink_bond_types)
+    notes = []
+    if crosslink_bond_types is None and system.graph.graph.get("chains_unordered"):
+        found = crosslink_bond_types_of(path)
+        if found:
+            again = read_crosslinked(path, crosslink_bond_types=found)
+            if again.graph.graph.get("chains_unordered", 0) < \
+                    system.graph.graph["chains_unordered"]:
+                notes.append(f"bond type(s) {found} join junction beads only "
+                             f"and are read as the crosslinks, so the chains "
+                             f"with a crosslink within themselves are walked "
+                             f"({system.graph.graph['chains_unordered']} were "
+                             f"not without them)")
+                system = again
+    return Reference(path=path, source="data", graph=system.graph,
+                     box=np.asarray(system.box, float), units="sigma",
+                     system=system, chain_dp=_crosslinked_dp(system.graph),
+                     n_atoms=system.n_atoms, notes=notes + list(system.notes),
+                     architecture="crosslinked")
+
+
+def crosslink_bond_types_of(path) -> list:
+    """Bond types of a data file whose bonds join two junction beads.
+
+    A crosslink between two chain beads gives both a third bond, so a bond
+    of a crosslink type joins two beads of three or more bonds (all but a
+    crosslink on a chain's end bead); a backbone bond does so only between
+    two crosslinked neighbours. A type is read as a crosslink type when
+    nine in ten of its bonds do and every other type stays below half.
+    Empty when the file has one bond type or no type separates that way.
+    """
+    from topon.analysis.crosslinked import JUNCTION_BONDS
+    from topon.analysis.endlinked import _split_sections
+
+    _h, sections = _split_sections(
+        Path(path).read_text(encoding="utf-8", errors="replace").splitlines())
+    rows = [line.split() for line in sections.get("Bonds", [])]
+    count = collections.Counter()
+    for p in rows:
+        count[int(p[2])] += 1
+        count[int(p[3])] += 1
+    by_type = collections.defaultdict(list)
+    for p in rows:
+        by_type[int(p[1])].append(count[int(p[2])] >= JUNCTION_BONDS
+                                  and count[int(p[3])] >= JUNCTION_BONDS)
+    if len(by_type) < 2:
+        return []
+    frac = {t: sum(v) / len(v) for t, v in by_type.items()}
+    xl = sorted(t for t, f in frac.items() if f >= 0.9)
+    rest = [f for t, f in frac.items() if t not in xl]
+    return xl if xl and rest and max(rest) < 0.5 else []
+
+
+def _mid_chain(system) -> bool:
+    """Half or more of the junction beads have two bonds within their molecule.
+
+    A crosslink between two chain beads leaves each on its chain's backbone
+    (two bonds to its own molecule); a crosslinker at chain ends has at most
+    one there.
+    """
+    jb = list(system.junction_beads)
+    if not jb:
+        return False
+    mid = sum(1 for b in jb
+              if sum(1 for n in system.adj.get(b, ())
+                     if system.mol.get(n) == system.mol.get(b)) >= 2)
+    return 2 * mid >= len(jb)
+
+
+def _crosslinked_dp(G) -> dict:
+    """Strand DPs by class, and the sol chains at their length."""
+    from topon.analysis.descriptors import node_kind
+
+    out = collections.defaultdict(list)
+    for u, v, d in G.edges(data=True):
+        if d.get("dp") is None:
+            continue
+        cls = ("loop" if u == v else "dangling"
+               if "end" in (node_kind(G, u), node_kind(G, v)) else "bridge")
+        out[cls].append(int(d["dp"]))
+    for c in (G.graph.get("chains") or {}).values():
+        if int(c.get("passes", 0)) == 0:
+            out["free"].append(int(c["dp"]))
+    return dict(out)
+
+
+MELT_KEYS = {"positions", "lengths", "crosslinks", "box"}
+
+
+def _is_crosslinked_melt(path) -> bool:
+    with np.load(path, allow_pickle=False) as z:
+        return MELT_KEYS <= set(z.files)
+
+
+def read_crosslinked_melt(path) -> Reference:
+    """The ``topology/crosslinked_melt.npz`` a crosslink build writes.
+
+    Every chain's beads on the lattice and the crosslinks in the order they
+    were made, which is all of the strand graph
+    (:func:`topon.topology.chain_crosslinking.strand_graph`). topon's own
+    data file of the same build carries no chains (a crosslink is built as
+    one bead its strands share, each strand a molecule), so this is how one
+    of its builds is fitted.
+    """
+    from topon.topology.chain_crosslinking import strand_graph
+
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as z:
+        pos = np.asarray(z["positions"], float)
+        lengths = [int(n) for n in z["lengths"]]
+        xl = np.asarray(z["crosslinks"], int).reshape(-1, 4)
+        box = np.asarray(z["box"], float)
+    cuts = np.cumsum([0] + lengths)
+    chains = [pos[a:b] for a, b in zip(cuts[:-1], cuts[1:])]
+    crosslinks = [((int(a), int(b)), (int(c), int(d))) for a, b, c, d in xl]
+    G = strand_graph(chains, crosslinks, box)
+    return Reference(path=path, source="graph", graph=G, box=box,
+                     units="lattice", chain_dp=_crosslinked_dp(G),
+                     n_atoms=int(sum(lengths)), architecture="crosslinked")
 
 
 def read_dual_npz(path) -> Reference:
@@ -276,11 +453,20 @@ def read_dual_npz(path) -> Reference:
     return ref
 
 
-def _from_graph(path: Path, nodes: Optional[str]) -> Reference:
+def _from_graph(path: Path, nodes: Optional[str],
+                crosslinked: Optional[bool] = None) -> Reference:
     from topon.analysis.analyze import load_network
 
     with contextlib.redirect_stdout(sys.stderr):
         G, box, _system = load_network(path, nodes)
+    has_chains = bool(G.graph.get("chains"))
+    if crosslinked or (crosslinked is None and has_chains and
+                       G.graph.get("architecture") == "random_crosslinked"):
+        if not has_chains:
+            raise ValueError(f"{path.name}: a crosslinked reference needs its "
+                             f"chains (G.graph['chains']), which this graph "
+                             f"does not carry")
+        return _crosslinked_from_graph(path, G)
     V = network_view(G)
     chain_dp = collections.defaultdict(list)
     kind = {n: d["kind"] for n, d in V.nodes(data=True)}
@@ -301,6 +487,28 @@ def _from_graph(path: Path, nodes: Optional[str]) -> Reference:
                          f"strands that do, or from --dp.")
     ref.notes.append("A graph file carries no bead count, so the density "
                      "comes from --density.")
+    return ref
+
+
+def _crosslinked_from_graph(path: Path, G) -> Reference:
+    """A strand graph with its chains, kept as it is (the chains name its edges).
+
+    The cell is ``G.graph["box"]`` when it is there and finite, in sigma when
+    ``G.graph["units"]`` says so and in lattice units otherwise. The beads
+    are the chains' beads, so a graph with chains knows its bead count.
+    """
+    box = G.graph.get("box")
+    box = None if box is None else np.asarray(box, float)
+    if box is not None and (box.shape != (3,) or not np.all(np.isfinite(box))):
+        box = None
+    units = "sigma" if G.graph.get("units") == "sigma" else "lattice"
+    n_atoms = int(sum(int(c["dp"]) for c in G.graph["chains"].values()))
+    ref = Reference(path=path, source="graph", graph=G, box=box, units=units,
+                    chain_dp=_crosslinked_dp(G), n_atoms=n_atoms,
+                    architecture="crosslinked")
+    if box is None:
+        ref.notes.append("The graph has no cell, so there are no spatial "
+                         "targets and no lattice to read a packing from.")
     return ref
 
 
@@ -456,7 +664,12 @@ def measure(ref: Reference, heavy: bool = True, z1: Optional[bool] = None,
             rec["spatial"] = sp
         except ValueError:
             pass
-    if ref.system is not None:
+    endlinked = ref.architecture == "end_linked"
+    rec["architecture"] = ref.architecture
+    if not endlinked:
+        from topon.inverse.crosslinked import measure_chains
+        rec["crosslinked"] = measure_chains(ref)
+    if ref.system is not None and endlinked:
         from topon.analysis.endlinked import chain_statistics
         stats = chain_statistics(ref.system)[0]
         rec.setdefault("spatial", {})
@@ -465,7 +678,13 @@ def measure(ref: Reference, heavy: bool = True, z1: Optional[bool] = None,
                 rec["spatial"][key] = stats[key]
 
     zmap: dict = {}
-    if ref.system is not None and z1 is not False:
+    if not endlinked:
+        if z1:
+            raise RuntimeError("Z1+ is read per strand class of an end-linked "
+                               "network; a crosslinked reference has none")
+        rec["z1_note"] = ("no Z1+ target: a network crosslinked along its "
+                          "chains is fitted on its connectivity and chains")
+    elif ref.system is not None and z1 is not False:
         from topon.analysis.z1plus import (
             Z1PlusFailed, Z1PlusUnavailable, measure_system, why_unavailable)
         reason = why_unavailable(z1_config)

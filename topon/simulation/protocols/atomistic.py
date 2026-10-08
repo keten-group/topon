@@ -27,7 +27,13 @@ reads the dump for passages. A single passage fails the stage, and the
 report says where (step, bonds, strands, and whether the two strands share
 a junction). A designed entanglement (``assignment.entanglements``) is kept
 if no bond of one of its two strands passed through the other, which the
-report says pair by pair.
+report says pair by pair. Every checkpoint also reads the linking number of
+two network cycles through each designed pair, one through each strand
+(:mod:`topon.analysis.windings`, found on the build and kept): an integer
+that changes only when a bond of one cycle passes through a bond of the
+other, so a change proves a net passage between the two cycles without a
+dump, and fails the run. It does not see a passage between strands of
+neither cycle.
 
 Z1+ on the backbone, one point per repeat unit
 (:mod:`topon.analysis.atomistic`), is measured at every checkpoint and
@@ -115,6 +121,11 @@ class AtomisticCheckpoint:
     partner_pairs: Optional[set] = None
     partner_pairs_seen: Optional[set] = None
     share_junction: Optional[set] = None
+    #: The designed pairs' network cycles (found on the first checkpoint
+    #: read, then handed to every later one) and, per pair ``"k-l"``, the
+    #: linking number of each cycle pair here.
+    cycles: Optional[dict] = None
+    linking: Optional[dict] = None
 
     def stretched_pairs(self, tolerance: float = BOND_TOLERANCE) -> set:
         return {p for p, r in zip(self.pairs, self.ratio) if r > 1.0 + tolerance}
@@ -131,13 +142,19 @@ class AtomisticCheckpoint:
 
 
 def read_checkpoint(path, strands, tag: str = "", z1: bool = False,
-                    z1_config=None, z1_seeds: int = 4) -> AtomisticCheckpoint:
+                    z1_config=None, z1_seeds: int = 4,
+                    designed: Optional[dict] = None,
+                    cycles: Optional[dict] = None) -> AtomisticCheckpoint:
     """Read one atomistic checkpoint, with Z1+ on its backbone if asked.
 
     Z1+ runs at ``z1_seeds`` seeds of the export's junction jitter: Z per
     bridge is their mean (``z_bridge_sd`` the spread), and the partner pairs
     are those found at every seed. One run swaps 10-15 of 55 pairs on an
     identical DP-30 configuration.
+
+    With ``designed`` (``{(k, l): windings}``) each pair's network cycles are
+    read for their linking numbers: ``cycles`` as found on an earlier
+    checkpoint, or found here when None.
     """
     system = read_atomistic(path, strands)
     pairs, ratio = system.backbone_ratios()
@@ -145,6 +162,18 @@ def read_checkpoint(path, strands, tag: str = "", z1: bool = False,
                              density=system.mass_density,
                              temperature=system.temperature(),
                              pairs=pairs, ratio=ratio)
+    if designed:
+        from topon.analysis.windings import (WHOLE, find_cycles, measure_cycles,
+                                             strands_from_record)
+
+        paths = strands_from_record(system.record, system.pos, system.box)
+        cp.cycles = (find_cycles(paths, designed, system.box) if cycles is None
+                     else cycles)
+        # a value off an integer (two cycles nearly touching) is not read
+        cp.linking = {f"{a}-{b}": [int(round(x)) if abs(x - round(x)) <= WHOLE else None
+                                   for x, _d in v]
+                      for (a, b), v in measure_cycles(paths, cp.cycles,
+                                                      system.box).items()}
     if z1:
         from topon.analysis.z1plus import Z1PlusFailed, Z1PlusUnavailable, measure_seeds
         try:
@@ -186,11 +215,14 @@ class AtomisticGateReport(GateReport):
     designed: dict = field(default_factory=dict)
     #: Z per bridge's spread over the Z1+ seeds, per checkpoint.
     z_sd_by_stage: dict = field(default_factory=dict)
+    #: Designed pairs ``"k-l"`` -> ``{tag: [linking number per cycle pair]}``.
+    designed_linking: dict = field(default_factory=dict)
 
     def summary(self) -> dict:
         out = super().summary()
         out["crossings"] = self.crossings
         out["designed"] = self.designed
+        out["designed_linking"] = self.designed_linking
         out["z_sd_by_stage"] = self.z_sd_by_stage
         return out
 
@@ -220,6 +252,19 @@ class AtomisticGateReport(GateReport):
             kept = sum(1 for v in self.designed.values() if not v)
             rows.append(f"designed pairs that kept their winding: {kept} of "
                         f"{len(self.designed)}")
+        read = [by_tag for by_tag in self.designed_linking.values()
+                if any(by_tag.values())]
+        if read:
+            def held_(by_tag):
+                rows = list(by_tag.values())
+                return all(p is None or q is None or p == q
+                           for r in rows[1:] for p, q in zip(rows[0], r))
+            held = sum(1 for by_tag in read if held_(by_tag))
+            rows.append(f"designed pairs whose network-cycle linking held at every "
+                        f"checkpoint: {held} of {len(read)} read"
+                        + (f" ({len(self.designed_linking) - len(read)} without "
+                           f"two disjoint cycles)"
+                           if len(read) < len(self.designed_linking) else ""))
         rows.append(f"backbone bonds long at more than one stage: "
                     f"{len(self.persistent)}")
         for line in self.notes:
@@ -342,6 +387,32 @@ def check(stages: dict, tolerance: float = BOND_TOLERANCE,
             report.notes.append(
                 f"all {len(designed)} designed pair(s) kept their winding: no "
                 f"passage between the two strands of any")
+    read = [t for t in tags if getattr(stages[t], "linking", None)]
+    if read:
+        first = read[0]
+        for key in sorted(stages[first].linking):
+            by_tag = {t: list(stages[t].linking.get(key, [])) for t in read}
+            report.designed_linking[key] = by_tag
+            if not by_tag[first]:
+                report.notes.append(
+                    f"designed pair {key}: no two disjoint network cycles that "
+                    f"close in space, so its linking is not read")
+                continue
+            unread = [t for t in read if None in by_tag[t]]
+            if unread:
+                report.notes.append(
+                    f"designed pair {key}: a cycle linking off an integer at "
+                    f"{', '.join(unread)} (two cycles nearly touching), not compared there")
+
+            def same(x, y):
+                return all(p is None or q is None or p == q for p, q in zip(x, y))
+
+            moved = [t for t in read if not same(by_tag[t], by_tag[first])]
+            if moved:
+                report.failures.append(
+                    f"designed pair {key}: the linking of its network cycles went "
+                    f"from {by_tag[first]} at {first} to {by_tag[moved[0]]} at "
+                    f"{moved[0]}, so a bond of one cycle passed through the other")
 
     if z_from in stages and stages[z_from].z_bridge is not None:
         ref = stages[z_from]
@@ -421,6 +492,7 @@ class AtomisticRun:
                      "sim": self.sim_dir}
         self.strands = self.run_dir / "manifest.json"
         self._record = None
+        self._cycles = None
 
     def record(self):
         if self._record is None:
@@ -446,13 +518,19 @@ class AtomisticRun:
             path.unlink()
 
     def _read(self, tag):
+        from topon.analysis.crossings import designed_pairs
+
         folder, name = next((f, n) for t, f, n in CHECKPOINTS if t == tag)
         path = self.dirs[folder] / name
         if not path.exists():
             raise FileNotFoundError(f"{tag}: {path} was not written")
-        self.checkpoints[tag] = read_checkpoint(
+        cp = read_checkpoint(
             path, self.strands, tag=tag, z1=self.z1, z1_config=self.z1_config,
-            z1_seeds=self.z1_seeds)
+            z1_seeds=self.z1_seeds, designed=designed_pairs(self.record()),
+            cycles=self._cycles)
+        if self._cycles is None:
+            self._cycles = cp.cycles
+        self.checkpoints[tag] = cp
 
     def _check(self) -> AtomisticGateReport:
         from topon.analysis.crossings import designed_pairs

@@ -110,17 +110,26 @@ def main(ctx, no_shell: bool):
                    "P(f) and loops, descriptor composite, reach. Writes "
                    "verify.json into the run directory")
 @click.option("--verify-seeds", type=int, default=1, show_default=True,
-              help="Seeds --verify regenerates, from topology.generator.seed up")
+              help="Seeds --verify regenerates, from topology.generator.seed up "
+                   "(topology.crosslinking.seed for a crosslinked melt)")
 @click.option("--verify-only", is_flag=True,
               help="With --verify: build nothing, only regenerate the graphs "
                    "(stages 1-3, in a scratch directory) and verify them")
 @click.option("--relaxed", type=click.Path(exists=True), default=None,
               help="With --verify: a relaxed end-linked data file of this "
-                   "build, for Z1+ per strand class against the reference "
+                   "build, or the run directory it is in (the last MD "
+                   "checkpoint is taken), for Z1+ per strand class, the "
+                   "per-bridge histogram and partners against the reference "
                    "(making it needs MD, which generate does not run)")
 @click.option("--junction-type", type=int, default=None,
               help="With --verify: junction atom type of a reference data "
                    "file that is not typed 1 end / 2 interior / 3 junction")
+@click.option("--verify-replicate", "verify_replicates", multiple=True,
+              type=click.Path(exists=True),
+              help="With --verify of a build crosslinked along its chains: a "
+                   "replicate of the reference (the same process, another "
+                   "seed); repeat it. The report says which measures of each "
+                   "build sit inside the replicates' scatter")
 def generate(
     config_path: str,
     output: str,
@@ -132,6 +141,7 @@ def generate(
     verify_only: bool,
     relaxed: str,
     junction_type: int,
+    verify_replicates: tuple,
 ):
     """
     Run the full pipeline from a configuration file.
@@ -145,10 +155,19 @@ def generate(
 
         topon generate ref_config.json --verify ref.data --verify-seeds 3
     """
-    if (verify_only or relaxed or junction_type is not None) and not verify_ref:
-        click.echo("Error: --verify-only, --relaxed and --junction-type go "
-                   "with --verify REFERENCE", err=True)
+    if (verify_only or relaxed or junction_type is not None
+            or verify_replicates) and not verify_ref:
+        click.echo("Error: --verify-only, --relaxed, --junction-type and "
+                   "--verify-replicate go with --verify REFERENCE", err=True)
         sys.exit(2)
+    if relaxed:
+        # before the build, not after it: a run with no MD has nothing to read
+        from topon.inverse.verify import resolve_relaxed
+        try:
+            resolve_relaxed(relaxed)
+        except ValueError as e:
+            click.echo(f"Error: --relaxed: {e}", err=True)
+            sys.exit(2)
     from topon.config import load_config_full, validate_config
     from topon.pipeline import Pipeline
 
@@ -195,24 +214,41 @@ def generate(
         click.echo("Running pipeline...")
         pipeline = Pipeline(config, raw_config=raw_cfg)
         from topon.chemistry.charmm import CharmmTypingError, MissingCharmmParameters
+        from topon.forcefield.dreiding import ChargeError, UntypedAtomError
         try:
             pipeline.run()
         except (CharmmTypingError, MissingCharmmParameters) as e:
             # a config or force-field problem the message fully explains
             click.echo(f"CHARMM: {e}", err=True)
             sys.exit(1)
+        except (UntypedAtomError, ChargeError) as e:
+            # the same for an atom DREIDING has no type for and a
+            # molecule the chemistry stage could not charge
+            click.echo(f"DREIDING: {e}", err=True)
+            sys.exit(1)
 
         click.echo(f"Pipeline complete. Output written to: {config.study.output_dir}")
-        if config.topology.generator.seed is not None:
-            built[int(config.topology.generator.seed)] = pipeline.graph
+        if _graph_seed(config)[0] is not None:
+            built[int(_graph_seed(config)[0])] = pipeline.graph
 
     if verify_ref:
         _verify_build(config, raw_cfg, verify_ref, verify_seeds, built,
-                      relaxed, junction_type)
+                      relaxed, junction_type, verify_replicates)
+
+
+def _graph_seed(config):
+    """The seed that pins the graph, and the key it is set by.
+
+    ``topology.crosslinking.seed`` for a crosslinked melt,
+    ``topology.generator.seed`` otherwise.
+    """
+    if config.topology.source == "crosslink":
+        return config.topology.crosslinking.seed, "topology.crosslinking.seed"
+    return config.topology.generator.seed, "topology.generator.seed"
 
 
 def _verify_build(config, raw_cfg, reference, n_seeds, built, relaxed,
-                  junction_type):
+                  junction_type, replicates=()):
     """The --verify half of `topon generate`.
 
     The config is taken as the pipeline took it, validated, with its legacy
@@ -221,9 +257,9 @@ def _verify_build(config, raw_cfg, reference, n_seeds, built, relaxed,
     from topon.inverse.verify import format_verify, verify, write_verify
 
     cfg = {**(raw_cfg or {}), **config.model_dump(mode="json")}
-    seed0 = config.topology.generator.seed
+    seed0, key = _graph_seed(config)
     if seed0 is None:
-        click.echo("  [note] topology.generator.seed is not set, so the build "
+        click.echo(f"  [note] {key} is not set, so the build "
                    "is unpinned and --verify regenerates seeds 1 and up "
                    "instead of the graph just built.")
         seed0 = 1
@@ -234,7 +270,7 @@ def _verify_build(config, raw_cfg, reference, n_seeds, built, relaxed,
         report = verify(cfg, reference, seeds=seeds, built=built,
                         relaxed=relaxed, junction_type=junction_type,
                         z1_config=config.analysis.z1plus,
-                        log=click.echo)
+                        log=click.echo, replicates=list(replicates) or None)
     except Exception as e:
         # Whatever stopped it, the build (when there was one) is on disk;
         # say what failed rather than leave a traceback after it.
@@ -445,10 +481,42 @@ def _floats(text):
 @click.option("--name", default=None, help="study.name of the config")
 @click.option("--no-control", is_flag=True,
               help="Skip the nearest-neighbour control row of the sweep")
+@click.option("--crosslinked", is_flag=True,
+              help="Read REFERENCE as crosslinked along its chains (two chain "
+                   "beads bonded); otherwise decided from the file")
+@click.option("--route", type=click.Choice(["crosslink", "lattice"]), default=None,
+              help="Crosslinked reference: the generator the config is for, the "
+                   "crosslink generator (default) or the lattice route "
+                   "(architecture random_crosslinked)")
+@click.option("--crosslink-bond-type", "crosslink_bond_types", type=int,
+              multiple=True,
+              help="Crosslinked data file: a bond type of its crosslinks "
+                   "(repeat it), so a chain with a crosslink within itself is "
+                   "walked")
+@click.option("--sequence", default=None,
+              help="Crosslinked reference: one-letter sequence of one repeat, "
+                   "one bead per residue, its crosslink residues reactive")
+@click.option("--repeats", type=int, default=1, show_default=True,
+              help="With --sequence: repeats per chain")
+@click.option("--crosslink-residue", default="Y", show_default=True,
+              help="With --sequence: the residue that crosslinks")
+@click.option("--reactive-every", type=int, default=None,
+              help="Crosslinked reference: every so many beads reactive, in "
+                   "place of the period read off the reference")
+@click.option("--reactive-start", type=int, default=None,
+              help="With --reactive-every: the first reactive bead")
+@click.option("--packing", type=float, default=None,
+              help="Crosslinked reference: lattice packing, in place of the "
+                   "one read or swept")
+@click.option("--contact-radius", type=float, default=None,
+              help="Crosslinked reference: contact radius, in place of the one "
+                   "the gaps within chains point at")
 @click.option("--quiet", "-q", is_flag=True, help="Print the summary only")
 def fit_cmd(reference, out, junction_type, nodes, lattice, mix, sweep_cutoffs,
             seeds, seed, max_functionality, dp, density, no_z1, z1_exe,
-            z1_distro, name, no_control, quiet):
+            z1_distro, name, no_control, crosslinked, route,
+            crosslink_bond_types, sequence, repeats, crosslink_residue,
+            reactive_every, reactive_start, packing, contact_radius, quiet):
     """Measure a network and write a config that regenerates it.
 
     REFERENCE is a LAMMPS data file of an end-linked network, an NPZ dual
@@ -460,11 +528,22 @@ def fit_cmd(reference, out, junction_type, nodes, lattice, mix, sweep_cutoffs,
     Everything that cannot be matched is flagged. Check the result with
     `topon generate CONFIG --verify REFERENCE`.
 
+    A reference crosslinked along its chains (a vulcanised melt, a protein
+    network crosslinked at fixed residues) is fitted to the crosslink
+    generator (topology.source "crosslink"): its chains, the reactive beads
+    read off where the crosslinks sit, the crosslink count, the contact rule
+    and the packing. --route lattice writes the lattice route (architecture
+    random_crosslinked) instead.
+
     Examples:
 
         topon fit reference.data --out reference_config.json
 
         topon fit ref.data --junction-type 3 --sweep-cutoffs 1.74,2.01,2.24 --seeds 2
+
+        topon fit vulcanised.data --out vulc_config.json
+
+        topon fit resilin.gpickle --sequence GGRPSDSYGAPGGGN --repeats 12
     """
     from topon.inverse.fit import FitError, fit, format_fit, write_fit
 
@@ -491,7 +570,14 @@ def fit_cmd(reference, out, junction_type, nodes, lattice, mix, sweep_cutoffs,
                      max_functionality=max_functionality, dp=dp,
                      density=density, z1=False if no_z1 else None,
                      z1_config=z1_cfg, name=name, control=not no_control,
-                     log=None if quiet else click.echo)
+                     log=None if quiet else click.echo,
+                     crosslinked=True if crosslinked else None, route=route,
+                     crosslink_bond_types=list(crosslink_bond_types) or None,
+                     sequence=sequence, repeats=repeats,
+                     crosslink_residue=crosslink_residue,
+                     reactive_every=reactive_every,
+                     reactive_start=reactive_start, packing=packing,
+                     contact_radius=contact_radius)
     except FitError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -950,6 +1036,11 @@ def recipes():
         ("A config that regenerates an existing network, and its check",
          "topon fit ref.data --out ref_config.json\n"
          "topon generate ref_config.json --verify ref.data --verify-seeds 3"),
+        ("The same for a network crosslinked along its chains",
+         "topon fit ref.gpickle --out ref_config.json\n"
+         "topon generate ref_config.json --verify ref.gpickle --verify-only "
+         "--verify-seeds 8 --verify-replicate rep2.gpickle ... "
+         "--verify-replicate rep9.gpickle   (4 or more a side)"),
     ]
     click.echo()
     click.echo("topon recipes — common use cases")

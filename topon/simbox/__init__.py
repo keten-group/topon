@@ -10,8 +10,8 @@ Quick start::
     from topon.simbox import SimBox, MoleculeLibrary
 
     lib = MoleculeLibrary()
-    epoxy = lib.epoxy_pdms(n_dms=2)      # ~500 g/mol
-    amino = lib.amino_pdms(n_dms=8)      # ~850 g/mol
+    epoxy = lib.epoxy_pdms(n_dms=2)      # average MW 510.9 g/mol
+    amino = lib.amino_pdms(n_dms=8)      # average MW 841.8 g/mol
     poss  = lib.am0270_poss()             # ~1267 g/mol
 
     box = SimBox(density=0.85)
@@ -20,7 +20,12 @@ Quick start::
     box.add(poss, count=50)
     box.pack(seed=42)
 
-    box.write("output/", forcefield="dreiding")
+    files = box.write("output/", forcefield="dreiding")
+
+    # an epoxy-amine box: the types its cure creates, and the fix bond/react
+    # templates in its own type ids (run_workflow and topon simbox do this)
+    from topon.simbox.workflow import prepare_bond_react
+    prepare_bond_react(box.system, "output/", files)
 """
 
 from __future__ import annotations

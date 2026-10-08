@@ -53,6 +53,11 @@ The backbone of a molecule is its intra-molecular bonds, less
 simple path (an intra-chain crosslink of the same bond type, a branched
 molecule) gets no chain order and is counted in
 ``G.graph["chains_unordered"]``.
+
+A chain whose sites sit on pendant side beads is read with
+``side_beads``: each pendant group is reduced to the chain bead it hangs
+from (:func:`reduce_side_beads`), so an unreacted pendant is no junction
+and a crosslink between two pendants is one between their anchors.
 """
 from __future__ import annotations
 
@@ -207,12 +212,87 @@ def from_bfm_snapshot(snapshot: dict, n_reactions: Optional[int] = None,
     return sysm
 
 
+def reduce_side_beads(pos: dict, mol: dict, bonds: list, bond_types: list,
+                      side_beads: Iterable[int], crosslink_bond_types: Iterable[int]):
+    """The bead system with every pendant group reduced to its anchor.
+
+    A pendant group is a run of ``side_beads`` hanging by one bond from a
+    chain bead, its anchor. An unreacted group is left out; a reacted one is
+    left out too, its crosslinks moved onto its anchor (to the partner's
+    anchor when the partner is a side bead as well). A crosslink is a bond
+    whose type is in ``crosslink_bond_types``. So a crosslink between two
+    pendant beads reads as one between their anchors, and a pendant's
+    anchor is a junction bead only once its group has reacted. Two limits
+    follow from reading at the anchors: a crosslink inside one group, or
+    from a group to its own anchor, is left out, and one between pendants
+    on neighbouring anchors lands on the chain bond between them (a junction
+    of 2, its ring lost).
+
+    Returns ``(pos, mol, bonds, bond_types)`` without the side beads.
+    """
+    side = set(side_beads)
+    xl = set(int(t) for t in crosslink_bond_types)
+    if len(bond_types) != len(bonds):
+        raise ValueError(f"{len(bond_types)} bond types for {len(bonds)} bonds")
+    parent = {s: s for s in side}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    anchor_of = {}
+    for (i, j), t in zip(bonds, bond_types):
+        if int(t) in xl:
+            continue
+        if i in side and j in side:
+            parent[find(i)] = find(j)
+    for (i, j), t in zip(bonds, bond_types):
+        if int(t) in xl or (i in side) == (j in side):
+            continue
+        s, a = (i, j) if i in side else (j, i)
+        g = find(s)
+        if anchor_of.get(g, a) != a:
+            raise ValueError(f"side bead {s}'s group hangs from two beads, "
+                             f"{anchor_of[g]} and {a}")
+        anchor_of[g] = a
+    for s in side:
+        if find(s) not in anchor_of:
+            raise ValueError(f"side bead {s} hangs from no chain bead")
+    out_bonds, out_types = [], []
+    for (i, j), t in zip(bonds, bond_types):
+        if i not in side and j not in side:
+            out_bonds.append((i, j))
+            out_types.append(t)
+        elif int(t) in xl:
+            a = anchor_of[find(i)] if i in side else i
+            b = anchor_of[find(j)] if j in side else j
+            if a != b:
+                out_bonds.append((a, b))
+                out_types.append(t)
+    keep = [a for a in pos if a not in side]
+    return ({a: pos[a] for a in keep}, {a: mol[a] for a in keep}, out_bonds, out_types)
+
+
 def from_beads(pos: dict, mol: dict, bonds: list, box,
                bond_types: Optional[list] = None,
                crosslink_bond_types: Optional[Iterable[int]] = None,
                contract: bool = True,
-               path: Optional[Path] = None) -> CrosslinkedSystem:
-    """Junctions, strands, chains and the strand graph of a bead system."""
+               path: Optional[Path] = None,
+               side_beads: Optional[Iterable[int]] = None) -> CrosslinkedSystem:
+    """Junctions, strands, chains and the strand graph of a bead system.
+
+    ``side_beads`` are the beads of pendant groups, read through
+    :func:`reduce_side_beads` (which needs the bond types and the crosslink
+    bond types); the result's beads leave them out.
+    """
+    if side_beads:
+        if bond_types is None or not crosslink_bond_types:
+            raise ValueError("side beads need bond_types and crosslink_bond_types, "
+                             "to tell a side group's own bonds from its crosslinks")
+        pos, mol, bonds, bond_types = reduce_side_beads(pos, mol, bonds, bond_types,
+                                                        side_beads, crosslink_bond_types)
     box = np.asarray(box, float).reshape(3)
     adj = collections.defaultdict(list)
     for i, j in bonds:

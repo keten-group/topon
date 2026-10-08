@@ -1,36 +1,44 @@
 # Expected output of the atomistic defect demo
 
-Made on 29 Sep 2026 from `config.json` with the atomistic defaults of topon 0.4.0. The
-backbones are drawn as meanders and settled (no two backbone bonds closer than 1.5 A, every
-bond and angle at its equilibrium, no bond moved through another), the relaxation runs the
-hard-backbone stages (stage 1 and the ramp 5,000 steps each, and a capped minimization in
-stage 3), and the crossing detector reads every stage's backbone dump. The random streams
-are seeded with 20260929.
+Made on 6 Oct 2026 from `config.json` with the atomistic defaults of topon 0.4.5. The
+backbones are drawn as meanders and settled in at most 1,500 rounds (no two backbone bonds
+closer than 1.5 A, every bond and angle at its equilibrium, no bond moved through another),
+the relaxation runs the hard-backbone stages (stage 1 5,000 steps, the ramp 2,500 steps, and
+a minimization capped at 1,000 iterations in stage 3), and the crossing detector reads every
+stage's backbone dump. The DREIDING parameters carry the corrections of 0.4.5 (geometric
+mixing with the tail correction, the dihedral sign and umbrella impropers). Both global
+random streams are seeded with 20260929, and the placement draws from a stream keyed on the
+study name (`run` in the recipe below), so the recipe writes the same build files on every
+run.
 
 The topology is the 5x5x5 SC network in `demos/showcase/network_5x5x5/`, loaded in place of
 the demo's generator settings, so every DREIDING demo starts from the same graph.
 
-22,052 atoms with DREIDING parameters, 215 strands drawn as meanders. The settling pass
-parted 731 pairs of backbone bonds that were closer than 1.5 A, left none, and moved no bond
+22,052 atoms with DREIDING parameters, 215 strands drawn as meanders. The two strands of
+each of the five secondary loops are drawn on opposite sides of their chord (drawn on one
+chord, as in 0.4.0, they touched in 10 bond pairs). The settling pass parted 663 pairs of
+backbone bonds that were closer than 1.5 A in 143 rounds, left none, and moved no bond
 through another.
 
 ## Stages
 
-LAMMPS 2 Apr 2025 with 4 OpenMP threads took 4.8 minutes (stage 1 18 s, stage 2 124 s, stage
-3 145 s), and every gate passed.
+LAMMPS 2 Apr 2025 with 8 OpenMP threads took 3.1 minutes (stage 1 24 s, stage 2 72 s, stage
+3 88 s), and every gate passed.
 
 | Checkpoint | g/cm³ | T (K) | longest backbone bond (× r0) | backbone passages in its stage | Z1+ per bridge (4 seeds) |
 |---|---|---|---|---|---|
-| build | 0.900 | - | 1.007 | - | 0.039 ± 0.017 |
-| stage 1 | 0.900 | 272 | 1.072 | 0 | 0.025 ± 0.012 |
-| ramp | 0.900 | 303 | 1.079 | 0 | 0.023 ± 0.016 |
-| minimized | 0.900 | 303 | 1.023 | 0 | 0.024 ± 0.008 |
-| NVT | 0.900 | 297 | 1.080 | 0 | 0.023 ± 0.011 |
-| NPT | 0.870 | 301 | 1.090 | 0 | 0.023 ± 0.011 |
+| build | 0.900 | - | 1.008 | - | 0.049 ± 0.006 |
+| stage 1 | 0.900 | 276 | 1.065 | 0 | 0.036 ± 0.015 |
+| ramp | 0.900 | 302 | 1.085 | 0 | 0.028 ± 0.012 |
+| minimized | 0.900 | 302 | 1.036 | 0 | 0.024 ± 0.006 |
+| NVT | 0.900 | 301 | 1.075 | 0 | 0.020 ± 0.012 |
+| NPT | 0.882 | 301 | 1.073 | 0 | 0.029 ± 0.013 |
 
 Passages are read from each stage's backbone dump, and the one dump of stage 3 covers its
 minimization, NVT and NPT. Z1+ is reported and not gated. It follows the junctions as they
 move, so it changes even where nothing crosses.
+The table gives Z1+ over four seeds, as the gates read it, and the tracker page over eight,
+so the two differ a little.
 
 ## Files
 
@@ -46,9 +54,8 @@ files are not included (they are rebuilt by the commands below).
 - `relaxation_tracker.html`, the `topon track` page of the run. Open it in a browser to see
   the network at each checkpoint and the numbers through the stages.
 
-The LAMMPS runs started from coordinates made before topon 0.4.0 drew the conformation noise
-from a stream of its own. A rebuild with the commands below starts from coordinates at most
-0.003 A away, so its numbers differ a little.
+The commands below rebuild the files these runs started from. The dynamics still make a
+rerun of the stages differ a little from the numbers above.
 
 ## Reproducing
 
@@ -71,11 +78,11 @@ Pipeline(cfg, raw_config=raw).run()
 PY
 
 cd runs/defect_demo/run/04_Simulation
-lmp -sf omp -pk omp 4 -in minimize_1_serial.in
-lmp -sf omp -pk omp 4 -in minimize_2_parallel.in
-lmp -sf omp -pk omp 4 -in minimize_3_parallel.in
+lmp -sf omp -pk omp 8 -in minimize_1_serial.in
+lmp -sf omp -pk omp 8 -in minimize_2_parallel.in
+lmp -sf omp -pk omp 8 -in minimize_3_parallel.in
 cd ../../..
-topon track runs/defect_demo/run --omp 4
+topon track runs/defect_demo/run --omp 8
 ```
 
 `topon.simulation.protocols.atomistic.AtomisticRun` runs the three stages and applies the

@@ -23,6 +23,7 @@ program; run it and pass its stream file. topon does not guess types.
 """
 from __future__ import annotations
 
+import functools
 from collections import defaultdict
 from dataclasses import dataclass, field
 from importlib import resources
@@ -176,6 +177,38 @@ def _monomer_config(chem, data):
     return mcfg
 
 
+def _repeat_configs(chem, data, n_heavy: int, edge) -> list:
+    """The monomer config of every repeat unit of a chain, in build order.
+
+    A copolymer strand names one monomer per repeat in ``monomer_sequence``
+    (since 0.4.5), so its repeats can differ in residue and in size; every other
+    strand repeats its edge type's monomer.
+    """
+    seq = data.get("monomer_sequence")
+    if not seq:
+        mcfg = _monomer_config(chem, data)
+        n = _unit_size(mcfg.smiles)
+        if n_heavy % n:
+            raise CharmmTypingError(f"chain {edge}: {n_heavy} atoms is not a whole "
+                                    f"number of {n}-atom repeat units")
+        return [mcfg] * (n_heavy // n)
+    units = []
+    for name in seq:
+        mcfg = chem.monomers.get(name)
+        if mcfg is None:
+            raise CharmmTypingError(f"chain {edge}: monomer {name!r} of its sequence "
+                                    f"is not in the config")
+        if not mcfg.charmm_residue:
+            raise CharmmTypingError(f"monomer {name!r} has no charmm_residue")
+        units.append(mcfg)
+    total = sum(_unit_size(m.smiles) for m in units)
+    if total != n_heavy:
+        raise CharmmTypingError(f"chain {edge}: {n_heavy} atoms, but the {len(units)} "
+                                f"repeat units of its sequence have {total}")
+    return units
+
+
+@functools.lru_cache(maxsize=None)
 def _unit_size(smiles: str) -> int:
     from rdkit import Chem
     m = Chem.MolFromSmiles(smiles)
@@ -210,16 +243,14 @@ def type_network(mol_h, builder, chem, ps: CharmmParameterSet) -> CharmmTyping:
     for edge, heavy in builder.edge_atom_map.items():
         u, v, key = edge
         data = graph[u][v][key]
-        mcfg = _monomer_config(chem, data)
-        n = _unit_size(mcfg.smiles)
-        if len(heavy) % n:
-            raise CharmmTypingError(f"chain {edge}: {len(heavy)} atoms is not a whole "
-                                    f"number of {n}-atom repeat units")
-        for k in range(len(heavy) // n):
+        at = 0
+        for k, mcfg in enumerate(_repeat_configs(chem, data, len(heavy), edge)):
+            n = _unit_size(mcfg.smiles)
             instances.append(ResidueInstance(mcfg.charmm_residue.upper(),
-                                             list(heavy[k * n:(k + 1) * n]),
+                                             list(heavy[at:at + n]),
                                              kind="monomer", chain=edge, unit=k))
             names[("monomer", len(instances) - 1)] = mcfg.charmm_atom_names
+            at += n
     if builder.bridge_atoms:
         bres = chem.charmm.bridge_residue if chem.charmm else None
         if not bres:
@@ -318,8 +349,14 @@ def _instance_labels(mol_h, inst, residue_of, i, linking):
 
 
 def _local_edges(mol_h, inst):
+    # The instance's own bonds, in the molecule's bond order. Reading every
+    # bond of the network for every instance made typing quadratic (43 s
+    # for 576 residues).
     pos = {a: k for k, a in enumerate(inst.heavy)}
-    for b in mol_h.GetBonds():
+    own = sorted({b.GetIdx() for a in inst.heavy
+                  for b in mol_h.GetAtomWithIdx(a).GetBonds()})
+    for bi in own:
+        b = mol_h.GetBondWithIdx(bi)
         i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
         if i in pos and j in pos:
             yield tuple(sorted((pos[i], pos[j])))

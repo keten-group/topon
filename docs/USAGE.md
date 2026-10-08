@@ -92,7 +92,8 @@ topon [--version] [--help] <command> [options]
 
 ```bash
 topon generate CONFIG_PATH [--output DIR] [--dry-run] [--export-graphml] [--export-npz]
-               [--verify REFERENCE [--verify-seeds N] [--verify-only] [--relaxed DATA] [--junction-type T]]
+               [--verify REFERENCE [--verify-seeds N] [--verify-only] [--relaxed DATA] [--junction-type T]
+                [--verify-replicate REPLICATE ...]]
 ```
 
 | Argument / Option | Description |
@@ -103,12 +104,13 @@ topon generate CONFIG_PATH [--output DIR] [--dry-run] [--export-graphml] [--expo
 | `--export-graphml` | Also write the graph (chains and entanglement edges) as `<study.name>.graphml` in the study folder. Same as `output.export_graphml` |
 | `--export-npz` | Also write the graph as `<study.name>.npz` for graph-learning pipelines. Same as `output.export_npz` |
 | `--verify REFERENCE` | After the build, regenerate the graph and compare it with a reference network (a LAMMPS data file, an NPZ dual graph or a strand graph), and write `verify.json` into the run directory (§3.6a) |
-| `--verify-seeds N` | Number of seeds `--verify` regenerates, counting up from `topology.generator.seed` (default 1) |
+| `--verify-seeds N` | Number of seeds `--verify` regenerates, counting up from `topology.generator.seed` (or `topology.crosslinking.seed` for a crosslinked melt, default 1) |
 | `--verify-only` | Build nothing and only regenerate and verify the graphs (stages 1 to 3, in a scratch directory) |
-| `--relaxed DATA` | With `--verify`, a relaxed end-linked data file of this build, for Z1+ per strand class against the reference |
+| `--relaxed DATA` | With `--verify`, a relaxed end-linked data file of this build, or the run directory it is in (the last MD checkpoint is taken), for Z1+ per strand class, the per-bridge histogram and the partners against the reference (§3.6a) |
 | `--junction-type T` | With `--verify`, the junction atom type of a reference data file that is not typed 1 end, 2 interior, 3 junction |
+| `--verify-replicate REPLICATE` | With `--verify` of a network crosslinked along its chains, a replicate of the reference (the same process at another seed), repeated for each. The report says per build which measures sit inside the replicates' scatter and gives a Mann-Whitney test per measure (§3.6a) |
 
-The command runs the six-stage pipeline (Topology → Analysis → Assignment → Chemistry → Conformation → Output) and writes the LAMMPS data files and input scripts to `output_dir/study_name/`.
+The command runs the six-stage pipeline (Topology → Analysis → Assignment → Chemistry → Conformation → Output) and writes the LAMMPS data files and input scripts to `output_dir/study_name/`. The atomistic placement and the conformation noise draw from streams keyed on the study name, not on `--output`, so two runs of a pinned config into different directories write the same files. Give each replicate a `study.name` of its own (see `topology.generator.seed` in Appendix A).
 
 ```bash
 topon generate demos/templates/full.json
@@ -161,11 +163,12 @@ topon doctor my_run.json --strict  # warns also exit 1
 | `unknown_config_keys` | warn | A nested section carries a key the schema does not define, so it is ignored without notice |
 | `unknown_node_type` | error / warn | `assignment.node_types.degree.mapping` references a type that is not in `chemistry.node_type_map`. The atomistic chemistry stage refuses such a build (an error), while a coarse-grained junction is one bead whatever its molecule (a warning) |
 | `poss_at_internal_junction` | warn | POSS mapped to degree >= 2 junctions, which gives a bond longer than half the periodic box at LAMMPS stage 1 |
-| `atomistic_graft_non_pdms` | warn | Graft density set on a non-PDMS atomistic monomer (the build skips those grafts with only a `RuntimeWarning`) |
+| `atomistic_graft_non_pdms` | warn | Graft density set on an atomistic monomer with no methyl on its head atom (its repeats are built ungrafted), read over the copolymer composition too, or a side chain that is not PDMS |
 | `dp_below_kuhn` | warn | DP < 5 (conformation/entanglement edge cases) |
 | `defects_endcap_safe` | ok | Reminder that loop defects skip degree-1 chain caps |
-| `entanglement_target_below_floor` | warn | `conformation.entanglement.target_Z` is below the lowest value that route has reached at this DP. The warning names the floor and the route that goes lower. Each controller round is a full relaxation protocol, so this is worth catching before it starts |
-| `conformation_build_knob` | error | A `target_Z` with neither `coil_ratio` nor `build_density`, and nothing measured for that DP and placement to seed the controller from |
+| `entanglement_target_below_floor` | warn | Bead-spring route. `conformation.entanglement.target_Z` is below the lowest value that route has reached at this DP. The warning names the floor and, for the walk, the meander's floor at that DP and whether it is lower by more than their seed spread. Each controller round is a full relaxation protocol, so this is worth catching before it starts |
+| `conformation_build_knob` | error | Bead-spring route. A `target_Z` with neither `coil_ratio` nor `build_density`, and nothing measured for that DP and placement to seed the controller from |
+| `atomistic_target_placement` | error | Atomistic route. A `target_Z` with `atomistic_placement` set to something other than `"coil"`, whose radius is what a target turns |
 | `schema_gap_extras` | ok | Config has `simulation`/`execution` (not Pydantic-validated, the CLI handles them through `load_config_full`) |
 
 To add a rule, write `check_<name>(cfg, raw) -> list[Issue]` in `topon/diagnostics/rules.py` and append it to `RULE_REGISTRY`.
@@ -260,11 +263,16 @@ simbox_output/
 ├── system.data           # LAMMPS data file (atom_style full)
 ├── ff_coeffs.in          # Force-field coefficients
 ├── settings.in           # pair_coeff / bond_coeff / angle_coeff / dihedral_coeff
+├── settings_x6.in        # DREIDING's exponential-6 as pair_style buck (§4.1, no script includes it)
 ├── groups.txt            # group definitions by reactive-group type
 ├── 1_minimize.in         # Stage 1: soft push-off + CG minimisation
 ├── 2_nvt.in              # Stage 2: NVT thermalisation
 ├── 3_npt.in              # Stage 3: NPT density equilibration
-└── 4b_crosslink.in       # Stage 4: crosslink template (fix bond/react or bond/create)
+├── 4b_crosslink.in       # Stage 4: crosslink template (fix bond/react or bond/create)
+├── pre_react_primary.mol, post_react_primary.mol, rxn_map_primary.txt
+└── pre_react_secondary.mol, post_react_secondary.mol, rxn_map_secondary.txt
+                          # fix bond/react templates in the box's own type ids,
+                          # written when the box holds epoxide and amine
 ```
 
 Then run LAMMPS.
@@ -274,6 +282,8 @@ cd simbox_output && lmp -in 1_minimize.in
 ```
 
 See §4.1 for the simbox Python API.
+
+The files use DREIDING as follows since 0.4.5. LJ sigma is R0 / 2^(1/6) (the parameter file's R0 is the position of the minimum), unlike pairs mix geometrically with the tail correction (`pair_modify mix geometric tail yes`), and every dihedral has LAMMPS's sign of d (the file's negated, so an sp3-sp3 torsion has its minimum staggered). The Si-O-Si angle is still DREIDING's generic O_3 angle, 104.51 degrees, against 143 to 148 in siloxanes.
 
 ### 3.5 `topon chain` (single chain in solvent)
 
@@ -292,7 +302,7 @@ topon chain --chain-smiles SMILES --dp N [options]
 | `--n-solvent` | auto | Number of solvent molecules, calculated from the density if omitted |
 | `--solvent-mixture` | `None` | Multi-solvent JSON (e.g., `'[{"smiles":"...","weight_fraction":0.5}, ...]'`) |
 | `--graft-density` | `0.0` | Graft attachment probability per backbone unit (0-1) |
-| `--graft-smiles` | `None` | SMILES for graft repeat unit (required if `--graft-density > 0`) |
+| `--graft-smiles` | `None` | SMILES for graft repeat unit (required if `--graft-density > 0`). The side chain is built of PDMS whatever this says, and another SMILES gets a warning |
 | `--graft-dp` | `5` | Repeat units per side chain |
 | `--density` | `0.85` | Target packing density (g/cm³) |
 | `--seed` | `42` | Random seed |
@@ -312,6 +322,8 @@ topon chain --chain-smiles "[Si](C)(C)O" --dp 30 \
             --solvent-smiles "Cc1ccccc1" --n-solvent 150
 ```
 
+The chain is `--chain-smiles` written `--dp` times between two trimethylsilyl end caps (with `--graft-density`, a grafted repeat carries a PDMS side chain in place of the last methyl on its first atom). The head cap bonds to the first atom of the SMILES. The tail cap bonds to the atom the next repeat would bond to, which for a repeat unit that ends in a side group, such as polystyrene `CC(c1ccccc1)` or poly(methyl acrylate) `CC(C(=O)OC)`, is the backbone carbon before the branch (before 0.4.5 it bonded to the last atom of the SMILES, a phenyl or ester carbon). A bridge O goes between a cap and the chain where the element `topon chain` guesses for that end of the repeat is Si, as the cap's is, which for PDMS puts one O between the head cap and the first Si. The guess reads the SMILES text, not the molecule, so write a siloxane Si first (PDMS written from its O, `O[Si](C)(C)`, gets an O-O bond at the head and a Si-Si bond at the tail).
+
 The output directory contains the files below.
 
 ```
@@ -319,6 +331,7 @@ chain_output/
 ├── system.data       # LAMMPS data (chain + solvent, DREIDING)
 ├── ff_coeffs.in
 ├── settings.in       # pair coefficients (re-applied after soft push-off)
+├── settings_x6.in    # DREIDING's exponential-6 as pair_style buck (§4.1)
 ├── groups.txt
 ├── 1_minimize.in
 ├── 2_nvt.in
@@ -430,12 +443,17 @@ topon fit REFERENCE [--out CONFIG] [--junction-type T]
           [--seed 1] [--max-functionality F] [--dp N] [--density RHO]
           [--no-z1] [--z1-exe EXE] [--z1-distro NAME] [--name NAME]
           [--no-control] [--quiet]
+          [--crosslinked] [--route crosslink|lattice] [--crosslink-bond-type T]
+          [--sequence SEQ [--repeats N] [--crosslink-residue Y]]
+          [--reactive-every K [--reactive-start S]] [--packing P]
+          [--contact-radius R]
 topon generate CONFIG --verify REFERENCE [--verify-seeds 3] [--relaxed DATA]
+                      [--verify-replicate REPLICATE ...]
 ```
 
 | Argument / Option | Description |
 |---|---|
-| `REFERENCE` | An end-linked LAMMPS data file (the `fix bond/create` convention, or topon's `endlinked` output), an NPZ dual graph (schema 1, or topon's own schema 2, see *The NPZ dual graph* in Appendix A), or a strand graph (`.gpickle`, `.graphml`, `.nodes`/`.edges`) |
+| `REFERENCE` | An end-linked LAMMPS data file (the `fix bond/create` convention, or topon's `endlinked` output), an NPZ dual graph (schema 1, or topon's own schema 2, see *The NPZ dual graph* in Appendix A), or a strand graph (`.gpickle`, `.graphml`, `.nodes`/`.edges`). Or a network crosslinked along its chains, as a data file, a strand graph with its chains or a `crosslinked_melt.npz` (see *Networks crosslinked along their chains* below) |
 | `--out`, `-o` | The config to write (default `<reference stem>_config.json`). The report goes beside it as `<stem>.fit.json` |
 | `--junction-type T` | For a data file typed other than 1 end, 2 interior, 3 junction. The atoms of type `T` are the junctions, every connected run of the other atoms is a chain, and a chain's ends are found from its bonds. A junction bonded to the middle of a chain is refused (that is a crosslink along a chain, not an end-linked network) |
 | `--lattice`, `--mix` | Lattice of the fitted cell, SC by default, or `MIX` with its SC,BCC,FCC fractions (the two go together). The cutoff candidates are simple-cubic shell radii in cell units. On BCC, FCC and Diamond they are ranges without a shell meaning, and the report says so |
@@ -445,18 +463,67 @@ topon generate CONFIG --verify REFERENCE [--verify-seeds 3] [--relaxed DATA]
 | `--dp`, `--density` | For a graph file, which carries neither (the fallbacks are the schema's DP 25 and a bead density of 0.85, both flagged) |
 | `--no-z1` | Skip Z1+ on the reference, so no entanglement target is written |
 | `--no-control` | Skip the nearest-neighbor control row of the sweep |
+| `--crosslinked` | Read `REFERENCE` as a network crosslinked along its chains. Otherwise it is decided from the file |
+| `--route` | For a crosslinked reference, the generator the config is for, `crosslink` (default, `topology.source: "crosslink"`) or `lattice` (`architecture: "random_crosslinked"`) |
+| `--crosslink-bond-type T` | For a crosslinked data file, a bond type of its crosslinks (repeat for several), so that a chain with a crosslink within itself can be walked. Read off the bonds when not given |
+| `--sequence`, `--repeats`, `--crosslink-residue` | For a crosslinked reference with one chain length, the chain as a sequence (one bead per residue, the crosslink residues reactive), checked against where its crosslinks sit and written in place of the period read off them |
+| `--reactive-every`, `--reactive-start` | For a crosslinked reference, the period of the reactive beads, checked and written in place of the one read off them |
+| `--packing`, `--contact-radius` | For a crosslinked reference, the generator's lattice packing and contact radius, in place of the ones read or swept |
 
 **What is measured.** The strand classes (bridge, primary loop, dangling, sol), the effective and chemical P(f), the secondary loops with the effective degrees of the junction pairs they join, the primary loops by the effective degree of the junction that carries them, DP (mean, polydispersity and histogram), bead density, the descriptors of §3.6 and, with coordinates, the junction-junction separation of the bridges (mean, CV, 95th percentile) and the strand end-to-end distance. From a data file with Z1+ installed it adds Z1+ per strand class. The sculpt target is the P(f) in topon's site convention (i.e., degree 1 counts the dangling-chain ends and the junctions with one other strand).
 
 **The cell and the cutoff.** The cell is the smallest cube whose lattice holds the active sites (for a `MIX`, whose site count is a draw, with three standard deviations to spare), and the junction-only cell is reported beside it. The cutoff comes from a rule of thumb, cutoff ≈ p95(junction separation) / site spacing, with the site spacing the reference box over the cell's edge count. The candidates are the outermost three simple-cubic shells whose radius is within the rule, and a short sweep decides between them. Every candidate is built through the pipeline's own stages 1 to 3 on each seed (`Pipeline.run_graph_stages`, so it is exactly the graph `topon generate` builds from that config and seed), described, and scored with the composite of `compare`. The composite that chooses divides each term by max(|reference|, its spread over the sweep's graphs), because a reference value near zero would otherwise turn seed noise into the ranking. The spread is taken over this sweep's graphs (the candidates and the control), so `--no-control` or other `--sweep-cutoffs` give other numbers. The report and `--verify` also give the composite over the reference value alone, the default of `compare`. A nearest-neighbor row (cutoff 1.0) is scored as a control and never chosen. Without coordinates (topon's own NPZ, or a graph without positions) there is no rule, and the sweep covers the shells 2, 3, 4, 6 and 8 whose radius is within a third of the box. The sweep seeds the global random streams for each build (and restores them), so a polydisperse DP draws the same way every time.
 
-**What the config holds.** `topology.generator` holds the cell, the chosen cutoff, every degree count, `search: "exact"` and the seed. `assignment.dp_distribution` holds the mean and PDI (the Schulz-Zimm form the schema holds, so a polydisperse reference is matched in its first two moments and flagged, because `topon generate` draws those DPs from the global stream that no config seed pins), with `endlinked_dangling` for a data file or NPZ. `assignment.defects` holds the primary loops placed by effective degree, the secondary loops with the reference's endpoint degrees and the sol chains. `chemistry` is coarse-grained at the reference density, `simulation` uses the push-off protocol compressing to that density, and `output.lammps_convention` is `"endlinked"`. When Z1+ measured the reference, `conformation` holds the placement route, its build knob and `entanglement.target_Z` and `target_hist` per bridge. The route is the random walk when the target is at or above the lowest final-state Z the walk has reached at that DP, and the meander below it. The knob is where the controller would start (`seed_actuator`) on the calibration rows of this DP, or of the nearest DP when this one has none (flagged, since Z per strand grows steeply with DP). Below the route's floor the knob is the one that measured lowest. Every one of these is a final-state number that only MD can check.
+**What the config holds.** `topology.generator` holds the cell, the chosen cutoff, every degree count, `search: "exact"` and the seed. `assignment.dp_distribution` holds the mean and PDI (the Schulz-Zimm form the schema holds, so a polydisperse reference is matched in its first two moments and flagged, because `topon generate` draws those DPs from the global stream that no config seed pins), with `endlinked_dangling` for a data file or NPZ. `assignment.defects` holds the primary loops placed by effective degree, the secondary loops with the reference's endpoint degrees and the sol chains. `chemistry` is coarse-grained at the reference density, `simulation` uses the push-off protocol compressing to that density, and `output.lammps_convention` is `"endlinked"`. When Z1+ measured the reference, `conformation` holds the placement route, its build knob and `entanglement.target_Z` and `target_hist` per bridge. The route is the random walk when the target is at or above the lowest final-state Z the walk has reached at that DP, and the meander below it. The knob is where the controller would start (`seed_actuator`) on the calibration rows of this DP, or of the nearest DP when this one has none (flagged, since Z per strand grows steeply with DP). Below the route's floor the knob is the one that measured lowest (coil ratio 1.402 for DP 20). The block also carries the build options the knob was measured with, and says so in a note. The DP-20 rows are `place()` builds with the junctions jittered (see *Chords that cross* in Appendix A), so a DP-20 meander config gets `junction_jitter` 0.15 and `settle_clearance` 1.0 and a walk the jitter alone (the same coil built without them pinches strands at their junctions and ends at a higher Z). Since 0.4.5 the block also asks for compact primary loops (`loop_shape: "compact"`), whether or not the graph has any, while the schema's default stays `"ring"`. Compact loops brought the relaxed fits closer to the references, and a graph without primary loops builds the same under both. A config with no Z1+ target gets no `conformation` block. Every one of these is a final-state number that only MD can check.
 
 **What is flagged.** A degree above `max_functionality` (refused), Diamond at its canonical cutoff with dangling ends and half or more of the sites four-fold (the `diamond_dangling_ends` doctor rule, refused when no candidate is left), an entanglement target below the route's floor, calibration rows that were not built with `place()`, loops on junctions the lattice route cannot hold (a junction with loops only is a vacancy to the sculptor, and one with a single other strand reads as a dangling end, so their loops go to other junctions and the chemical P(f) moves), the bead count against the reference's, a choice inside the seed scatter, and every warning `topon doctor` gives on the written config.
 
 **NPZ dual graphs.** A dual graph records which crosslinkers a chain reaches, not how many of its ends bond each one. In a schema-1 file a primary loop and a dangling chain both reach one crosslinker and cannot be told apart, so `topon fit` reads them all as dangling, fits no primary loops and says how many chains that covers. Such files carry crosslinker coordinates in sigma and get the rule of thumb. topon's own NPZ (schema 2, coordinates NaN) is read the way its writer writes it. Every graph node is a crosslinker row, so a row with one chain is a dangling-chain end site and a chain reaching one crosslinker can only be a primary loop, and the file measures like the data file of the same build except for the sol chains the writer leaves out. Its box is the lattice cell, so it has no density (pass `--density`) and gets the wider sweep. No NPZ has a Z target.
 
-**The verification.** `topon generate CONFIG --verify REFERENCE` runs the build as usual, then regenerates the graph on `--verify-seeds` seeds (from the config's own) and measures each the way the reference is measured. It reports requested against achieved P(f) (exact or not, per seed), the defects asked for against those placed, the bead count, the chemical P(f) against the reference's, the composite with its per-descriptor table, and the reach of the bridges as built (lattice positions scaled to the box the density gives, labeled as the built state). When one term makes up much of the composite it is named, with the composite without it. The graph regenerated for the config's own seed is compared with the one the pipeline just built, edges and DPs, which checks that the build is deterministic. The config is taken as the pipeline took it (validated, legacy keys renamed, defaults filled), and a loaded topology has no P(f) to verify. The entanglement part needs a relaxed system, and `topon generate` runs no MD. With `--relaxed DATA` (an end-linked data file of the relaxed build) it adds Z1+ per strand class with KS p-values against the reference, the per-bridge histogram against `target_hist`, partners per strand and the reach and end-to-end distance after relaxation, and it flags a density or temperature that differs from the reference's, since Z1+ compares only between matched states.
+**The verification.** `topon generate CONFIG --verify REFERENCE` runs the build as usual, then regenerates the graph on `--verify-seeds` seeds (from the config's own) and measures each the way the reference is measured. It reports requested against achieved P(f) (exact or not, per seed), the defects asked for against those placed, the bead count, the chemical P(f) against the reference's, the composite with its per-descriptor table, and the reach of the bridges as built (lattice positions scaled to the box the density gives, labeled as the built state). When one term makes up much of the composite it is named, with the composite without it. The graph regenerated for the config's own seed is compared with the one the pipeline just built, edges and DPs, which checks that the build is deterministic. The config is taken as the pipeline took it (validated, legacy keys renamed, defaults filled), and a loaded topology has no P(f) to verify. Nothing in this part reads `conformation.loop_shape`, since the graphs come from stages 1 to 3. The entanglement part needs a relaxed system, and `topon generate` runs no MD. With `--relaxed DATA` it adds Z1+ per bridge, per primary loop and per dangling strand with KS p-values against the reference (a class on one side only is listed with its counts), the per-bridge histogram P(Z) beside the reference's and against `target_hist`, the partner pairs with the mean partners per strand and per bridge, the reach and end-to-end distance after relaxation, and the acceptance (Z per bridge within 10 % of the reference's and a per-bridge KS p above 0.05, `topon.inverse.verify.Z_ACCEPT`).
+
+`DATA` is a data file or a run directory (a `topon generate` study folder or its `04_Simulation` folder), from which the furthest MD checkpoint is taken. A directory with no MD checkpoint is refused before anything is built, and `03_Conformation/system_relaxed.data` is never taken from one. The file is checked before its Z1+ is read, and every failure is a flag in the report.
+
+- The network. Relaxation moves beads and never bonds, so a relaxed build's strand graph is the config's. Strands per class and the effective P(f) say whether it is a build of this config at all ("not this config's network", and then no verdict is given), a Weisfeiler-Lehman hash of the strand graph says whether it is the graph of the config's seed ("another seed"), and the sol chains, DP per class and bead count say whether its strands are the ones the pipeline writes.
+- The state. The first line of a LAMMPS `write_data` file with a timestep above zero ("not a relaxed state" otherwise, since the Z1+ of a build is not the final-state number the reference carries), the units on that line against the reference's, and the density and the temperature (from the Velocities section) within 2 % and 10 % of the reference's. A file with no Velocities section is flagged as unchecked on temperature rather than passed.
+
+**Building and relaxing a fitted config.** Only the bead-spring route that `topon.conformation.place` draws honors the fitted `conformation` block. `topon generate` draws every strand on its chord whatever `placement` says, and the push-off keeps the entanglement state a build starts with, so a relaxed `topon generate` build of a fitted config reads as the same network at a much lower Z. Build the fitted knob with `place` at the config's seed (the graph `--verify` regenerates, which the hash check confirms), relax it with the deck `topon generate` writes for the config, and pass the last checkpoint to `--relaxed`. `place` builds the same strands as the pipeline (dangling chains at their DP and the sol chains), so the network check reads such a build as the pipeline's.
+
+#### Networks crosslinked along their chains
+
+A randomly crosslinked or vulcanized melt, or a protein network crosslinked at fixed residues, has no crosslinker at a chain end. Two chain beads are bonded instead. `topon fit` reads such a reference with `topon.analysis.crosslinked` (a junction is a crosslink, a strand the run of chain beads between two) and writes a config for the crosslink generator (`topology.source: "crosslink"`, see `topology.crosslinking` in Appendix A), or with `--route lattice` for the lattice route (`architecture: "random_crosslinked"`).
+
+**The reference.** A LAMMPS data file (`atom_style full`, one molecule per chain) is read this way when the end-linked reader refuses it and half or more of its beads with three or more bonds have two bonds within their own molecule, or always with `--crosslinked`. A chain carrying a crosslink within itself has no single backbone path unless the crosslinks' bond type is known. When chains come back without an order, a bond type whose bonds nearly all join two beads of three or more bonds is read as the crosslinks' type, the file is read again, and a note says so. `--crosslink-bond-type` names it outright. A strand graph (`.gpickle`) is read this way when it carries `G.graph["chains"]` and `G.graph["architecture"] == "random_crosslinked"`, as the crosslinked reader and the crosslink generator write it, with its cell in `G.graph["box"]` (lattice units unless `G.graph["units"]` is `"sigma"`). topon's own data file of a crosslink build carries no chains (a crosslink is built as one bead its strands share), so one of its builds is fitted from the `topology/crosslinked_melt.npz` it writes beside the graph. No Z1+ target is read, since these networks are fitted on their connectivity and their chains.
+
+**What is measured** (the report's `reference.crosslinked`). The chains (count, length, sol), the crosslinks (count, within one chain or between two, fused junctions), each crosslinked bead's position along its chain, the gaps of the crosslinks within a chain and their parity, passes per chain, the strand DP of each class, the descriptors and, for a lattice reference, its packing.
+
+**What the config holds.**
+
+| Key | From |
+|---|---|
+| `chains` | One type per chain length with its count, in the order the reference lists them. Molecules of one or two beads (solvent, ions) are left out and flagged. The reactive beads are read off the positions. The greatest common divisor of the spacings along each chain is the period, written as `reactive_every` from `reactive_start`. The period's slots are held against a uniform draw, and when the reference leaves some of them empty far more often than such a draw would, the positions seen are written as a `reactive` list (or, for the beads next to the chain ends, as `min_dangling_dp: 1`). A chain length that caught no crosslink where the others' rate predicts several is written with an empty list (a diluent). `--sequence` writes the sequence instead, after checking every crosslinked bead is on a crosslink residue |
+| `crosslinks` | The count, which the generator meets exactly |
+| `contact_radius` | 1.0 (face contacts) when nearly all the crosslinks within a chain close across an odd number of bonds (on the cubic lattice two beads of one chain touch face to face across odd gaps only), 1.5 (the generator's default) when half or more are even, and otherwise both are built and scored |
+| `min_gap` | The generator's 6, or the reference's smallest gap within a chain when that is smaller (3 at least). A reference with no crosslink within a chain gets a gap past its longest chain when the builds would make several |
+| `packing` | A lattice reference's beads over its sites, so the generator picks the same lattice. Without a lattice (a data file in sigma, a graph with no cell), a range of packings is built and scored |
+| `min_dangling_dp` | Only when the beads next to the chain ends never crosslink where a uniform draw would have (above) |
+| `seed` | `--seed` (the config's `crosslinking.seed`) |
+| `chemistry.target_density` | The data file's bead density, or 0.85, flagged |
+
+A crosslinked reference refuses `--sweep-cutoffs` on the crosslink route and `--junction-type` with `--crosslinked`, and an end-linked one refuses every crosslinked option.
+
+**How the settings are chosen.** Every candidate setting is built through the pipeline's stages 1 to 3 (`Pipeline.run_graph_stages`) on `--seeds` seeds and scored by the mean of the descriptor composite, the deviations of lambda2 and of the mean path of the core from the reference's, the KS statistics of passes per chain and of the bridge, dangling and loop DPs, and the deviation of the loop count. The lowest mean wins. When the best two are closer than their seeds' spread, the best three are built on 16 seeds each and chosen between again, and a choice still inside the scatter is flagged. With everything read off the reference there is one candidate, and its builds are the report's first check.
+
+**The lattice route** (`--route lattice`) writes the SC cell for the active sites, the exact P(f) with the loops and sol of the end-linked fit, a connectivity floor of 0.95, and `assignment.chains` with the chain length, the period and the chord floor. The cutoff candidates are the simple-cubic shells around cutoff ≈ p75(junction separation) / site spacing, one in and one out (the p95 rule of the end-linked references overshoots on these networks). It builds no nearest-neighbor control row, since on these P(f) the exact search takes minutes to sculpt one shell or gives up.
+
+**The verification.** For a config that builds a crosslinked network, `topon generate CONFIG --verify REFERENCE` regenerates `--verify-seeds` seeds (from `crosslinking.seed`, or `generator.seed` on the lattice route) and reports the chains and crosslinks requested against built (or the P(f) on the lattice route), the determinism check, the composite, lambda2, the path and the four chain KS statistics, the counts (crosslinks, within a chain, loops, secondary loops, bridges, dangling, sol, junctions outside the largest piece) and the reach as built, in the reference's units. The generator puts a junction at its two beads' midpoint, which reads 3 to 6 % low against a reference that puts it on one of them. With `--verify-replicate` (repeated, networks of the reference's own process at other seeds) it gives two readings per measure. The scatter is the furthest a replicate sits from the reference, and each build is inside it or not. A build of the reference's own process falls outside with a chance of 1 in N + 1 for N replicates, so a measure is flagged only when more builds fall outside than that explains (binomial tail below 0.05). The other reading is a Mann-Whitney test of the builds against the replicates, reported raw and Holm-corrected over the measures, with the verdict taken on the corrected p. It needs 4 builds and 4 replicates at least and says so below that. Verify on seeds the fit did not choose its settings on (e.g., with `crosslinking.seed` set past the seeds of the fit). `--relaxed` is refused for these networks.
+
+```bash
+topon fit N100_seed1.gpickle --out n100_config.json
+topon generate n100_config.json --verify N100_seed1.gpickle --verify-only \
+    --verify-seeds 8 --verify-replicate N100_seed2.gpickle --verify-replicate N100_seed3.gpickle
+topon fit resilin64_seed1.gpickle --sequence GGRPSDSYGAPGGGN --repeats 12
+```
 
 From Python, `topon.inverse.fit(path, ...)` returns the config, the report and the reference measurement, `topon.inverse.verify(config, reference, seeds=...)` the verification report, and `topon.inverse.measure` and `read_reference` the measurement alone.
 
@@ -542,20 +609,23 @@ mol = Molecule.from_pdb("MyMol", "path/to/file.pdb")
 mol = Molecule.from_mol("MyMol", rdkit_mol_object)
 ```
 
+Every conformer simbox embeds (`from_smiles` and the library builders) goes through `embed_conformer`, which embeds from ETKDG's own starting coordinates and checks the result with `conformer_defects`. On a defect it discards the conformer and tries the next seed (42, 43, and so on, ten at most), and a molecule with no sound conformer raises `RuntimeError` naming the defects. A defect is a bond passing through a ring of the same molecule (rings of up to 12 atoms), which no minimizer can take back out, or a bond more than 15 % off its MMFF94 r0 (UFF's when MMFF lacks a parameter). Before 0.4.5 the AM0270 cage was embedded from random coordinates, which at seed 42 put one isooctyl Si-C bond through the opposite face of the cage, in every POSS box. `from_pdb` and `from_mol` keep the coordinates they are given, and `conformer_defects(mol.mol)` checks them (one readable line per defect).
+
 `MoleculeLibrary` (`topon/simbox/library.py`) holds pre-built siloxane molecules.
 
 ```python
 from topon.simbox.library import MoleculeLibrary
 lib = MoleculeLibrary()
-epoxy  = lib.epoxy_pdms(n_dms=2)    # Glycidoxypropyl-PDMS, ~500 g/mol
-amino  = lib.amino_pdms(n_dms=8)    # Aminopropyl-PDMS, ~850 g/mol
+epoxy  = lib.epoxy_pdms(n_dms=2)    # Glycidoxypropyl-PDMS, C20H46O7Si4, 510.9 g/mol
+amino  = lib.amino_pdms(n_dms=8)    # Aminopropyl-PDMS, C26H76N2O9Si10, 841.8 g/mol
 poss   = lib.am0270_poss()           # AminopropylIsooctyl POSS, ~1267 g/mol
 custom = lib.custom("C1OC1", name="MyEpoxide")
 ```
 
 The library structures are as follows.
-- Epoxy-PDMS is `Epoxide-CH₂-O-CH₂CH₂CH₂-Si(Me)-[O-Si(Me)₂]ₙ-O-Si(Me)-CH₂CH₂CH₂-O-CH₂-Epoxide`.
-- Amino-PDMS is `H₂N-CH₂CH₂CH₂-Si(Me)-[O-Si(Me)₂]ₙ-O-Si(Me)-CH₂CH₂CH₂-NH₂`.
+- Epoxy-PDMS is `Epoxide-CH₂-O-CH₂CH₂CH₂-Si(Me)₂-[O-Si(Me)₂]ₙ-O-Si(Me)₂-CH₂CH₂CH₂-O-CH₂-Epoxide` (77 atoms at n = 2).
+- Amino-PDMS is `H₂N-CH₂CH₂CH₂-Si(Me)₂-[O-Si(Me)₂]ₙ-O-Si(Me)₂-CH₂CH₂CH₂-NH₂` (123 atoms at n = 8).
+- Both chain ends carry two methyls since 0.4.5. Before, each terminal Si had one methyl and RDKit filled its fourth valence with an H.
 - AM0270 POSS is a Si₈O₁₂ cube cage with `-CH₂CH₂CH₂-NH₂` on corner 0 and 2,4,4-trimethylpentyl (isooctyl, inert) on corners 1-7.
 
 `BoxPacker` detects overlaps in O(N) with grid-based spatial hashing.
@@ -593,11 +663,29 @@ The writers produce the data file and the input scripts.
 from topon.simbox.writer import write_lammps
 from topon.simbox.inputs import write_inputs
 
-write_lammps(system, output_dir="output/simbox")
-write_inputs(system, output_dir="output/simbox", temperature=300.0, pressure=1.0)
+files = write_lammps(system, output_dir="output/simbox")
+files.update(write_inputs(system, output_dir="output/simbox", temperature=300.0, pressure=1.0))
+
+# for an epoxy-amine box, the types its cure creates and the bond/react templates
+from topon.simbox.workflow import prepare_bond_react
+prepare_bond_react(system, "output/simbox", files)
 ```
 
+`SimBox.write`, `write_lammps` and `write_inputs` write the box alone. `run_workflow`, `topon simbox` and `reactive_crosslink.run` also call `prepare_bond_react`, and only then does the box list the types its cure creates and carry its templates.
+
 Stage 1 (soft push-off and minimization) has two phases. Phase A uses `pair_style soft` with a prefactor ramped from 0 to 60 and a brief NVT run to resolve overlaps. Phase B switches to the `lj/cut` DREIDING potentials and runs a conjugate-gradient minimization.
+
+Impropers are DREIDING's inversion, `improper_style umbrella` in all three stage scripts. A planar center (sp2, three neighbors) carries three terms, each neighbor out of plane in one of them, each with a third of the parameter file's K, so the data file's Improper Coeffs read `K omega0`. Before 0.4.5 they were cvff `K -1 1`, one term of full K per center. The epoxy, amine and POSS molecules have no planar center.
+
+`settings_x6.in` holds DREIDING's own van der Waals term, the exponential-6 of the parameter file, as `pair_style buck` coefficients (A = 6 D0 exp(zeta)/(zeta - 6), rho = R0/zeta, C = zeta D0 R0^6/(zeta - 6), with the minimum at R0 and depth D0). `buck` does not mix, so every pair of types is written, with R0 and D0 combined geometrically and zeta arithmetically, and the file ends with `pair_modify tail yes`. `topon.forcefield.dreiding.x6_buck_coefficients(type_i, type_j, params)` gives the coefficients for any pair. No stage script includes the file, and `settings.in` stays the LJ 12-6 substitute, whose r^-12 wall is much harder. Switch to it only on a dense state with no overlaps, since the -C/r^6 term of `buck` has only a finite wall in front of it and two overlapping atoms fuse. `system.data` holds LJ's two Pair Coeffs values, so read the data file under `lj/cut` first. Simbox writes every charge as 0 and its stage scripts run `lj/cut 12.0` with no Coulomb term, so the switch is to plain `buck` (with charges of your own, to `buck/coul/long 12.0` and a `kspace_style`).
+
+```
+pair_style      lj/cut 12.0
+read_data       system.data
+# ... relax and densify under lj/cut (the stage scripts) ...
+pair_style      buck 12.0
+include         settings_x6.in
+```
 
 Stage 4b is a crosslink template that the user must configure. Option A uses `fix bond/react` (template-based reactions with molecule pre and post files). Option B uses `fix bond/create` (simple distance-based bond formation).
 
@@ -613,7 +701,9 @@ files = run_workflow(
 )
 ```
 
-`run_workflow` also activates `UniversalTypeMapper`, a context manager that patches `topon.forcefield.dreiding` at write time. It keeps the DREIDING type IDs the same across all compositions, so predefined `fix bond/react` templates stay compatible.
+**Type ids and `fix bond/react`.** Every type keeps the id DREIDING typing gives it, in order of first appearance, so the order follows the first molecule the packer places (N_3 is atom type 4 when that molecule holds an N and 5 when it does not), and every coefficient line names its types. A dihedral type is a name and a K, so the epoxide ring's torsions carry 0.125 and 0.5 beside the chain's 0.111111 and 0.333333. For a box holding epoxide and amine sites, `run_workflow` then calls `prepare_bond_react(system, output_dir, files)`. It appends the types the cure creates (the O-H bond, the C-O-H and C-N-C angles and the torsions about the new bonds) to `system.data` and `ff_coeffs.in` (`react_templates.add_reaction_types`), and writes the four `fix bond/react` molecule files and two maps beside them in the box's own ids (`react_templates.write_epoxy_amine_templates`), which `4b_crosslink.in` names. A box without both an epoxide and an amine is left as written. `topon.workflows.reactive_crosslink.run` does the same.
+
+Before 0.4.5 `run_workflow` patched `topon.forcefield.dreiding` at write time with a `UniversalTypeMapper` that forced fixed ids so that hand-written templates fitted every composition. It matched dihedral types by atom types only, so the epoxide ring's torsions were written with the chain's K, and in some compositions the data file listed two K under one id, which LAMMPS refuses to read. The templates now come from each box's own types, so fixed ids have no use.
 
 ### 4.2 singlechain (solubility utility)
 
@@ -632,6 +722,8 @@ chain_workflow(
     seed=42,
 )
 ```
+
+The chain's coordinates come from `embedder`, a Python-only argument (the CLI always takes the default). `embedder="linear"`, the default, lays the backbone out straight and puts branch atoms at offsets from their parents that can land them almost on other atoms, which stage 1's soft push-off has to undo. `embedder="etkdg"` calls `topon.chemistry.embed.embed_with_etkdg`, ETKDGv3 from random starting coordinates at `seed` followed by 200 MMFF94 iterations (UFF when MMFF cannot type the chain), with no check of the result. It is slower, and the time grows steeply with chain size (minutes for a few hundred heavy atoms).
 
 ### 4.3 Protein networks (`topon protein`)
 
@@ -849,6 +941,8 @@ first from the repository root.
 topon generate atomistic_poss.json --output ./runs
 ```
 
+`POSS_AM0270` has one attachment atom, its propyl arm's end carbon, which every strand of a junction would share, so POSS stays on the chain ends (see `chemistry.node_type_map` in Appendix A for what the cap is). Since 0.4.5 each cage is placed whole by the settled placement. `demos/poss/` is this recipe with a generated topology.
+
 ### 5.3 Atomistic network with grafts and entanglements
 
 Add a `grafts` block to `assignment` in the entanglement recipe (5.1).
@@ -876,7 +970,8 @@ cd runs/simbox_crosslink
 lmp -in 1_minimize.in
 lmp -in 2_nvt.in
 lmp -in 3_npt.in
-# Edit 4b_crosslink.in to choose Option A (fix bond/react) or B (fix bond/create), then:
+# Edit 4b_crosslink.in to choose Option A (fix bond/react, whose templates are
+# written beside system.data) or B (fix bond/create), then:
 lmp -in 4b_crosslink.in
 ```
 
@@ -936,6 +1031,8 @@ result = fit("ref.data", seeds=2)            # .config, .report, .measurement
 write_fit(result, "ref_config.json")         # and ref_config.fit.json beside it
 report = verify(result.config, "ref.data", seeds=[1, 2, 3],
                 measured=result.measurement)
+report = verify(result.config, "ref.data", seeds=[1],     # and a relaxed build
+                relaxed="runs/fit/04_Simulation")         # report["relaxed"]
 
 # a network crosslinked along its chains, without the pipeline
 from topon.topology.chain_crosslinking import ChainType, crosslink_chains
@@ -1115,13 +1212,24 @@ random.seed(42); np.random.seed(42)          # what "seed": 42 replaces
 On the C route (`exe_path` set) the binary gets a `TOPON_SEED` drawn from
 a stream seeded with the same number, and the strict C search is seeded
 too (without a seed it takes its seed from the clock). The seed covers
-only the topology. The DP draws and edge types still draw from the global
-streams, and `assignment.defects.seed` pins the defects, so a
-byte-identical LAMMPS file still needs the global streams seeded, which
+only the topology. Where a config uses them, the DP draws (a PDI above 1),
+random edge and node types, copolymer sequences, entanglements and graft
+positions still draw from the global streams, and `assignment.defects.seed`
+pins the defects, so such a config still needs the global streams seeded
+for a byte-identical LAMMPS file, which
 `topon.workflows.cg_network.run(seed=...)` does. The conformation noise
 needs no seed. It comes from a stream keyed on the study name, so the same
 study writes the same `system_relaxed.data` whenever everything before it
-is pinned. The run manifest records the seed as `generator_seed`.
+is pinned. Since 0.4.5 the atomistic placement (`straight`, `walk`,
+`meander`, `coil` and the side-chain offsets of the historic placement)
+draws from streams keyed on the study name too. An atomistic build on the
+default route that uses none of the global draws above, with
+`generator.seed` set (and `defects.seed` with defects), therefore writes
+the same files at every stage on every run with no global stream seeded,
+and leaves both global streams where it found them. The same config under
+the same study name is the same build, whatever `--output` directory it is
+written to, so replicates need study names of their own. The run manifest
+records the seed as `generator_seed`.
 
 `topology.generator` refuses unknown keys, as do the per-class blocks under
 `assignment.defects`, the whole `conformation` section and `analysis`.
@@ -1640,6 +1748,10 @@ own loops and sol.
 "chemistry": {"model_type": "coarse_grained", "target_density": 0.85}
 ```
 
+`topon fit` writes this block from a network crosslinked along its chains
+(the chains, the reactive beads, the count, the contact rule, `min_gap` and
+the packing, §3.6a).
+
 A protein chain type is `{"count": 8, "sequence": "GGRPSDSYGAPGGGN",
 "repeats": 12}`, which makes 180 beads per chain with the tyrosines reactive
 (a tyrosine at a chain end is skipped). Two reactive types that only pair
@@ -1669,6 +1781,23 @@ measured `c_inf`, the rejections by rule and the timing. From Python,
 `crosslink_chains(..., positions=..., lattice=L)` crosslinks a melt made
 elsewhere on the same lattice (each chain's beads as unwrapped integer
 coordinates) instead of growing one.
+
+**Three site rules for the Python API.** `crosslink_chains` takes three
+opt-in rules that `topology.crosslinking` does not. `ChainType(...,
+allow_ends=True)` lets the end beads be sites (an end crosslinked to an
+interior bead is a junction of 3, and two ends crosslinked only join their
+chains). `ChainType(..., pendants=(k, ...))` hangs one side bead from each
+of those beads, the side bead being the site (`grow_melt(...,
+pendants=...)` places each beside its anchor as the chain grows and
+returns them in `record["pendants"]`, and a given melt passes them as
+`pendant_positions`). `allow_neighbours=True` crosslinks a bead whose chain
+neighbor is crosslinked already, as `fix bond/create` does (the two fuse
+into one junction, of 6 for two neighboring crosslinks and more for a
+longer run). With any of them in use the graph is read from the bead
+system by `topon.analysis.crosslinked.from_beads`, side beads reduced to
+their anchors, pendant sites need `build_density=None` (the builder builds
+no side bead), and the record adds `allow_neighbours`, `end_sites` and
+`pendant_sites`. With the rules off every build is what it was.
 
 **The contact rule and the parity of the lattice.** A walk on the cubic
 lattice changes sublattice at every step, so with face contacts
@@ -1814,6 +1943,28 @@ Distribution mode sets an average per chain instead.
 | `"waypoint"` (default) | The pair together. Both chains are splines that spiral about their contact in antiphase, so the pair carries exactly `entanglement_count` windings by construction (checked with primitive-path analysis). |
 | `"kink"` | The legacy Gaussian bump aimed at the partner's midpoint. Each chain is drawn alone, so the windings the pair carries after relaxation are statistical. Kept to reproduce systems built with it before `waypoint` existed. |
 
+**Chords that cross.** The waypoint braid gives each chain a radius of 0.45
+of the gap between the two chords at the site. On a three-shell SC lattice
+two face diagonals of one face, or two body diagonals of one cell, cross
+at their midpoints, and since their midpoints coincide the selection takes
+such pairs first. Before 0.4.5 a crossing pair was drawn with both chains
+through one point and no winding. A pair whose gap at the site is under
+5 % of the shorter chord (`waypoints.CROSSING`) is now wound as though the
+chords were half the shorter chord apart (`CROSSING_GAP`), the chains
+parted along the normal to both chords.
+
+**Other strands kept out of the braid.** A braid's radius is also capped at
+half the distance from its axis to the nearest other strand's chord beside
+its span (`realize.CHORD_SHARE`, at least 5 % of the shorter chord), since a
+strand whose chord passes inside the radius would run between the two arms
+and share the winding. On the atomistic route the placement then turns
+every other strand with a backbone atom inside a braid's cylinder (its
+radius plus 1.5 Å) about its own chord to the first of 36 angles that
+clears it (`topon.conformation.atomistic.clear_braids`). Turning keeps its
+bonds, angles and junctions and draws nothing from the random stream. The
+manifest's `placement.braids` counts the strands found inside, turned
+clear and left inside.
+
 `kink_params` applies only to `method: "kink"`.
 
 | `kink_params` key | Default | Description |
@@ -1937,6 +2088,14 @@ shells up is allowed but does not give more entanglements there.
 }
 ```
 
+On the atomistic route a graft replaces a methyl on the head atom of its
+repeat (the Si of a siloxane) with the O its side chain hangs from, and the
+side chain is PDMS (`Si(C)(C)O` x `side_chain_dp`) whatever
+`side_chain_monomer` names. Another monomer there gets a build warning and a
+`topon doctor` warning. A repeat whose monomer has no methyl on its head
+atom stays ungrafted, with a warning. Before 0.4.5 only PDMS backbones were
+grafted on this route.
+
 #### `assignment.copolymer`
 
 ```json
@@ -1955,6 +2114,18 @@ shells up is allowed but does not give more entanglements there.
 ```
 
 `arrangement` ∈ `"block"` / `"alternating"` / `"random"` / `"gradient"`.
+
+Each strand of the edge type gets one monomer name per repeat
+(`monomer_sequence`). On the coarse-grained route a name is a bead type. On
+the atomistic route it names an entry of `chemistry.monomers`, and since
+0.4.5 each repeat is built of its own monomer, in order from the strand's
+first junction (before, every atomistic strand was built of its edge type's
+monomer and the sequence was dropped). With grafts on the same edge type,
+each grafted repeat carries its side chain in place of a methyl on its head
+atom, whatever its monomer, and a monomer with no such methyl is left
+ungrafted, with a warning. With `force_field: "charmm"` each repeat is
+typed by its own monomer's `charmm_residue`.
+
 > **`gradient` is broken.** It ignores the requested composition and always
 > gives a 50:50 split (e.g., a request for A=0.1 still gives A=0.50). For two
 > monomers at equal fractions and even DP it is byte-identical to `block`.
@@ -2022,9 +2193,17 @@ With `force_field: "charmm"`, a node type and a monomer each take `charmm_residu
 }
 ```
 
-The built-in molecule names are `"Si"`, `"POSS"` (Si₈O₁₂ cage) and `"POSS_AM0270"` (AM0270 aminopropyl POSS). Any SMILES string is also accepted.
+The built-in molecule names are `"Si"`, `"POSS"` (Si₈O₁₂ cage) and `"POSS_AM0270"` (an end cap built on AM0270 aminopropyl POSS). Any SMILES string is also accepted.
+
+`POSS_AM0270` is the Si₈O₁₂ cage with seven isooctyl arms and, at corner 0, a propyl arm whose end carbon bonds to the strand, 204 atoms with hydrogens. The real AM0270 has `-CH₂CH₂CH₂-NH₂` there, and a cure bonds its N to an opened epoxide, POSS-(CH₂)₃-NH-CH₂-CH(OH)-CH₂-O-(CH₂)₃-[PDMS]. The pipeline's PDMS strands have no such linker, so the arm is tethered straight to the strand's end atom, and that bond stands in for the N and the linker. It goes to the head Si when the cap is the strand's first end in the graph, a carbosilane (`C_3-Si3`), and to the tail O when it is the last, an alkoxysilane (`C_3-O_3`). `topon simbox` builds the amine (its AM0270 is 207 atoms, the N typed `N_3`) and the epoxy-amine reaction.
 
 On the atomistic route every node type the graph uses must be in the map, and a molecule must be an element symbol, a built-in name or a SMILES that RDKit parses. Anything else stops the chemistry stage with the unmatched types and the keys the map has (before 0.4.0 such a node became a bare Si without notice). A coarse-grained junction is one bead whatever its molecule, so the coarse-grained route does not check. A junction built as a bare Si with fewer strands than its four bonds (an effective degree 2 or 3 site, or a crosslinker that carries one strand) gets methyls on the rest, so a trifunctional junction is MeSi(O-)3 and a crosslinker with one strand is Me3Si-O-, as on the workflow route. Before 0.4.0 the pipeline filled those valences with hydrogen, giving a Si-H that PDMS does not have.
+
+**DREIDING atom types.** Every atom is typed by its element and the hybridization RDKit perceives, as the element with the hybridization suffix (`Si3`, `Al3`), the same with an underscore (`C_3`, `O_2`, `N_1`), the element alone (`Cl`, `Br`, `Ca`) or the element and an underscore (`H_`, `F_`, `I_`), whichever the parameter file has first. Since 0.4.5 an aromatic C, N or O (as RDKit perceives aromaticity) takes the resonant type instead, `C_R`, `N_R` or `O_R`. Before, a phenyl ring was typed `C_2`, so every ring bond took the C=C bond (r0 1.33 Å) and every ring torsion the double bond's. Only aromatic atoms are resonant, so an amide, ester or conjugated chain keeps its `_2` and `_3` types. The one exception is an O bonded to an aromatic atom by single bonds only and to no acyl carbon (an aryl ether or phenol O, which RDKit perceives as sp2), which is `O_R` (`topon.forcefield.dreiding._aryl_oxygen`). The parameter file has no `S_R`, so an aromatic S is an error (below). A planar center (sp2, three neighbors) carries DREIDING's three inversion terms at K/3 each under `improper_style umbrella`, which every DREIDING stage script declares. Before 0.4.5 the pipeline's writer wrote one term `K -1 0` under cvff, a constant with no force, so no sp2 center on the pipeline route was held planar. The pipeline's writer reads `topon/utils/DreidingX6parameters.txt`, and simbox and `create_lammps_data_file` read `topon/forcefield/DreidingX6parameters.txt`. The two copies are identical.
+
+An atom with none of these types stops the chemistry stage with `UntypedAtomError`, which lists each such atom by LAMMPS id with its element, hybridization and bond count, and `topon generate` prints it after `DREIDING:` and exits 1. Three things lead there, a molecule that reached the writer unsanitized (on the pipeline route, when Sanitize fails, and the error then names that failure too), a Si with five or six bonds (RDKit perceives it as SP3D, and DREIDING has only `Si3`), and an element or hybridization the file lacks (e.g., Li, Mg, an sp2 Al or the aromatic S of thiophene). Before 0.4.5 such an atom was written as an invented type (`Si_`, `O_`) with a made-up mass, a placeholder pair term and the generic bonded terms, without a warning on most routes. Simbox types its molecules by the same rule (`topon.forcefield.dreiding.assign_atom_types`). Each type's mass is its element's atomic weight, plus its hydrogens' for the united-atom types (`C_34` and the like). Before 0.4.5 the `Na` row of both parameter files carried the element and mass of scandium.
+
+**Charges.** The pipeline charges a DREIDING build with Gasteiger charges (`topon.forcefield.dreiding.gasteiger_charges`), after Sanitize and AddHs and after typing, and spreads a net charge over 1e-6 e evenly across the atoms. Since 0.4.5 a failure there stops the chemistry stage before any file is written, with `ChargeError` naming the step. That is Sanitize, AddHs or Gasteiger raising, or Gasteiger charges that come back NaN, which is how RDKit reports an element it has no Gasteiger parameters for (among those DREIDING types, e.g., Na, Ca, Ti, Fe, Zn, Ge and Sn). The error lists each such atom by LAMMPS id, element, hybridization and bond count, and `topon generate` prints it after `DREIDING:` and exits 1. Before 0.4.5 the stage wrote the heavy-atom molecule uncharged and without hydrogens when a step raised, and set NaN charges to 0, each with only a warning. This is the pipeline's route only. Simbox and `topon chain` compute no charges and write every atom's as 0 by design, and simbox's stage scripts use `lj/cut` with no k-space.
 
 #### `chemistry.edge_type_map`
 
@@ -2054,13 +2233,15 @@ Custom monomers are added in the same block.
 }
 ```
 
+A strand is its repeat units' SMILES written one after the other, so the SMILES decides which atoms join. The `u` junction (or end cap) bonds to the first atom of the first repeat, and the `v` junction to the last repeat's tail, the atom the next repeat would bond to if one followed (the last atom written outside a branch). For PDMS that is the O, and for polystyrene `CC(c1ccccc1)` or poly(methyl acrylate) `CC(C(=O)OC)` it is the backbone CH before the branch, not the phenyl or ester carbon the SMILES ends on (before 0.4.5 the `v` end bonded to the last atom of the SMILES). Write a repeat unit backbone first, with side groups as branches. `chain_head` and `chain_tail` do not choose these atoms. They are the elements `auto_bridge` compares with the junction's, `chain_head` at the `u` end and `chain_tail` at the `v` end, and their defaults are `"Si"` and `"O"`, the PDMS pair, so a carbon monomer that leaves them out gets a bridge O between a Si junction and its first carbon.
+
 #### `chemistry.connection`
 
 ```json
 "connection": { "auto_bridge": true, "default_bridge_atom": "O" }
 ```
 
-With `auto_bridge`, a bridge atom is inserted automatically when the chain head and the node atom are the same element (e.g., both Si). Set it to `false` to always use direct bonds.
+With `auto_bridge`, a bridge atom (`default_bridge_atom`) goes between a strand end and its junction when the strand end's element (`chain_head` at its `u` end, `chain_tail` at its `v` end) is the junction's (e.g., both Si). Set it to `false` to always use direct bonds.
 
 ### `conformation`
 
@@ -2084,55 +2265,80 @@ The other keys drive `topon.conformation.place`, which draws a bead-spring build
 | `bond` | float | `0.97` | Design bond length, in sigma |
 | `meander_waves` | float | `6.0` | Waves the meander spends its slack in, before the self-fold gate halves it |
 | `min_bond` | float | `0.85` | Shortest bond a placed strand may carry |
-| `min_self_separation` | float \| null | `null` | Closest a bead may come to a non-adjacent bead of its own chain. `null` uses the route's own floor (1.0 sigma for a drawn path, 0.05 for a walk) |
+| `min_self_separation` | float \| null | `null` | Closest a bead may come to a non-adjacent bead of its own chain. `null` uses the route's own floor (1.0 sigma for a drawn path, 0.05 for a walk). It is also the floor a sol chain is grown to |
 | `path_jitter` | float | `0.02` | Gaussian jitter on the interior beads of a straight path |
 | `junction_shell_spacing` | float \| null | `null` | Seat the first bead of every chain leaving a junction on a spread shell at least this far apart. All or nothing per junction, and most junctions decline (read `guard_report()["junction_shells"]` for what was seated) |
 | `junction_jitter` | float | `0.0` | Move every junction by a Gaussian offset per axis before the strands are drawn, as a fraction of the site spacing. It breaks the exact chord crossings of a lattice, and `0` leaves every junction on its site |
 | `settle_clearance` | float \| null | `null` | Once the strands are drawn, part the bonds of different strands to this bond-to-bond distance (in sigma), holding the junctions and never moving one bond through another. `null` is off |
+| `parallel_strands` | `"opposite"` \| `"together"` | `"opposite"` | On the meander route, how bridges that share both junctions (secondary loops) are drawn, on opposite sides of their chord or, with `"together"`, as any other strand (the drawing of 0.4.0, byte for byte). The atomistic meander placement reads it too. See *Secondary loops* below |
+| `loop_shape` | `"ring"` \| `"compact"` | `"ring"` | How a primary loop is drawn (`placement` does not apply to a strand with no chord). `"ring"` is a regular polygon through the junction, and `"compact"` a closed self-avoiding walk from the junction about the size of a relaxed loop. A graph with no primary loop builds the same either way. `topon fit` writes `"compact"`. See *Primary loops* below |
 | `entanglement` | object | see below | Target, distribution, designed pairs and the controller |
 
-The last two keys are for the atomistic route (`Pipeline` with `chemistry.model_type: "atomistic"`, DREIDING or CHARMM).
+The last keys are for the atomistic route (`Pipeline` with `chemistry.model_type: "atomistic"`, DREIDING or CHARMM).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `atomistic_placement` | `"straight"` \| `"meander"` \| `"walk"` \| null | `"meander"` | Draw each strand's backbone as a chain at the force field's bond lengths and settle it. `null` keeps the placement of earlier versions (and with it the `soft_push` stages). A network with POSS nodes falls back to the earlier placement unless this is set by name |
+| `atomistic_placement` | `"straight"` \| `"meander"` \| `"walk"` \| `"coil"` \| null | `"meander"` | Draw each strand's backbone as a chain at the force field's bond lengths and settle it, from a stream keyed on the study name, so a pinned config places its atoms the same way on every run. `null` keeps the placement of earlier versions (and with it the `soft_push` stages). Since 0.4.5 a network with POSS nodes takes it too, each cage placed whole (see *POSS cages* below). `"coil"` winds each strand round its chord, and an `entanglement.target_Z` uses it |
+| `atomistic_coil_radius` | float \| null | `null` | With `"coil"`, how far each strand winds from its chord (in Å). It is searched when `entanglement.target_Z` is set |
 | `atomistic_clearance` | float | `1.5` | With `atomistic_placement`, settle every backbone to its bond lengths and angles with no two backbone bonds closer than this (in Å), moving nothing through anything. `0` skips it |
 
 The placement of earlier versions spaces every heavy atom of a strand, methyls included, evenly on the straight chord and puts each hydrogen within about 0.3 Å of its carbon, so the soft first stage of the relaxation is what makes a molecule of the build (on a 4x4x4 three-shell DP-10 PDMS cell the Si-O bonds come out between 0.07 and 5.2 Å, against r0 = 1.587 Å). With `atomistic_placement` set, the backbone of every strand (junction to junction through the bridge O, Si-O-Si for PDMS) is drawn with the bead-spring path routines at the strand's mean equilibrium bond length, and every other atom is set from its placed neighbor at its bond length in tetrahedral directions. The same cell then has every Si-O bond at 0.96 to 1.02 of r0 and every Si-C and C-H bond at r0. `meander_waves`, `min_bond`, `min_self_separation` and `path_jitter` keep their meaning, read in units of the backbone bond over 0.97, so a shape means the same on both routes. Here `straight` is the planar zigzag between the junctions at bond length, and it is meant for taut strands. On a slack strand the zigzag keeps every bond at r0 by closing its angles, so use `meander` or `walk` for a coiled network. A primary loop is a ring through its junction (`closed_meander`), and an entangled pair keeps the path its method draws.
 
-A network drawn this way is not yet ready for the first stage, for two reasons. Strands are drawn one at a time, so two of them can pass through the same point, and a path drawn in bead-spring units has nearly straight angles where DREIDING PDMS wants 104.5 and 109.5 degrees. Left like that, the first stage pushes pairs of backbone bonds through each other. So between drawing the backbones and placing everything else, the pipeline settles them (`topon.conformation.atomistic.settle_backbones`). Each round pushes every pair of bonds closer than `atomistic_clearance` apart along the line between their closest points, moving a short Gaussian stretch of each strand so that its bonds barely change, and then pulls every bond and every 1-3 distance towards its equilibrium (from the force field's bond angle, reached over the first 40 rounds), with no atom moving more than 0.2 Å per round. Last, the round is read as a trajectory with the geometry of the crossing detector (`topon.conformation.segments`), and the atoms of any two bonds that passed through each other are put back. Two bonds drawn exactly touching have no side to keep and are parted by a hair on a random side first, which is the only choice the pass makes. Junctions and end caps are held. The manifest's `placement.settle` records the pairs closer than the clearance before and after, the angle error before and after, the rounds, the largest shift, the moves put back, and the passages over the whole pass read again as a trajectory, which must be 0. On a DP-30 PDMS cell of 36,248 atoms the pass takes about 40 s, takes 2,434 pairs closer than 1.5 Å to none and the mean angle error from 62 degrees to 0.14, and leaves the bonds between 0.975 and 1.018 of r0, with no passage.
+A network drawn this way is not yet ready for the first stage, for two reasons. Strands are drawn one at a time, so two of them can pass through the same point, and a path drawn in bead-spring units has nearly straight angles where DREIDING PDMS wants 104.5 and 109.5 degrees. Left like that, the first stage pushes pairs of backbone bonds through each other. So between drawing the backbones and placing everything else, the pipeline settles them (`topon.conformation.atomistic.settle_backbones`). Each round pushes every pair of bonds closer than `atomistic_clearance` apart along the line between their closest points, moving a short Gaussian stretch of each strand so that its bonds barely change, and then pulls every bond and every 1-3 distance towards its equilibrium (from the force field's bond angle, reached over the first 40 rounds), with no atom moving more than 0.2 Å per round. Last, the round is read as a trajectory with the geometry of the crossing detector (`topon.conformation.segments`), and the atoms of any two bonds that passed through each other are put back. Two bonds drawn exactly touching have no side to keep and are parted by a hair on a random side first, which is the only choice the pass makes. That parting is read as a trajectory too, so a push that carries any other bond through one is put back, and a contact it leaves with no side at all is parted again with all its pairs on one side. Junctions and end caps are held. The pass stops when no pair is closer than the clearance and every bond and 1-3 distance is within 2 % of its target, or after 1,500 rounds (`topon.conformation.atomistic.SETTLE_ROUNDS`, 400 before 0.4.5). A pass stopped by the cap keeps whatever pairs are short at that round, and the pipeline warns. Since 0.4.5 it also warns when the cap stops a settle with none short, with its rounds, its backbone bonds against r0 and its largest angle error, and for a POSS build the backbone atoms a cage still holds too close (`topon.conformation.atomistic.settle_warning`). One warning at most is given. The manifest's `placement.settle` records the pairs closer than the clearance before and after, the angle error before and after, the rounds, the largest shift, the moves put back, the touching pairs parted first and the atoms that parting put back, and the passages over the whole pass read again as a trajectory, which must be 0. On a DP-30 PDMS cell of 36,248 atoms the pass takes about 40 s, takes 2,434 pairs closer than 1.5 Å to none and the mean angle error from 62 degrees to 0.14, and leaves the bonds between 0.975 and 1.018 of r0, with no passage.
 
-The chord guard reads the chord against the backbone's extended length, the farthest its ends can be at its equilibrium bond lengths and angles (0.79 of the contour for DREIDING PDMS at any DP), since an atomistic backbone cannot reach its contour. At 0.97 of it the strand is drawn straight, and a chord longer than the contour is warned about, as no relaxation can build it without stretching every bond. The run manifest's `placement` section records the routines used, how many strands were taut or over their contour and the backbone bond ratios (with the earlier placement, the chord ratios only). For PDMS on a 4x4x4 SC cell at three shells and 0.97 g/cm³, the body-diagonal strands are taut up to DP 7, and chords pass the contour at DP 4. POSS nodes are refused, since their cage has no path routine.
+The chord guard reads the chord against the backbone's extended length, the farthest its ends can be at its equilibrium bond lengths and angles (0.79 of the contour for DREIDING PDMS at any DP), since an atomistic backbone cannot reach its contour. At 0.97 of it the strand is drawn straight, and a chord longer than the contour is warned about, as no relaxation can build it without stretching every bond. The run manifest's `placement` section records the routines used, how many strands were taut or over their contour and the backbone bond ratios (with the earlier placement, the chord ratios only). For PDMS on a 4x4x4 SC cell at three shells and 0.97 g/cm³, the body-diagonal strands are taut up to DP 7, and chords pass the contour at DP 4.
+
+**A ring the backbone runs through.** A strand's backbone is the shortest path from each repeat's head to its tail, so in a monomer such as `[Si](C)(C)c1ccc(cc1)O` it runs along one side of the para-phenylene (ipso, ortho, meta and para carbon) and the other two ring carbons are off it. Since 0.4.5 the settle takes every such ring whole (`topon.conformation.atomistic.ring_windows`). Its flat shape is the polygon on a circle with every side at its own bond's r0 (a regular hexagon for a phenylene), with the backbone atom on each side of the stretch on its exterior bisector. The shape is fitted to the stretch as drawn, by its two outside atoms when the ring turns the backbone by more than 15 degrees (`RING_TURN`, e.g., a meta-phenylene). Laying the shapes is a move of its own before the rounds, and the backbone bonds it carries through each other are counted apart from the rounds' passages and warned about. The off-path atoms join the settle with their bonds and 1-3 distances, and each ring with its two outside atoms is pulled onto its best plane every sweep. A build with such rings settles at 24 sweeps a round and up to 3,000 rounds (`RING_SWEEPS`, `RING_SETTLE_ROUNDS`), and every other build settles as before. Hydrogens and methyls are then placed as before, except that a group with a bond through the face of one of these rings is drawn again, up to 24 times. Without the settle (`atomistic_clearance: 0`) each ring is closed on its drawn stretch by the flat ring fitted to it (`close_path_rings`).
+
+The off-path ring atoms are not read for clearance or passages, so the settle keeps neither other strands nor other rings off a ring, and does not act on a bond through its face. Such bonds are counted. `placement.rings` records the stretches, whether the settle held them flat, the rings closed without the settle and `bonds_through` (the bonds of the placed build through a ring's face, `backbone` and `other`), and `placement.settle` adds the ring terms and the ring laying (`ring_lay`, `ring_threads`). The pipeline warns when any bond passes through a ring.
+
+Two backbone bonds joined through a third (one strand's last bond and another's first, across their junction) sit that bond's length apart at their equilibrium angles. A joining bond shorter than `atomistic_clearance` (an aryl ether O on a junction Si, say) would leave such a pair short at equilibrium, so the pair is read against the joining bond's length less 2 %. A pair joined through a bond of the clearance or longer (Si-O 1.587 Å, C-C 1.53 Å) is read as before.
+
+What is not covered. A saturated ring in a backbone (a 1,4-cyclohexylene) is taken whole and flat too, with 120-degree angles its `C_3` atoms do not have, and the first stage's angle terms bring it back to a chair. Two rings in one repeat unit (a biphenylene, or a diphenyl ether as in PEEK and PPO) are each in the settle, but the settle does not converge on them. A fused ring system in a backbone (a naphthylene) keeps the tree walk. The guard that draws a taut strand straight reads a ring stretch as the zigzag of its bonds, so it gives a para-phenylene repeat about 10 % more reach than the flat ring has.
+
+**A ring that hangs from one atom.** A phenyl on a backbone Si, as in methylphenylsiloxane, is placed whole by the walk that sets every atom off the backbone, as a flat regular polygon off the bond it hangs from (rings of up to 8 atoms, `RING_MAX`). Since 0.4.5 each such ring is tried at 12 turns of 30 degrees about its bond (`PENDANT_TURNS`), and on the direction of each other atom its parent has to place (the methyl on the same Si), and placed where the fewest bonds thread it and then the fewest backbone atoms sit within 1.5 Å of one of its atoms (`PENDANT_DEEP`). A bond threads it when it passes through its face, or when one of its own bonds (or the in-plane bond each of its carbons will have to its hydrogen) passes through another ring placed before it. Hydrogens and methyls placed after it are drawn again off its face. The placement record's `pendant_rings` gives the rings placed, turned and moved, those left threaded or crowding the backbone, and `bonds_through`, and the pipeline warns when any bond passes through a pendant ring. The rest of the crowding is cleared by the hard-backbone first stage, which keeps aromatic ring atoms hard on the DREIDING deck (`atomistic_protocol`, under `simulation` below). The CHARMM hard-backbone deck takes its hard types from the backbone alone, so a CHARMM build with such rings has the placement above and the first stage of 0.4.0.
+
+**POSS cages.** Since 0.4.5 a network with POSS nodes (`POSS_AM0270`, or the bare `POSS` cage) is placed the same way, each cage whole, as a rigid body held through the placement. Its shape is the node's own fragment of the network molecule (cage, arms and hydrogens, with a stub atom in place of each strand atom it bonds to), embedded once per kind with the simbox's checked routine (`topon.simbox.molecule.embed_conformer`) and then minimized again with every bond held at the force field's r0 (`topon.chemistry.node_bodies`). The shapes of the AM0270 fragments the POSS demo builds, and of the bare cages of topon's own tests, are stored with topon (`topon/data/poss_templates.json`, as RDKit 2025.09.6 embedded them). A fragment found there by its signature (its atoms, bonds, r0 and stubs) takes its shape from the file, so the POSS demo builds the same files whatever RDKit is installed, and any other fragment is embedded by the RDKit installed (`cages.templates_stored` in the record counts the stored ones). Other RDKit versions embed the same fragments differently (e.g., RDKit 2026.3 gives a bare cage as its mirror image), which is why the shapes are stored. They can be regenerated by embedding the fragments again with the store switched off (`topon.chemistry.node_bodies.STORE` set to None). The template is refused if a bond passes through a ring or ends 15 % off the r0 it was held at. The cage's center goes on its junction, turned so its stubs point at the strands they bond to. Two or more stubs that span a plane fix the turn, and one stub (an AM0270 cap) fixes only an axis, about which the cage takes the one of 36 turns that keeps it furthest from the other strands' chords, the other junctions and the other cages (`topon.conformation.atomistic.place_bodies`). Each strand bonded to a cage starts at its atom bonded to the cage, held where the template puts it. A strand that runs within 1.5 Å of a cage's core or through one of its faces is turned about its chord until it is clear (`clear_bodies`), and one whose chord runs through a core is drawn round it (`cage_detour`). The settle keeps every backbone bond 1.5 Å from every bond of every cage and backbone atoms out of the core's sphere, and puts back any move that takes a backbone bond through a cage bond or face, and the methyls and hydrogens set off the backbone are drawn again where one would go through a cage face. The cage's atoms go out in `system_nodes.displace`, so stage 5's overlap pass holds them as it holds the junctions. The placement record's `cages` section gives the templates, the strands turned out or drawn round a cage, `bonds_through_faces` and `bond_ratio_all` (every bond against its r0, as placed). The pipeline warns when a bond crosses a face or one is 15 % off r0. Cages closer together than their arms reach (an AM0270 reaches 9 Å from its center) cannot all be placed clear, and such a build warns. On the hard-backbone deck an AM0270 cap's attachment carbon is a strand end, so `C_3` is one of the backbone types the deck holds hard from the first step, and with it the methyls and the isooctyl arms. `atomistic_placement: null` still gives the historic placement.
+
+Three more rules keep strands clear of cages. A designed pair's path is drawn from its junction, and a cage's junction is its center, so a designed strand bonded to a cage would start inside the cage with bonds through a face. Its stretch inside the cage's keep-out sphere is cut out instead, and the strand runs from its stub round the cage to the first of its own points outside, on an arc 1 Å outside the sphere, every atom at the spacing it was drawn with (`lead_out_of_body`, counted in `cages.led_out`). The settle keeps the side positions of each backbone atom (where the walk will put its methyls, `SIDE_BOND` out on the two tetrahedral positions off its two backbone bonds) `SIDE_CLEARANCE` (1.1 Å, a C-H) outside every cage's core, since two backbone bonds leave a methyl no other direction (`settle.bodies.sides_inside_after`). And a strand is turned off the arms of every cage it is not bonded to, a backbone bond within `ARM_CLEARANCE` (1.5 Å) of an arm bond counting as inside (`arm_margin`, `cages.near_arms`), since the settle cannot move an arm and a strand drawn between the isooctyl arms of a cap on a neighboring site stays caught there. The turn is chosen for the cores first and for the arms among the turns that tie.
+
+#### A Z target on the atomistic route
+
+Z1+ at the build is set by how far the strands stray from their chords. The meander's wave count moves it in jumps, because `meander_waves` is a request that the fold gate halves strand by strand (the placement record says what was drawn, `placement.waves_drawn`). `atomistic_placement: "coil"` winds each strand round its chord at `atomistic_coil_radius` Å instead (`topon.conformation.paths.coil_chain`), as a helix eased in over the first and last 15 % of the path, so the strand leaves each junction along its chord, with as many turns as the contour needs and its handedness and phase drawn from the seed. A radius wider than a strand's slack is narrowed for that strand. Z at the build rises with the radius without a step, and settling keeps it.
+
+With `conformation.entanglement.target_Z` on the atomistic route the pipeline places coils and searches the radius on the drawn network (`topon.conformation.atomistic.coil_radius_for`). Each try draws every strand from a fresh copy of the placement's own stream at that radius, so the reading moves only with the radius, and reads Z1+ per bridge on the points the gates read (one atom per repeat unit, between the junctions) over two seeds. It reads 1.5 Å first, widens from 6 Å until the target is bracketed, and interpolates until a reading is within 3 %. The network is then settled once at that radius and read again over four seeds, and if settling moved it by more than 5 % (or `controller.tolerance`, if that is tighter) the search runs once more, aimed off by what settling added. The manifest's `placement.z_target` records the target, the radius, every reading and the settled Z. It needs Z1+. A target under what the thinnest coil (1.5 Å) reads, or past what the widest (40 Å) reads, stops there and warns. Naming another placement beside a target is refused (`topon doctor`, `atomistic_target_placement`), and the bead-spring calibration table does not apply to this route. A strand short of slack cannot stray far, so the range of targets grows with DP.
+
+The hard-backbone deck keeps every entanglement of a coil build (no backbone passage at any stage) but not every kink, since Z1+ is not a topological count and the MD unwinds a tight helix. `topon.simulation.protocols.z_target.relax_to_target(config, raw_config)` meets the target in the relaxed network instead. Round k builds the study under `<output_dir>/<name>_z<k>`, keeping its name (which keys the placement's own stream) and the global seed, so it is the same network with only the radius changed, relaxes it with the deck and its gates, and reads Z1+ per bridge after NVT, at the chemistry's own density (the NPT reading is recorded as well). Round 2 is aimed at the target over the share of Z round 1 kept, and from round 3 the radius is interpolated on relaxed Z against radius between the two rounds that bracket the target (`next_radius`), and the network is built at that radius directly. The loop stops within 5 % of the target, or within `controller.tolerance` when the config sets it. The loop's record goes in the last round's manifest as `z_target_relaxed`. The runner is an argument (the default runs `AtomisticRun` at four threads), so the loop can be driven by another runner.
 
 `coil_ratio` and `build_density` set the same thing, and setting both is an error. The box scales as `rho^(-1/3)` and the contour does not change, so `coil_ratio = contour / chord` scales as `rho^(1/3)`. On a given graph at a given DP, fixing one fixes the other. `place` takes exactly one, and the controller converts the one given into the one it adjusts.
 
 #### Choosing the chain shape
 
-The chain shape matters more than the build density. The table gives the
-mean Z1+ per strand for each placement on the DP-20 end-linked reference
-graph.
+The table gives Z1+ per bridge for each placement on the DP-20 end-linked
+reference graph, built with `place()` and the junctions jittered (junction
+jitter 0.15 and a 1-sigma settle for the meander, the jitter alone for the
+walk, see *Chords that cross* below), relaxed with the default push-off,
+compressed to rho 0.3075 and quenched to T 0.4. The build state is stage 3,
+equilibrated at the build box.
 
-| placement | build density | Z1+ per DP-20 strand, build state | after compression to rho 0.3075 |
+| placement | knob | build state | final |
 |---|---|---|---|
 | reference (`fix bond/create`) | -- | -- | **0.178** |
-| `walk` | 0.145 | 0.300 | 0.335 |
-| `walk` | 0.095 | 0.250 | 0.288 |
-| `walk` | 0.035 | 0.232 | 0.262 |
-| `meander` | 0.050 | **0.189** (KS p = 1.0 vs reference) | 0.239 |
-| `meander` | 0.040 | 0.192 | 0.224 |
+| `walk` | build density 0.145 | 0.2950 | 0.3228 |
+| `walk` | build density 0.095 | 0.2408 | 0.2891 |
+| `walk` | build density 0.035 | 0.2220 | 0.2365 |
+| `meander` | coil 1.51 (density 0.050) | 0.1986 | 0.2370 |
+| `meander` | coil 1.402 (density 0.040) | 0.2017 ± 0.0048 | 0.2356 ± 0.0036 |
 
-The last column mixes two relaxation protocols. The `walk` rows used the
-older minimizer protocol, which adds crossings of its own, so part of their
-excess Z comes from the protocol. The `meander` rows used the crossing-free
-protocol, re-quenched to T = 0.4.
-`CALIBRATION` labels every row with its protocol (the crossing-free rows as
-`limit`), and only the crossing-free rows steer the controller.
-
-A random walk bottoms out near Z = 0.23 per DP-20 strand at any build
-density, because coiled chains collapse during the push-off at fixed
-volume and trap crossings. The meander at the same state reproduces the
-reference per-strand distribution. The shape sets the range of Z, and the
-density moves Z within that range.
+Coil 1.402 is the mean of three velocity seeds, and the other rows are one
+seed. Neither route reaches the reference's 0.178, and their floors
+coincide, since the walk at 0.035 ends where the meander at coil 1.402
+does. At one build density the meander is the lower. The walk can be built
+further down (coil 1.341), where the meander's settle does not converge,
+and between coil 1.402 and 1.51 the meander's Z does not move beyond the
+seed spread. Fewer meander waves (`meander_waves`) is the setting left
+untried. `CALIBRATION` holds these rows and the earlier ones they replaced,
+which carry `superseded_by` and never steer the controller.
 
 `straight` is the chord with a small jitter. It is the cheapest and the
 least entangled shape, and `meander` falls back to it when a chord is
@@ -2258,7 +2464,73 @@ point, and it puts the build back as drawn. With 0.05 to 0.15 it converges
 in one to two minutes on a DP-20 reference graph of 4,644 strands, and no
 two bonds of different strands are then closer than 1 sigma outside the
 exempt pairs. Both keys are off by default, and the default build is
-unchanged.
+unchanged. On a `walk` the settle does not converge, since a random walk
+leaves far more close bond pairs than a meander, so build walks with the
+jitter alone.
+
+#### Secondary loops (`parallel_strands`)
+
+A secondary loop is two strands between the same two junctions. Drawn as
+every other strand is, the two are one meander turned about the chord by
+two random angles, so they meet wherever the wave crosses the chord and
+lie within a fraction of a sigma along most of it, and the settle cannot
+part them. Since 0.4.5 `place` draws the strands of a chord they share on
+opposite sides of it on the `meander` route (`meander_chain(...,
+side=...)`), each on a half-sine bow that leaves its junctions at 20
+degrees (`paths.SIDE_ANGLE`) and is at least 1 sigma high
+(`paths.SIDE_BOW_MIN`), lower where the contour cannot carry it, with the
+wave laid across the bow. Three or more strands on one chord are spread
+evenly about it and not held apart. The side comes from the one number the
+meander takes from the random stream (its turn about the chord), so every
+other strand is drawn as before, and a graph with no shared chord builds
+byte for byte as before. A chord within 3 % of its strands' contour is
+still drawn straight, and the `walk` and `straight` routes are unchanged.
+`guard_report()["parallel"]` gives the shared chords, the strands drawn
+apart and left on the chord, the bow heights and the smallest angle.
+`conformation.parallel_strands: "together"` (`place(...,
+parallel_strands=...)`) draws every strand as 0.4.0 did.
+
+The atomistic placement draws its secondary loops the same way
+(`Pipeline` passes `conformation.parallel_strands` to
+`topon.conformation.atomistic.place_network`, and both routes take the
+shared chords and their sides from `topon.conformation.paths.shared_chords`
+and `chord_side`), with the bow and the wave in units of the strand's mean
+r0 over 0.97 (1.64 Å for PDMS). `placement.parallel` in the manifest counts
+the shared chords, the strands drawn apart and left on the chord, and their
+bows.
+
+#### Primary loops (`loop_shape`)
+
+A primary loop leaves its junction and comes back to it, so it has no
+chord and `placement` does not apply to it. `"ring"` (the default) is
+`closed_meander`, a regular polygon of DP + 1 sides through the junction,
+whose radius grows with the DP (3.25 sigma at DP 20, 15.6 at DP 100), so
+strands drawn through such an open ring stay through it and read high Z
+after relaxation. `"compact"` is `closed_walk`, a closed self-avoiding walk
+from the junction. Every bond is at the design length, each step is drawn
+from the cone that can still close and weighted by the Gaussian chance of
+returning in the bonds left, and no bead comes within 1 sigma of another
+but its bonded neighbors (or the route's floor, if higher). The floor
+swells it to about the size of a relaxed loop in the `fix bond/create`
+references.
+
+| DP | `"ring"`, radius | `"compact"`, radius of gyration | reference loops, relaxed |
+|---|---|---|---|
+| 20 | 3.25 | 1.85 ± 0.17 | 1.96 ± 0.17 |
+| 100 | 15.6 | 4.29 ± 0.60 | 4.52 ± 0.44 |
+
+A compact loop is grown after every bridge and dangling strand. Its first
+bond leaves along the emptiest direction away from the strands at its
+junction, and the walk keeps 1 sigma from the beads of those strands where
+it can. Strands from elsewhere are not kept off, and they thread a loop as
+they would a ring in a melt. The direction of the first bond takes from the
+placement's stream the two draws a ring takes, and the walk is grown on a
+stream spawned from it, so every bridge and dangling strand is drawn
+exactly as beside a ring. `guard_report()["loops"]` gives the shape, count,
+floor, radius of gyration and closest self-contact of the loops.
+`loop_shape` stays `"ring"` by default, and `topon fit` writes `"compact"`
+into the configs it fits. The pipeline's own loops (`topon generate`) and
+the atomistic route's are rings either way.
 
 #### `conformation.entanglement`
 
@@ -2274,7 +2546,7 @@ unchanged.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `target_Z` | float \| null | `null` | Mean Z1+ per strand **at the final state**, or null for no target |
+| `target_Z` | float \| null | `null` | Mean Z1+ per strand **at the final state**, or null for no target. On the atomistic route, Z1+ per bridge met by the coil radius on the build, and in the relaxed network with `relax_to_target` (see *A Z target on the atomistic route*) |
 | `close_on` | `"final"` \| `"build"` | `"final"` | Which state the controller compares against. `"build"` is cheaper to reach and is right only when the build state is itself what is being matched. It does not predict the final state, since Z jumps in stage 1 and stays flat afterwards |
 | `target_hist` | list \| null | `null` | Per-strand Z distribution to compare against, as fractions. Reported as a KS p-value, and nothing is tuned to it |
 | `shells` | object | `{}` | Neighbor-shell mix the designed pairs are drawn from, numbered from 1 |
@@ -2300,9 +2572,9 @@ inside 0.05 sigma *anywhere* in the build and then puts the bonds back. It
 treats junctions as fixed obstacles, because a junction's position is
 shared by every strand that meets there.
 
-`target_Z` is a final-state number. Z1+ counts the kinks of the shortest paths between the junctions at their current positions, so it changes by 10-20 % through equilibration and compression even with no bond crossings and no free-ended chains (e.g., on the DP-100 reference it was 1.16 after push-off, 1.00 after constant-volume equilibration and 1.11 after compression, with every bond under 1.2 sigma). The controller starts from the build state but closes on the final state.
+`target_Z` is a final-state number. Z1+ counts the kinks of the shortest paths between the junctions at their current positions, so it changes by 10-20 % through equilibration and compression even with no bond crossings and no free-ended chains (e.g., on the DP-100 reference it was 1.16 after push-off, 1.00 after constant-volume equilibration and 1.11 after compression, with every bond under 1.2 sigma). The controller starts from the build state but closes on the final state. The atomistic route meets the target on the build instead, since its build is settled and its deck keeps every entanglement, and `relax_to_target` corrects for what the relaxation does not keep with further relaxed rounds.
 
-Chain ids in `pairs` index `topon.conformation.strand_plans`, which follows the graph's edge order (the order in which a `Placement` keeps its strands). `topon.conformation.entanglement.requests_from_config` also accepts an edge key `[u, v, k]` in place of an index.
+Chain ids in `pairs` index `topon.conformation.strand_plans`, which follows the graph's edge order (the order in which a `Placement` keeps its strands). The sol chains come after the edges, so every other strand keeps its index, and a request naming one is refused (a sol chain has no chord to braid about). `topon.conformation.entanglement.requests_from_config` also accepts an edge key `[u, v, k]` in place of an index.
 
 `shells` sets the shell mix for the pairs the conformation stage routes. The assignment stage chooses *which* pairs (`assignment.entanglements.shell_weights` and `select_by_shells`), and a driver calls it and passes the result in.
 
@@ -2318,14 +2590,21 @@ manifest = controller(graph, config.conformation, runner, dp=20)
 
 A driver for a real protocol writes the build and the five-stage push-off with `topon.writers`, runs and gates it with `topon.simulation.protocols.StagedRun`, and measures each checkpoint with `topon.analysis.z1plus.measure_checkpoint` through an installed Z1+ (§3.6).
 
-The controller starts from the shipped calibration (`topon.conformation.entanglement.CALIBRATION`), which holds the measured (actuator, Z) pairs with the state and protocol of each. Only final-state points from the crossing-free protocol steer the controller. Points from the minimizer protocol are kept and labeled but do not steer, because that protocol stretches bonds and adds crossings of its own. Over the measured range Z follows a power law in the actuator (exponent 0.87 for the DP-20 meander, 0.30 for the DP-100 walk), so two rounds fix the curve for the graph at hand.
+The controller starts from the shipped calibration (`topon.conformation.entanglement.CALIBRATION`), which holds the measured (actuator, Z) pairs with the state, protocol and builder of each. These rules decide which rows seed a route.
 
-A `target_Z` below the lowest value measured for a route gives a warning that names the floor and, for the walk, the meander route that goes lower.
+- Rows at the requested DP come first, whatever protocol measured them. Only a DP with none borrows the nearest DP's rows, and the borrowed level is a starting guess.
+- At a DP, the crossing-free push-off comes before the minimizer's rows, which are kept and labeled because that protocol stretched bonds and added crossings of its own. `"limit"` and `"pushoff"` name the same deck and are read as one.
+- A row a later measurement replaced carries `superseded_by` and never steers.
+- A slope is lent only when Z rises with the knob between two rows by more than the seed spread either carries (`z_sd`). Otherwise the rows fix a level, the seed is the row nearest the target, and a loop started from one knob stops after its first round and asks for a second knob rather than guess a direction.
+
+Over the measured range Z follows a power law in the actuator (exponent 0.22 for the DP-20 walk and 0.30 for the DP-100 walk). The DP-20 meander has no measurable slope between coil 1.402 and 1.51, so it lends none.
+
+A `target_Z` below the lowest value measured for a route gives a warning that names the floor and, for the walk, the meander's floor at the same DP, as the route to switch to when it is lower by more than the seed spread either floor carries and as no lower otherwise (the DP-20 case).
 
 ```
 target_Z 0.18 is below the lowest final-state Z the walk route has reached at
-DP 20 (0.262, at build_density 0.035). ... Switch conformation.placement to
-'meander' to go lower; it is the shape, not the density, that sets the floor.
+DP 20 (0.2365, at build_density 0.035). ... The meander route's floor is
+0.2356 at DP 20 (coil_ratio 1.402), no lower within the seed spread.
 ```
 
 #### Designed pairs, and when they are refused
@@ -2348,6 +2627,22 @@ it at this geometry
 Two other limits can apply, and a higher DP does not fix them. The braid needs `windings * pitch + 2 * ramp` of the shared axis, which two short chords may not have. That refusal suggests a lower build density, so that the chords get longer, or a partner in a closer shell. The last limit is clearance. A braid squeezed into a chord that is too short brings its two arms within a fraction of sigma, and the push-off would push them through each other, so this is also refused.
 
 The minimum DP in a refusal holds only *at that geometry*. Rebuilding at a higher DP and the same build density puts more beads in the box, so the box and every chord grow as `DP^(1/3)` (e.g., a pair that needed DP 24 in the DP-20 box needed DP 25 once rebuilt at DP 24). Rebuilding at the same *box* size instead (i.e., raising the density with the DP) reaches the named DP in one step.
+
+**Reading a delivered winding.** `route_designed_pairs` checks each pair with the far-closed linking number of the two paths as drawn. That reading is not an invariant, since it closes each strand through legs to a distant point, and a strand that moves through the partner's legs changes it with no passage. The reading that holds is the linking of two network cycles, one through each strand, against the same cycles with the braid untwisted (`topon.analysis.windings`, see *Did a designed pair get its winding?* under `simulation`).
+
+```python
+from topon.analysis.windings import designed_windings, strands_from_placement
+from topon.conformation.entanglement import route_designed_pairs, unwound_paths
+
+report = route_designed_pairs(placement, requests)
+pairs = {(o.request.chain_a, o.request.chain_b): o.request.windings
+         for o in report.accepted}
+for w in designed_windings(strands_from_placement(placement), pairs,
+                           placement.box, reference=unwound_paths(placement, report)):
+    print(w.pair, w.requested, w.value, w.delivered)   # value is None when cycle pairs disagree
+```
+
+`unwound_paths(placement, report)` takes each braid's phase rotation out in place, so the reference differs from the build only inside the braids, and `method="redraw"` draws the strand again from its chord at zero turns.
 
 ### `output`
 
@@ -2397,7 +2692,13 @@ also match. Atomistic output ignores the key.
 For a bead-spring build that skips the chemistry stage,
 `topon.writers.write_endlinked` writes the same convention directly from a
 `topon.conformation.place` placement, with image flags that reconstruct the
-coordinates it was given.
+coordinates it was given. It writes the chains the pipeline writes for the
+same graph, since `place` reads an edge's `dp` as the chemistry builder does
+(the beads between the strand's two nodes, so a dangling chain is `dp` plus
+its free end) and places the sol chains of `G.graph["sol_chains"]` as free
+walks drawn after every other strand, which the writer puts last, one
+molecule each. A graph with no edge `dp` takes the `dp` argument as the
+chain's DP, the free end among its beads.
 
 ### `analysis`
 
@@ -2530,7 +2831,7 @@ with `z_by_stage=`.
 
 #### Atomistic stages and gates
 
-On the `Pipeline` route (`topon generate`, `Pipeline`) an atomistic build is placed with the settled meander (`conformation.atomistic_placement`) and relaxed on the hard-backbone stages (`simulation.atomistic_protocol: "hard_backbone"`), with its backbone dumped every 10 steps, so every run can be checked for passages. Through stages 1 and 2 the backbone-backbone pairs (Si3 and O_3 for PDMS, taken from the strand record) keep a fixed soft core (60 kcal/mol out to 3 Å) in stage 1 and are at full depth from the first step of the ramp. Only pairs with a methyl C or an H are soft and ramped (each to its own depth, `fix adapt ... scale yes`), and both stages are capped under a 300 K Langevin thermostat. Stage 3 is the earlier one, with its minimization capped. The parameters sit under `experimental.atomistic.hard_backbone` (`core` 60 kcal/mol, `core_cutoff` 3 Å, `light_cutoff` 1 Å, `light_max` 30, `temperature` 300 K, `tdamp` 100 fs, `stage1.steps` 5 000, `stage1.limit` 0.05 Å, `stage2.steps` 5 000, `stage2.limit` 0.1 Å). `experimental.atomistic.dynamics.run_steps` overrides `stage2.steps` when it is given, and `experimental.atomistic.stage3.minimize` sets stage 3's minimization as `"etol ftol maxiter maxeval"` (default `"1.0e-6 1.0e-8 2000 20000"` on the hard-backbone stages, `"1.0e-8 1.0e-10 10000000 100000000"` for DREIDING and `"1.0e-6 1.0e-8 100000 1000000"` for CHARMM on the earlier ones). On the CHARMM route the same two stages are written in CHARMM styles, stage 1 with the `.soft` settings (bonded terms, 1-4 weights 0) and stage 2 as `lj/cut/coul/long` with the `.lj` settings and arithmetic mixing. The hard-backbone stages expect `conformation.atomistic_placement`, and the pipeline warns when they meet the earlier placement, whose backbone atoms start a third of a bond apart.
+On the `Pipeline` route (`topon generate`, `Pipeline`) an atomistic build is placed with the settled meander (`conformation.atomistic_placement`) and relaxed on the hard-backbone stages (`simulation.atomistic_protocol: "hard_backbone"`), with its backbone dumped every 10 steps, so every run can be checked for passages. Through stages 1 and 2 the backbone-backbone pairs (Si3 and O_3 for PDMS, taken from the strand record) keep a fixed soft core (60 kcal/mol out to 3 Å) in stage 1 and are at full depth from the first step of the ramp. Only pairs with a methyl C or an H are soft and ramped (each to its own depth, `fix adapt ... scale yes`), and both stages are capped under a 300 K Langevin thermostat. Since 0.4.5 the DREIDING deck holds the resonant types (an aromatic ring's `C_R`, `N_R` and `O_R`) hard with the backbone in both stages, so no backbone bond passes through a ring and no ring through another (a methyl's or a hydrogen's bond still can), and a system with no such atom writes the deck it did. The backbone dump keeps the backbone's types. A ring of atoms typed as a chain's (a cyclohexyl's `C_3`) is not made hard, since its type is a methyl's too. Stage 3 is the earlier one, with its minimization capped. The parameters sit under `experimental.atomistic.hard_backbone` (`core` 60 kcal/mol, `core_cutoff` 3 Å, `light_cutoff` 1 Å, `light_max` 30, `temperature` 300 K, `tdamp` 100 fs, `stage1.steps` 5 000, `stage1.limit` 0.05 Å, `stage2.steps` 2 500, `stage2.limit` 0.1 Å). The ramp and stage 3's minimization were halved in 0.4.5, which kept Z, density and passages on the test networks for about 40 % less LAMMPS time. `experimental.atomistic.dynamics.run_steps` overrides `stage2.steps` when it is given, and `experimental.atomistic.stage3.minimize` sets stage 3's minimization as `"etol ftol maxiter maxeval"` (default `"1.0e-6 1.0e-8 1000 10000"` on the hard-backbone stages, `"1.0e-8 1.0e-10 10000000 100000000"` for DREIDING and `"1.0e-6 1.0e-8 100000 1000000"` for CHARMM on the earlier ones). On the CHARMM route the same two stages are written in CHARMM styles, stage 1 with the `.soft` settings (bonded terms, 1-4 weights 0) and stage 2 as `lj/cut/coul/long` with the `.lj` settings and arithmetic mixing. The hard-backbone stages expect `conformation.atomistic_placement`, and the pipeline warns when they meet the earlier placement, whose backbone atoms start a third of a bond apart.
 
 `atomistic_placement: null` gives the build and stages of earlier versions (`soft_push`), and the workflow route (`topon.workflows.atomistic_network`) and a direct `LammpsInputGenerator` keep them too. The earlier stages are prone to strands passing through each other. On a DP-30 PDMS network the `soft_push` stages let hundreds of backbone bonds pass through each other in stage 1, even from a settled build, while the hard-backbone stages on the settled build let none through at any stage. Both ramps now scale each pair's own depth (before 0.4.0 the DREIDING ramp ran every pair's well from 0.001 to 1 kcal/mol whatever its DREIDING depth).
 
@@ -2548,6 +2849,7 @@ measure_run(run_dir)                          # or gate the checkpoints already 
 
 - No backbone bond more than 15 % over its r0 at two stages, junction to junction along every strand, from stage 1 on (`mode="persistent"`, the atomistic default, while `mode="instant"` fails on one). A single checkpoint can be hot, so one long bond at one stage does not fail the run. The build is reported and not gated, and is not counted towards persistence.
 - No backbone bond passes through another, at any stage, stage 1 included. This is read from each stage's backbone dump with the crossing detector below (`simulation.backbone_dump_every`). One passage fails the stage, and the report gives the count by kind, the step of the first, its two bonds and their strands. `AtomisticRun` reads each stage's dump as soon as the stage ends and, with `stop_on_fail`, stops there. A designed entanglement (`assignment.entanglements`, whose partner strand the strand record names) is kept if no bond of either of its strands passed through the other, and the report says so pair by pair.
+- Every designed pair's network-cycle linking holds, read from the checkpoint files themselves with no dump needed. On the first checkpoint read each pair gets up to four pairs of disjoint cycles, one through each of its strands (`topon.analysis.windings`), and every later checkpoint is read on the same cycles. The linking of two disjoint closed curves changes only when a bond of one passes through the other, so a change fails the run and names the pair, the two readings and the checkpoint. A pair with no two disjoint cycles that close in space (possible on a very small cell) is noted and not read. `report.designed_linking` holds the readings.
 - Backbone Z1+ per bridge is measured at every checkpoint over `z1_seeds` seeds of the exporter's junction jitter (4 by default) and reported as their mean and spread. A partner pair counts as new or lost only when it is found at every seed of one checkpoint and at none of the other. When any stage is dumped, Z1+ is not gated, since it moves as chains settle with nothing crossing and so cannot certify a state. Without dumps the earlier Z gate runs instead (Z per bridge held from the end of the epsilon ramp at every checkpoint at the same density, with a tolerance of 1.5 / n_bridges and the bead-spring 0.01 as the floor). A gated checkpoint with no backbone bond read against an r0 fails rather than passing empty.
 
 The checkpoints are `stage0_build` (`03_Conformation/system_relaxed.data`), `stage1_soft`, `stage2_ramp`, `stage3_min`, `stage3_nvt` and `stage3_npt`. Density is in g/cm³, and temperature is in K from the velocities with real masses. Z1+ runs when it is installed and is skipped otherwise.
@@ -2575,6 +2877,32 @@ for stage, rep in crossings_of_run(run_dir).items():   # traj_stage1..3 in 04_Si
 ```
 
 It needs `simulation.backbone_dump_every` (10 keeps an atom within about 1 Å between frames in every stage). Coordinates are unwrapped per atom and each bond is taken in its shortest image, since topon's data files carry no image flags. As a check, a 3x3x3 DP-6 network run with no pair interaction at all at 2000 K for 20 ps gives 489 passages, and the same network through either relaxation deck gives none.
+
+#### Did a designed pair get its winding? The network-cycle reading
+
+A designed pair is two open strands wound about each other, each held at two junctions, and no reading of two open strands is a topological invariant, since any closure that is not made of strands can be crossed by a strand without a passage. `topon.analysis.windings` therefore closes each strand through the network. For a pair (A, B) it takes a cycle of strands through A and one through B that share no junction and close in space (their bond vectors, in the minimum image, sum to zero, so a cycle that winds round the periodic box is skipped), and computes their linking number exactly, from the solid angle of every pair of segments. It changes exactly when a bond of one cycle passes through a bond of the other, by one up or down, so junctions may move and the rest of the network may go anywhere. A build settled with no passage, or a relaxation in which the crossing detector finds none, keeps it.
+
+The two cycles link through their other strands too, so the delivered winding is read against a reference, the same build with the pair's winding taken out (`delivered = Lk - Lk_ref`, both integers, the reference computed once on the build). Up to four cycle pairs are read per designed pair, the shortest first and then pairs that leave the designed strands' junctions by strands not used yet. The braid adds its winding to all of them, and a third strand running through the braid changes only some, so `PairWinding.value` is the delivered count when every cycle pair agrees and None when they do not (`delivered` has them all). Each pair is read against a reference with only its own two strands unwound. The build is read after the settle has parted the bonds that were drawn touching, since a cycle bond drawn exactly on another has no linking number until one side is chosen. The sign of a delivered count says how the two strands are labeled (antiparallel pairs read -1), not the hand.
+
+On the atomistic route the reference is the pair drawn by its waypoint construction at zero turns over the same span.
+
+```python
+from topon.analysis.atomistic import load_strand_record
+from topon.analysis.crossings import designed_pairs
+from topon.analysis.windings import (designed_windings, record_reference,
+                                     strands_from_record)
+from topon.conformation.entanglement.realize import entangled_backbone_paths
+
+record, _ = load_strand_record(run_dir / "manifest.json")
+pairs = designed_pairs(record)                       # {(k, l): windings}
+unwound = entangled_backbone_paths(pipe.graph, pipe.dims,
+                                   pipe._builder.edge_backbone_path, windings=0)
+ref = record_reference(record, parted_pos, box,      # the build after the settle's parting, in Å
+                       {e: np.asarray(p) * scale for e, p in unwound.items()})
+for w in designed_windings(strands_from_record(record, parted_pos, box), pairs,
+                           box, reference=ref):
+    print(w.pair, w.requested, w.value)
+```
 
 #### Deformation runs
 

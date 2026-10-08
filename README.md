@@ -54,7 +54,8 @@ reactive beads that touch, so every strand's length follows from where the cross
 (cycles, clustering, betweenness, effective resistance, the spectrum and the chord statistics) and, when Z1+ is
 installed, the primitive-path entanglements per strand. `--compare` scores it against a reference. `topon fit` reads an
 existing network (e.g., one made by `fix bond/create` in LAMMPS) and writes a config whose generated networks match
-it, and `topon generate --verify` checks that config against the reference.
+it, and `topon generate --verify` checks that config against the reference. It reads networks crosslinked along
+their chains too, and `--verify --relaxed` holds a relaxed build of the config against the reference.
 
 ## Output
 
@@ -75,13 +76,15 @@ input scripts that relax it into an equilibrated melt with the same connectivity
 Atomistic strands are drawn at their bond lengths and settled before the first stage so that no two backbone bonds
 start closer than 1.5 Å, and the relaxation keeps the backbone hard so that strands do not pass through each other,
 which a crossing detector checks at every stage. The coarse-grained relaxation uses a capped push-off for the same
-reason. `topon track` writes an HTML page that follows an
-atomistic relaxation stage by stage (the network, the entanglements, the energy, the density and any strand that
-passed through another).
+reason. Rings (e.g., the phenyls of a copolymer) and POSS cages are placed whole and kept clear of the strands, and
+with `atomistic_placement: "coil"` the strands wind round their chords to a radius that meets an entanglement target.
+`topon track` writes an HTML page that follows an atomistic relaxation stage by stage (the network, the
+entanglements, the energy, the density and any strand that passed through another).
 
 ## Strand features
 
-- Copolymer sequences (block, random, alternating or gradient), set per strand.
+- Copolymer sequences (block, random, alternating or gradient), set per strand, on the coarse-grained and the
+  atomistic route.
 - Side-chain grafts of a chosen length and monomer, with a density set per edge type.
 - Entanglements, drawn as pairs of neighboring strands wound around each other a set number of times, so that they
   stay interlocked during relaxation.
@@ -109,7 +112,8 @@ Coarse-grained networks use the Kremer-Grest model, and atomistic networks use D
 junction names its residue in the RTF files you supply, and every term comes from the parameter files. A residue or
 term the files do not define stops the build with the full list, and nothing is filled in by default.
 [`demos/polymer/atomistic/charmm_peg/`](demos/polymer/atomistic/charmm_peg/) builds a PEG network with the bundled
-CHARMM ether parameters.
+CHARMM ether parameters. DREIDING builds give aromatic atoms the resonant types and planar centers the three inversion
+terms of the force field, and an atom DREIDING has no type for stops the build.
 
 ## Protein networks
 

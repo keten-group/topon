@@ -1,0 +1,10 @@
+{
+ "topon_commit": "54f2474",
+ "topon_source": "the development repository's main branch at that commit; its generator, placement and analysis code is the code of topon 0.4.5",
+ "gcc": "gcc (x86_64-win32-seh-rev0, Built by MinGW-Builds project) 15.2.0",
+ "build": "gcc -O2 -o generator.exe generator.c -lm",
+ "binary_md5": "589fbd0bf28408f358d412dd5e950b85",
+ "python": "3.12.10",
+ "cpu": "Intel Core i9-14900 (8 performance + 16 efficiency cores)",
+ "workers": "8, each pinned to one performance core (logical CPUs 0,2,...,14)"
+}

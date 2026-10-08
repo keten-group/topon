@@ -32,6 +32,23 @@ __all__ = ["Site", "catmull_rom", "site_frame", "winding_waypoints",
 # plausible linking number because they are on top of each other.
 MIN_REACH = 0.12
 
+# Two chords whose gap at the site is under this fraction of the shorter
+# chord cross there. The radius is a share of the gap, so a crossing pair
+# was drawn with both chains through one point and no winding. On a
+# three-shell SC lattice two face diagonals of one face, or two body
+# diagonals of one cell, cross at their midpoints. Their midpoints coincide,
+# so the entanglement selection takes them first. Measured on the DP-30
+# atomistic build with six designed pairs, one pair was drawn that way, and
+# the backbone settle's random parting of the touching bonds decided its
+# winding.
+CROSSING = 0.05
+
+# The gap a crossing pair is wound as, as a fraction of the shorter chord,
+# the chains parted along the normal to both chords. At 0.5 a pair of face
+# diagonals (chord 1.414) winds at the radius a parallel pair one face
+# diagonal apart gets (gap 0.707).
+CROSSING_GAP = 0.5
+
 
 @dataclass(frozen=True)
 class Site:
@@ -154,6 +171,19 @@ def winding_waypoints(a0, a1, b0, b1, site: Site, per_turn: int = 8,
     """
     mid, axis, toward, across, gap = site_frame(a0, a1, b0, b1, site.at, bias)
     chord = float(np.linalg.norm(np.asarray(a1, float) - np.asarray(a0, float)))
+
+    # Chords that cross have no gap to take a share of, and the direction
+    # between them is noise. Wind them about the crossing as though they
+    # were CROSSING_GAP of the shorter chord apart, the chains on either side
+    # of the plane of the two chords.
+    d_b = np.asarray(b1, float) - np.asarray(b0, float)
+    shorter = min(chord, float(np.linalg.norm(d_b)))
+    if gap < CROSSING * shorter:
+        normal = np.cross(axis, d_b)
+        if float(np.linalg.norm(normal)) > 1e-9 * max(shorter, 1e-12):
+            toward = normal / np.linalg.norm(normal)
+            across = np.cross(axis, toward)
+        gap = CROSSING_GAP * shorter
 
     radius = site.radius if site.radius is not None else reach * gap
 

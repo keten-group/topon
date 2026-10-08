@@ -1,7 +1,7 @@
 LAMMPS (2 Apr 2025)
-  using 4 OpenMP thread(s) per MPI task
+  using 8 OpenMP thread(s) per MPI task
 Loaded 1 plugins from <LAMMPS install>/plugins
-package omp 4
+package omp 8
 using multi-threaded neighbor list subroutines
 # LAMMPS Stage 1: hard-backbone push-off (ATOMISTIC, protocol "hard_backbone")
 #
@@ -20,7 +20,7 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 special_bonds   dreiding
 pair_style      lj/cut/coul/long 12.0
 kspace_style    pppm 1.0e-4
@@ -52,7 +52,7 @@ Finding 1-2 1-3 1-4 neighbors ...
     10 = max # of 1-3 neighbors
     14 = max # of special neighbors
   special bonds CPU = 0.002 seconds
-  read_data CPU = 0.203 seconds
+  read_data CPU = 0.236 seconds
 include         ../02_Chemistry/system.in.settings
 # Forcefield Settings (Auto-Generated)
 
@@ -61,6 +61,7 @@ pair_coeff 1 1 0.3100 3.8041 # Si3
 pair_coeff 2 2 0.0951 3.4730 # C_3
 pair_coeff 3 3 0.0957 3.0332 # O_3
 pair_coeff 4 4 0.0152 2.8464 # H_
+pair_modify mix geometric tail yes
 
 # Bond Coeffs
 bond_coeff 1 350.0000 1.6970 # C_3-Si3
@@ -76,10 +77,10 @@ angle_coeff 5 50.0000 109.4710 # H_-C_3-H_
 angle_coeff 6 50.0000 104.5100 # Si3-O_3-Si3
 
 # Dihedral Coeffs
-dihedral_coeff 1 0.111111 -1 3 # C_3-Si3-C_3-H_
-dihedral_coeff 2 0.111111 -1 3 # H_-C_3-Si3-O_3
-dihedral_coeff 3 0.333333 -1 3 # C_3-Si3-O_3-Si3
-dihedral_coeff 4 0.333333 -1 3 # O_3-Si3-O_3-Si3
+dihedral_coeff 1 0.111111 1 3 # C_3-Si3-C_3-H_
+dihedral_coeff 2 0.111111 1 3 # H_-C_3-Si3-O_3
+dihedral_coeff 3 0.333333 1 3 # C_3-Si3-O_3-Si3
+dihedral_coeff 4 0.333333 1 3 # O_3-Si3-O_3-Si3
 
 include         ../02_Chemistry/system.groups
 # LAMMPS group definitions
@@ -112,7 +113,7 @@ timestep        1.0
 thermo          1000
 run             5000
 Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
-Last active /omp style is improper_style cvff/omp
+Last active /omp style is improper_style umbrella/omp
 Neighbor list info ...
   update: every = 1 steps, delay = 0 steps, check = yes
   max neighbors/atom: 2000, page size: 100000
@@ -127,39 +128,39 @@ Neighbor list info ...
       bin: standard
 WARNING: Inconsistent image flags
 For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
-Per MPI rank memory allocation (min/avg/max) = 41.48 | 41.48 | 41.48 Mbytes
+Per MPI rank memory allocation (min/avg/max) = 47.02 | 47.02 | 47.02 Mbytes
    Step          Temp          E_pair         E_mol          TotEng         Press     
-         0   300            17608.515      13289.556      40811.649      22134.488    
-      1000   278.31481      841.62024      12260.275      22298.88       1554.7898    
-      2000   273.43597      619.87768      11913.688      21569.328      424.73708    
-      3000   272.95082      530.20194      11810.931      21360.864      674.74868    
-      4000   273.28003      510.03649      11536.317      21076.963      677.64721    
-      5000   274.71822      451.73437      11577.877      21107.746      917.99535    
-Loop time of 8.89429 on 4 procs for 5000 steps with 11087 atoms
+         0   300            17344.643      13710.824      40969.045      22051.051    
+      1000   276.72183      602.4371       11375.498      21122.28       1171.3166    
+      2000   273.07973      470.5411       11024.918      20519.45       397.46207    
+      3000   276.59986      406.72115      10885.211      20432.246      991.15939    
+      4000   274.1709       368.30967      10715.049      20143.408      54.104711    
+      5000   275.52145      344.95665      10700.165      20149.8        592.77679    
+Loop time of 16.5883 on 8 procs for 5000 steps with 11087 atoms
 
-Performance: 48.571 ns/day, 0.494 hours/ns, 562.159 timesteps/s, 6.233 Matom-step/s
-171.6% CPU use with 1 MPI tasks x 4 OpenMP threads
+Performance: 26.042 ns/day, 0.922 hours/ns, 301.417 timesteps/s, 3.342 Matom-step/s
+197.0% CPU use with 1 MPI tasks x 8 OpenMP threads
 
 MPI task timing breakdown:
 Section |  min time  |  avg time  |  max time  |%varavg| %total
 ---------------------------------------------------------------
-Pair    | 0.88206    | 0.88206    | 0.88206    |   0.0 |  9.92
-Bond    | 3.4808     | 3.4808     | 3.4808     |   0.0 | 39.14
-Neigh   | 0.55233    | 0.55233    | 0.55233    |   0.0 |  6.21
-Comm    | 0.21079    | 0.21079    | 0.21079    |   0.0 |  2.37
-Output  | 1.3765     | 1.3765     | 1.3765     |   0.0 | 15.48
-Modify  | 2.3019     | 2.3019     | 2.3019     |   0.0 | 25.88
-Other   |            | 0.0898     |            |       |  1.01
+Pair    | 1.576      | 1.576      | 1.576      |   0.0 |  9.50
+Bond    | 7.1963     | 7.1963     | 7.1963     |   0.0 | 43.38
+Neigh   | 0.6489     | 0.6489     | 0.6489     |   0.0 |  3.91
+Comm    | 0.37232    | 0.37232    | 0.37232    |   0.0 |  2.24
+Output  | 2.4767     | 2.4767     | 2.4767     |   0.0 | 14.93
+Modify  | 4.1652     | 4.1652     | 4.1652     |   0.0 | 25.11
+Other   |            | 0.1529     |            |       |  0.92
 
 Nlocal:          11087 ave       11087 max       11087 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Nghost:          10763 ave       10763 max       10763 min
+Nghost:          10515 ave       10515 max       10515 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Neighs:          56715 ave       56715 max       56715 min
+Neighs:          60492 ave       60492 max       60492 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
 
-Total # of neighbors = 56715
-Ave neighs/atom = 5.1154505
+Total # of neighbors = 60492
+Ave neighs/atom = 5.4561198
 Ave special neighs/atom = 5.852981
 Neighbor list builds = 165
 Dangerous builds = 0
@@ -170,10 +171,10 @@ undump          bbdump
 write_data      system_after_soft.data
 System init for write_data ...
 Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
-Last active /omp style is improper_style cvff/omp
+Last active /omp style is improper_style umbrella/omp
 WARNING: Not all mixed pair coeffs generated from mixing. Use write_data with 'pair ij' option to store all pair coeffs. (src/write_data.cpp:364)
 write_restart   1.restart
 System init for write_restart ...
 Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
-Last active /omp style is improper_style cvff/omp
-Total wall time: 0:00:09
+Last active /omp style is improper_style umbrella/omp
+Total wall time: 0:00:17

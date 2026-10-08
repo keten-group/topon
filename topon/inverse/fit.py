@@ -21,15 +21,20 @@ What goes into the config, and where it comes from:
     coarse-grained at the reference's bead density.
 ``conformation``
     the placement route and its build knob from the Z1+ calibration of
-    :mod:`topon.conformation.entanglement.control`, and the reference's Z1+
-    per bridge as ``entanglement.target_Z`` and ``target_hist``. Every one
-    of these is a final-state number; nothing here can be checked without
-    MD, and the report says so.
+    :mod:`topon.conformation.entanglement.control`, primary loops drawn
+    compact (:data:`FIT_LOOP_SHAPE`), and the reference's Z1+ per bridge as
+    ``entanglement.target_Z`` and ``target_hist``. Every one of these is a
+    final-state number; nothing here can be checked without MD, and the
+    report says so.
 ``simulation``
     the push-off protocol, compressing to the reference density.
 
 The reference measurement, the sweep table and the flags go to a report
 beside the config (``<config>.fit.json``), not into the config.
+
+A reference crosslinked along its chains is fitted by
+:mod:`topon.inverse.crosslinked` instead, to the crosslink generator
+(``topology.source: "crosslink"``) or, asked for, to the lattice route.
 """
 from __future__ import annotations
 
@@ -49,6 +54,19 @@ from topon.inverse.scaffold import (
 FALLBACK_DENSITY = 0.85
 #: DP written when neither the reference nor --dp says: the schema default.
 FALLBACK_DP = 25
+
+#: ``conformation.loop_shape`` of every conformation block a fit writes
+#: (since 0.4.5). The schema's default stays ``"ring"``; a fitted config draws its
+#: primary loops as compact closed walks, which brought the fit MD closer to
+#: the references: Z1+ per bridge on the N100 fit 1.399 against the
+#: reference's 1.319 (rings 1.476; both arms with junction_jitter 0.15 added
+#: by hand, which this config does not carry), and on the N20 fit 0.136 per
+#: loop against 0.078 (rings 0.191) and 0.215 per bridge against 0.178 (rings
+#: 0.226). The
+#: calibration graphs carry no loops, so no row a knob rests on was drawn
+#: either way, and a graph without primary loops builds the same under either
+#: shape.
+FIT_LOOP_SHAPE = "compact"
 
 
 class FitError(ValueError):
@@ -162,21 +180,24 @@ def choose_conformation(dp: float, target: Optional[dict], flags: list) -> tuple
     """Placement route, build knob and entanglement target.
 
     The route is the random walk when the target is at or above the lowest
-    final-state Z the walk has reached at this DP, and the meander below it,
-    which is the lower route everywhere it has been measured. The knob is
-    where the controller would start (:func:`~topon.conformation.
+    final-state Z the walk has reached at this DP, and the meander below it.
+    The knob is where the controller would start (:func:`~topon.conformation.
     entanglement.control.seed_actuator`), except for a target under the
-    chosen route's floor: extrapolating the power law below every
-    measurement gives a nearly straight chain (coil ratio 1.08 for the DP-20
-    reference), so the knob is the one that measured lowest, and the flag
-    says the target is below what has been reached.
+    chosen route's floor, where the knob is the one that measured lowest
+    (coil ratio 1.402 for the DP-20 reference) and the flag says the target
+    is below what has been reached. The block carries the build options the
+    knob was measured with (``junction_jitter``, ``settle_clearance``),
+    since the same knob built without them is a build the calibration did not
+    measure, and ``loop_shape`` :data:`FIT_LOOP_SHAPE`, whether or not
+    the graph has primary loops. Without a target there is no build to
+    describe and the block is empty.
 
     Returns ``(conformation block, info)``.
     """
     from topon.conformation.entanglement import (
         FLOORS, actuator_name, calibration_for, floor_warning, seed_actuator)
     from topon.conformation.entanglement.control import (
-        CALIBRATION, REMEASURED, CalibrationPoint)
+        CALIBRATION, REMEASURED, CalibrationPoint, build_options)
 
     if target is None:
         return {}, {"why": "no Z1+ target: the conformation block is left at "
@@ -230,6 +251,8 @@ def choose_conformation(dp: float, target: Optional[dict], flags: list) -> tuple
         rows = [CalibrationPoint(**r) for r in note.get("rows", [])]
     info["rows"] = [{"dp": c.dp, "actuator": c.actuator, "z": c.z,
                      "protocol": c.protocol, "builder": c.builder,
+                     "junction_jitter": c.junction_jitter,
+                     "settle_clearance": c.settle_clearance,
                      "source": c.source} for c in rows]
     if rows and all(c.builder == "script" for c in rows):
         detail = (f"every DP-{rows[0].dp} {placement} row the knob rests on ("
@@ -243,7 +266,22 @@ def choose_conformation(dp: float, target: Optional[dict], flags: list) -> tuple
             detail += "; " + again
         _flag(flags, "warn", "calibration rows are script-built", detail + ".")
 
-    block = {"placement": placement, knob: round(x, 4),
+    # A knob means what it measured only with the build that measured it.
+    # The DP-20 place() rows carry the pinch fix, and the same knob
+    # without it is a different build: the meander at coil 1.402 ends
+    # near 0.260 unfixed, where it pinches, against 0.2356 with the fix.
+    opts = build_options(rows, x)
+    if opts:
+        info["build_options"] = opts
+        _flag(flags, "note", "build options from the calibration",
+              f"the {knob} was measured on place() builds with "
+              + " and ".join(f"{k} {v:g}" for k, v in opts.items())
+              + ", so the config carries them: without them the same "
+                f"{knob} builds a network the calibration did not measure.")
+
+    info["loop_shape"] = FIT_LOOP_SHAPE
+    block = {"placement": placement, knob: round(x, 4), **opts,
+             "loop_shape": FIT_LOOP_SHAPE,
              "entanglement": {"target_Z": t,
                               "target_hist": list(target["target_hist"]),
                               "close_on": "final"}}
@@ -261,7 +299,14 @@ def fit(path, *, junction_type: Optional[int] = None,
         dp: Optional[float] = None, density: Optional[float] = None,
         z1: Optional[bool] = None, z1_config=None, name: Optional[str] = None,
         control: bool = True,
-        log: Optional[Callable[[str], None]] = None) -> FitResult:
+        log: Optional[Callable[[str], None]] = None,
+        crosslinked: Optional[bool] = None, route: Optional[str] = None,
+        crosslink_bond_types: Optional[Sequence[int]] = None,
+        sequence: Optional[str] = None, repeats: int = 1,
+        crosslink_residue: str = "Y", reactive_every: Optional[int] = None,
+        reactive_start: Optional[int] = None,
+        packing: Optional[float] = None,
+        contact_radius: Optional[float] = None) -> FitResult:
     """Measure ``path`` and write a config that regenerates it.
 
     ``seeds`` builds per candidate cutoff, starting at ``seed``; the config
@@ -270,9 +315,19 @@ def fit(path, *, junction_type: Optional[int] = None,
     gives. ``dp``, ``density`` and ``max_functionality`` override what the
     reference says (a graph file says nothing about the first two).
 
+    A reference crosslinked along its chains (``crosslinked`` None decides
+    from the file) goes to :func:`topon.inverse.crosslinked.fit_crosslinked`
+    with ``route`` (``"crosslink"``, the default, or ``"lattice"``), the
+    reactive beads (``sequence``, ``repeats``, ``crosslink_residue``, or
+    ``reactive_every`` from ``reactive_start``), ``packing`` and
+    ``contact_radius`` when given; ``crosslink_bond_types`` are its data
+    file's crosslink bond types.
+
     Raises:
         FitError: a degree above ``max_functionality``, or no candidate
-            cutoff that builds on every seed.
+            cutoff that builds on every seed; for a crosslinked reference,
+            what :func:`~topon.inverse.crosslinked.fit_crosslinked` refuses;
+            for an end-linked one, an option only a crosslinked one takes.
     """
     say = log or (lambda msg: None)
     wall0, cpu0 = time.perf_counter(), time.process_time()
@@ -285,8 +340,40 @@ def fit(path, *, junction_type: Optional[int] = None,
               "units, which is what the validation swept; on this lattice "
               "they are ranges without a shell meaning.")
 
-    ref = read_reference(path, junction_type=junction_type, nodes=nodes)
-    say(f"read {Path(path).name} ({ref.source})")
+    ref = read_reference(path, junction_type=junction_type, nodes=nodes,
+                         crosslinked=crosslinked,
+                         crosslink_bond_types=crosslink_bond_types)
+    say(f"read {Path(path).name} ({ref.source}"
+        + (", crosslinked along its chains)" if ref.architecture == "crosslinked"
+           else ")"))
+    if ref.architecture == "crosslinked":
+        from topon.inverse.crosslinked import fit_crosslinked
+
+        if lattice != "SC" or mix:
+            raise FitError("a crosslinked reference is fitted on a simple-cubic "
+                           "lattice (the crosslink generator's, or the lattice "
+                           "route's SC cell)")
+        meas = measure(ref, z1=False)
+        say(f"measured in {time.perf_counter() - wall0:.0f} s")
+        return fit_crosslinked(
+            ref, meas, route=route or "crosslink", seeds=seeds, seed=seed,
+            density=density, packing=packing, contact_radius=contact_radius,
+            sequence=sequence, repeats=repeats,
+            crosslink_residue=crosslink_residue, reactive_every=reactive_every,
+            reactive_start=reactive_start, cutoffs=cutoffs, name=name,
+            log=log, started=(wall0, cpu0))
+    given = [k for k, v in (("route", route), ("sequence", sequence),
+                            ("reactive_every", reactive_every),
+                            ("reactive_start", reactive_start),
+                            ("crosslink_bond_types", crosslink_bond_types or None),
+                            ("repeats", None if repeats == 1 else repeats),
+                            ("crosslink_residue",
+                             None if crosslink_residue == "Y" else crosslink_residue),
+                            ("packing", packing),
+                            ("contact_radius", contact_radius)) if v is not None]
+    if given:
+        raise FitError(f"{', '.join(given)} apply to a network crosslinked along "
+                       f"its chains, and {Path(path).name} reads end-linked")
     meas = measure(ref, z1=z1, z1_config=z1_config)
     rec = meas.record
     t_measure = time.perf_counter() - wall0
@@ -526,6 +613,9 @@ def _pf(hist: dict) -> str:
 def format_fit(result: FitResult) -> str:
     """The fit for the terminal: what was measured, chosen and flagged."""
     r = result.report
+    if r.get("architecture") == "crosslinked":
+        from topon.inverse.crosslinked import format_fit_crosslinked
+        return format_fit_crosslinked(result)
     ref = r["reference"]
     cfg = result.config
     gen = cfg["topology"]["generator"]
@@ -590,8 +680,13 @@ def format_fit(result: FitResult) -> str:
     conf = cfg.get("conformation")
     if conf:
         knob = r["conformation"]["knob"]
+        built = "".join(f", {k} {conf[k]:g}" for k in
+                        ("junction_jitter", "settle_clearance") if conf.get(k))
+        if conf.get("loop_shape"):
+            built += f", {conf['loop_shape']} loops"
         lines.append(f"              {conf['placement']} at {knob} "
-                     f"{conf[knob]}, target Z {conf['entanglement']['target_Z']}"
+                     f"{conf[knob]}{built}, target Z "
+                     f"{conf['entanglement']['target_Z']}"
                      f" per bridge (final state, needs MD to check)")
     b = r.get("build") or {}
     if b.get("beads") and ref.get("n_atoms"):

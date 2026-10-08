@@ -1,0 +1,57 @@
+# LAMMPS Stage 1: hard-backbone push-off (ATOMISTIC, protocol "hard_backbone")
+#
+# Backbone-backbone pairs (atom types 1 2 3) keep a soft
+# core of 60.0 kcal/mol out to 3.0 A from the first
+# step, so no backbone atom passes through another strand's bond; every pair
+# with a light atom (types 4) ramps
+# 0 -> 30.0 kcal/mol at 1.0 A, as in the historic
+# deck. Capped displacement under a Langevin thermostat and no minimiser: a
+# minimiser resolves an overlap by whatever lowers the energy, which on the
+# bead-spring route was a bond stretched and a bead let through it.
+
+units           real
+atom_style      full
+boundary        p p p
+bond_style      harmonic
+angle_style     harmonic
+dihedral_style  harmonic
+improper_style  umbrella
+special_bonds   dreiding
+pair_style      lj/cut/coul/long 12.0
+kspace_style    pppm 1.0e-4
+
+read_data       ../03_Conformation/system_relaxed.data
+include         ../02_Chemistry/system.in.settings
+include         ../02_Chemistry/system.groups
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+comm_modify     mode single cutoff 8.0
+
+group           bbdump type 1 2 3
+dump            bbdump bbdump custom 10 traj_stage1.lammpstrj id xu yu zu
+dump_modify     bbdump sort id format float %.4f
+
+kspace_style    none
+pair_style      soft 3.0
+pair_coeff      * * 0.0 1.0
+pair_coeff      1 1 60.0 3.0
+pair_coeff      1 2 60.0 3.0
+pair_coeff      1 3 60.0 3.0
+pair_coeff      2 2 60.0 3.0
+pair_coeff      2 3 60.0 3.0
+pair_coeff      3 3 60.0 3.0
+variable        prefactor equal ramp(0,30.0)
+fix             light all adapt 1 pair soft a 1*4 4 v_prefactor reset no
+velocity        all create 300.0 4928459 dist gaussian
+fix             lang all langevin 300.0 300.0 100.0 48279
+fix             cap all nve/limit 0.05
+timestep        1.0
+thermo          1000
+run             5000
+unfix           cap
+unfix           lang
+unfix           light
+undump          bbdump
+write_data      system_after_soft.data
+write_restart   1.restart

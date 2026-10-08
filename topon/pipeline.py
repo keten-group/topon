@@ -143,10 +143,13 @@ class Pipeline:
     neighbour_cutoff 1.5, 261 edges and then 279. With the seed the graph
     and its edge order are identical, which is what makes a chain index mean
     the same strand twice (``topon.conformation.strand_plans``, and the
-    ``pairs`` of a conformation config). The DP draws and edge types still
-    draw from the global streams. The conformation stage's noise and
+    ``pairs`` of a conformation config). The DP draws (PDI above 1), random
+    types, copolymer sequences, entanglements and grafts still draw from
+    the global streams. The named atomistic placements, the historic
+    placement's side-chain offsets, and the conformation stage's noise and
     overlap pushes do not; they come from streams keyed on the study name,
-    so the same study builds the same relaxed file on every run.
+    so a study whose graph and assignment are pinned builds the same
+    displacement and relaxed files on every run.
     """
 
     # Overlap-resolver defaults. These live in ConformationConfig now, and
@@ -228,9 +231,11 @@ class Pipeline:
         topology (e.g. graphml-load vs npz-load), seed both
         :mod:`random` and :mod:`numpy.random` before calling this. The
         chemistry stage uses ``np.random.randn`` for graft-perp
-        directions -- without seeding, byte-equivalence cannot be
-        guaranteed. The conformation stage's noise comes from a stream
-        keyed on the study name and needs no seed.
+        directions on the coarse-grained and historic atomistic routes.
+        Without seeding, byte-equivalence cannot be guaranteed there. The
+        named atomistic placements, the side-chain offsets of the
+        historic one, and the conformation stage's noise come from
+        streams keyed on the study name and need no seed.
 
         Args:
             graph: NetworkX MultiGraph with crosslink nodes (``pos``) and
@@ -863,23 +868,40 @@ class Pipeline:
             # the data file (a) has H_ atom-type rows DREIDING needs, and
             # (b) is charge-neutral so PPPM auto-gewald doesn't crash. AddHs
             # preserves heavy-atom indices, so _builder.node_map and
-            # edge_atom_map remain valid. Sanitize can fail on demos that
-            # produce over-valent atoms (e.g. defect demo's degree-6 Si);
-            # fall back to writing the heavy-atom mol uncharged in that
-            # case — system.data is then DREIDING-incomplete (no H_) but
-            # the chemistry stage still completes for inspection.
+            # edge_atom_map remain valid. A failure of any of the three
+            # stops the stage before a file is written. Before 0.4.5
+            # the heavy-atom mol went to the writer uncharged and without
+            # H_ when one of them raised, and NaN Gasteiger charges were set
+            # to 0, each with only a [WARN]. When a step fails with atoms
+            # left untyped (after a failed Sanitize, the atoms the builder
+            # made one at a time, a Si junction, a POSS cage, the PDMS repeat
+            # atoms, have no hybridisation and so no DREIDING type), the
+            # error is UntypedAtomError naming them, with the failure
+            # chained; otherwise it is ChargeError, naming the step and what
+            # it raised, or for NaN charges the atoms Gasteiger has no
+            # parameters for. Before 0.4.5 an atom
+            # with no type was written as an invented one (Si_, O_), as in
+            # an earlier POSS demo output, which came from a pipeline that
+            # did not sanitize.
             from rdkit import Chem
-            from rdkit.Chem import AllChem
+            from topon.forcefield.dreiding import (
+                ChargeError, UntypedAtomError, dreiding_types,
+                gasteiger_charges, parse_dreiding_parameter_file)
+            atom_types = parse_dreiding_parameter_file(DreidingWriter(
+                self.chemical_space, data_path).param_file)["atom_types"]
+            step = "Sanitize"
             try:
                 try:
                     Chem.SanitizeMol(self.chemical_space)
                 except Chem.AtomValenceException:
-                    # Defect demos can produce degree-6 Si junctions that
-                    # exceed RDKit's permitted valence (max 6 by table, but
-                    # the strict check trips on Si@6 with no charge). Skip
-                    # just the valence-property check; the rest of sanitize
-                    # (kekulize, ring-find, etc.) still runs. AddHs then
-                    # assigns 0 implicit H to those Si atoms.
+                    # A Si junction with five or six strands (from a loaded
+                    # topology; the defect injector caps junctions at four
+                    # on this route) fails RDKit's valence check.
+                    # Skip just that check; the rest of sanitize (kekulize,
+                    # ring-find, hybridisation) still runs. RDKit perceives
+                    # such a Si as SP3D, which DREIDING has no type for, so
+                    # the typing below stops with UntypedAtomError; an
+                    # over-valent atom whose hybridisation has a type goes on.
                     Chem.SanitizeMol(
                         self.chemical_space,
                         sanitizeOps=(
@@ -887,63 +909,57 @@ class Pipeline:
                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
                         ),
                     )
+                step = "AddHs"
                 mol_h = Chem.AddHs(self.chemical_space)
-                AllChem.ComputeGasteigerCharges(mol_h)
-                # Over-valent atoms (defect's degree-6 Si) make Gasteiger
-                # emit NaN for those atoms and their neighbours. Scrub to
-                # 0 so the LAMMPS data file is numeric; the residual net
-                # charge logged below is usually within PPPM's tolerance.
-                import math
-                nan_count = 0
-                for atom in mol_h.GetAtoms():
-                    if atom.HasProp("_GasteigerCharge"):
-                        q = atom.GetDoubleProp("_GasteigerCharge")
-                        if math.isnan(q) or math.isinf(q):
-                            atom.SetDoubleProp("_GasteigerCharge", 0.0)
-                            nan_count += 1
-                if nan_count:
-                    print(f"  [WARN] Gasteiger NaN/Inf on {nan_count} atoms "
-                          f"(over-valent neighbours); zeroed.")
-
-                # Background charge neutralization: redistribute residual net
-                # charge uniformly across all atoms with a valid Gasteiger
-                # value. Two things make this load-bearing:
-                #   (1) The defect demo has over-valent Si (degree 5-6 from
-                #       parallel-edge defects). NaN-zeroing those atoms can
-                #       leave several e residual; PPPM then prints "System
-                #       is not charge neutral" and runs slowly.
-                #   (2) Gasteiger output itself has a tiny non-zero residual
-                #       (~1e-12 e) from finite-precision iteration on every
-                #       molecule. Cheap to scrub here.
-                valid_atoms = [
-                    a for a in mol_h.GetAtoms() if a.HasProp("_GasteigerCharge")
-                ]
-                total_q = sum(
-                    a.GetDoubleProp("_GasteigerCharge") for a in valid_atoms
-                )
-                if valid_atoms and abs(total_q) > 1e-6:
-                    delta = -total_q / len(valid_atoms)
-                    for a in valid_atoms:
-                        a.SetDoubleProp(
-                            "_GasteigerCharge",
-                            a.GetDoubleProp("_GasteigerCharge") + delta,
-                        )
-                    print(f"  Charge-neutralized: spread {-total_q:+.4f} e "
-                          f"across {len(valid_atoms)} atoms "
-                          f"(delta = {delta:+.2e} e/atom)")
-
-                self.chemical_space = mol_h
-                # Mass-based volume (matches the canonical workflow).
-                mass = sum(a.GetMass() for a in mol_h.GetAtoms())
-                vol = (mass / density) * 1.66054  # A^3 / Da at g/cm^3
-                writer = DreidingWriter(mol_h, data_path, use_charges=True)
             except Exception as exc:
-                print(f"  [WARN] AddHs/Gasteiger skipped ({exc}); "
-                      f"writing heavy-atom data file uncharged.")
-                mol_h = self.chemical_space
-                n_atoms = mol_h.GetNumAtoms()
-                vol = n_atoms / density
-                writer = DreidingWriter(mol_h, data_path, use_charges=False)
+                cause = f"{type(exc).__name__}: {exc}"
+                # An atom DREIDING has no type for is named first whichever
+                # step gave up, so the error does not hang on where a given
+                # RDKit version stops (that error, with this failure chained).
+                try:
+                    dreiding_types(self.chemical_space, atom_types)
+                except UntypedAtomError as err:
+                    doing = {"Sanitize": "sanitize",
+                             "AddHs": "add the hydrogens of"}[step]
+                    raise UntypedAtomError(err.atoms, note=(
+                        f"The chemistry stage could not {doing} this "
+                        f"molecule: {step} failed with {cause}")) from exc
+                raise ChargeError(step, cause) from exc
+            # Typed before it is charged: an atom DREIDING has no type for
+            # (the SP3D Si above) has no Gasteiger parameters either, and
+            # the typing error is the one that says what to fix.
+            dreiding_types(mol_h, atom_types)
+            gasteiger_charges(mol_h)
+
+            # Background charge neutralization: redistribute a residual net
+            # charge uniformly across all atoms. Gasteiger keeps the
+            # molecule's net formal charge, and leaves a tiny residual
+            # (~1e-12 e) from finite-precision iteration, which the 1e-6
+            # threshold leaves alone. (Before 0.4.5 this also spread the
+            # charge left by NaN charges set to 0, several e for the
+            # degree 5-6 Si of an earlier defect demo.)
+            valid_atoms = [
+                a for a in mol_h.GetAtoms() if a.HasProp("_GasteigerCharge")
+            ]
+            total_q = sum(
+                a.GetDoubleProp("_GasteigerCharge") for a in valid_atoms
+            )
+            if valid_atoms and abs(total_q) > 1e-6:
+                delta = -total_q / len(valid_atoms)
+                for a in valid_atoms:
+                    a.SetDoubleProp(
+                        "_GasteigerCharge",
+                        a.GetDoubleProp("_GasteigerCharge") + delta,
+                    )
+                print(f"  Charge-neutralized: spread {-total_q:+.4f} e "
+                      f"across {len(valid_atoms)} atoms "
+                      f"(delta = {delta:+.2e} e/atom)")
+
+            self.chemical_space = mol_h
+            # Mass-based volume (matches the canonical workflow).
+            mass = sum(a.GetMass() for a in mol_h.GetAtoms())
+            vol = (mass / density) * 1.66054  # A^3 / Da at g/cm^3
+            writer = DreidingWriter(mol_h, data_path, use_charges=True)
             writer.write()
             self._geometry_from_dreiding(writer)
 
@@ -1068,11 +1084,12 @@ class Pipeline:
             self._record_chords(mol_h, scale)
             # Atomistic: backbone + grafts + pendant + hydrogens. Backbone
             # path consults `entangled_with` on the (u, v, key) edge data
-            # for kinked-chain placement (N+2 fix). graft_atom_map is
-            # currently only populated by ChemistryBuilder._build_chain_cg
-            # — for atomistic it's empty, so system_grafts.displace will be
-            # empty and graft side-chain atoms instead get coords from the
-            # pendant pass (neighbor propagation through mol_h).
+            # for kinked-chain placement (N+2 fix). graft_atom_map holds
+            # the side-chain heavy atoms of grafted strands
+            # (ChemistryBuilder._build_chain_per_repeat), placed along a
+            # direction drawn from the global stream; every other atom off
+            # the backbone gets coords from the pendant pass (neighbor
+            # propagation through mol_h).
             backbone_coords: dict[int, tuple] = {}
             graft_coords: dict[int, tuple] = {}
             graft_atom_map = getattr(self._builder, "graft_atom_map", {}) or {}
@@ -1148,8 +1165,12 @@ class Pipeline:
             )
 
             # Pendant heavy + hydrogens via neighbor propagation through mol_h.
+            # The offsets come from a stream of their own, keyed on the study
+            # name, as stage 5's noise is. From NumPy's global stream they
+            # were unseeded unless the caller seeded it.
             known = {**node_coords, **backbone_coords, **graft_coords}
-            side_coords = generate_approximate_side_chain_coords(mol_h, known)
+            side_coords = generate_approximate_side_chain_coords(
+                mol_h, known, _stable_rng("sidechain", self.config.study.name))
             h_coords = {k: v for k, v in side_coords.items()
                         if mol_h.GetAtomWithIdx(k).GetSymbol() == "H"}
             p_coords = {k: v for k, v in side_coords.items()
@@ -1270,6 +1291,12 @@ class Pipeline:
         self._backbone_types = sorted({
             writer.atom_types_dict[writer.atom_dreiding_types[i + 1]]
             for i in self._backbone_atoms()})
+        # The resonant types (an aromatic ring's C_R, N_R, O_R), which the
+        # hard-backbone deck keeps hard as well, so that no ring passes
+        # through a bond or another ring in stage 1.
+        self._ring_types = sorted(
+            {int(tid) for name, tid in writer.atom_types_dict.items()
+             if str(name).endswith("_R")} - set(self._backbone_types))
         self._n_atom_types = len(writer.atom_types_dict)
 
     def _backbone_atoms(self) -> set:
@@ -1439,23 +1466,223 @@ class Pipeline:
     def _atomistic_placement(self):
         """The placement this build uses: the configured one, or the historic.
 
-        ``conformation.atomistic_placement`` defaults to ``meander``, which
-        does not place POSS cages, so a network with POSS nodes falls back to
-        the historic placement unless the placement was asked for by name
-        (then :meth:`_place_atomistic` refuses it, as before).
+        ``conformation.atomistic_placement`` defaults to ``meander``; null
+        asks for the historic placement. A network with POSS nodes takes the
+        configured placement like any other since 0.4.5, which places each
+        cage whole (:meth:`_place_atomistic`); before, it fell back to the
+        historic placement unless one was named, and a named one was refused.
+        A ``conformation.entanglement.target_Z`` is met by the coil's radius,
+        so it makes the placement ``coil``; naming another one with it is
+        refused.
         """
         if hasattr(self, "_placement_used"):
             return self._placement_used
         conf = self.config.conformation
         shape = conf.atomistic_placement
-        b = self._builder
-        poss = b is not None and bool(b.poss_usage or getattr(b, "poss_structure", None))
-        if shape is not None and poss and "atomistic_placement" not in conf.model_fields_set:
-            print("  POSS nodes: the historic atomistic placement (the default "
-                  "meander does not place POSS cages)")
-            shape = None
+        named = "atomistic_placement" in conf.model_fields_set
+        if conf.entanglement.target_Z is not None:
+            if named and shape != "coil":
+                raise ValueError(
+                    f"conformation.entanglement.target_Z on the atomistic route is "
+                    f"met by the coil radius, and atomistic_placement is "
+                    f"{shape!r}; set it to 'coil' or leave it out")
+            shape = "coil"
         self._placement_used = shape
         return shape
+
+    def _place_cages(self, mol, scale: float, specs, box):
+        """Every POSS node as a rigid body, and the strands' ends on its arms.
+
+        The node's shape is embedded once per kind
+        (:func:`topon.chemistry.node_bodies.node_templates`: the simbox's checked
+        embedding of the node's own fragment, then held at the force field's
+        r0), its centre set on the junction and its stubs turned towards the
+        strands they bond to (:func:`topon.conformation.atomistic.place_bodies`).
+        Each strand bonded to a cage then starts (or ends) at its atom
+        bonded to the cage, set where the template has it (the stub) and
+        held there, with the cage's attachment atom as its lead, so the
+        settle reads the angle at it and the attachment atom's own hydrogens,
+        placed with the cage, stay clear of it; a strand too short for that
+        starts on the attachment atom where the cage put it. A designed
+        path loses its point for each end moved, and since it was drawn from
+        the junction, the cage's centre, it is led out of the cage round it
+        along its own curve
+        (:func:`~topon.conformation.atomistic.lead_out_of_body`). A strand whose chord runs
+        through a cage's core is given a detour round it
+        (:func:`~topon.conformation.atomistic.cage_detour`). Returns the
+        bodies, the specs with their ends moved, the stub atoms' positions,
+        and what the templates came out as. A network without POSS nodes
+        returns no bodies and the specs as they were.
+        """
+        from topon.chemistry.node_bodies import node_templates
+        from topon.conformation.atomistic import (cage_detour, keep_off_points,
+                                                  lead_out_of_body, place_bodies)
+
+        templates = node_templates(mol, self._builder, getattr(self, "_bond_r0", {}) or {})
+        if not templates:
+            return [], specs, {}, None
+        index = {}
+        for k, s in enumerate(specs):
+            if s.backbone:
+                index[(s.start_atom, s.backbone[0])] = (k, 0)
+                index[(s.end_atom, s.backbone[-1])] = (k, -1)
+        shapes = []
+        cage_nodes = set()
+        for t in templates:
+            heavy = np.array([mol.GetAtomWithIdx(int(a)).GetAtomicNum() > 1
+                              for a in t.atoms], bool)
+            stubs, stub_ids, targets, attach = [], [], [], {}
+            for a, s, x in t.stubs:
+                hit = index.get((int(a), int(s)))
+                if hit is None:
+                    continue
+                k, end = hit
+                spec = specs[k]
+                attach.setdefault(k, set()).add(end)
+                stubs.append(x)
+                stub_ids.append((int(a), int(s)))
+                if spec.edge[0] == spec.edge[1]:
+                    targets.append(None)        # a loop back to this cage
+                else:
+                    targets.append((spec.end - spec.start) if end == 0
+                                   else (spec.start - spec.end))
+            at = np.asarray(self.graph.nodes[t.node].get("pos", (0.0, 0.0, 0.0)),
+                            float) * scale
+            shapes.append({"node": t.node, "atoms": t.atoms, "xyz": t.xyz, "heavy": heavy,
+                           "centre": t.centre, "core": t.core, "bonds": t.bonds,
+                           "faces": t.faces, "stubs": stubs, "stub_ids": stub_ids,
+                           "targets": targets,
+                           "at": at, "attach": {k: sorted(v) for k, v in attach.items()}})
+            cage_nodes.add(t.node)
+        chords = (np.array([s.start for s in specs]), np.array([s.end for s in specs]))
+        points = [np.asarray(self.graph.nodes[n].get("pos", (0.0, 0.0, 0.0)), float) * scale
+                  for n in self._builder.node_map if n not in cage_nodes]
+        bodies = place_bodies(shapes, box, chords=chords,
+                              chord_strands=list(range(len(specs))), points=points)
+        # where each cage holds the strand atom bonded to it: its stub
+        stub_at, lead, stub_body = {}, {}, {}
+        for body, sh in zip(bodies, shapes):
+            at = {int(a): x for a, x in zip(body.atoms, body.xyz)}
+            for (a, s_atom), x in zip(sh["stub_ids"], sh["stubs"]):
+                stub_at[s_atom] = body.centre + body.rotation @ (
+                    np.asarray(x, float) - np.asarray(sh["centre"], float))
+                lead[s_atom] = (a, at[a])
+                stub_body[s_atom] = body
+        # where every cage atom is, for an end left on its attachment atom
+        cage_at = {int(a): x for body in bodies for a, x in zip(body.atoms, body.xyz)}
+        moved, held, detours = [], {}, 0
+        led, designed = 0, []
+        for k, s in enumerate(specs):
+            start_atom, end_atom = s.start_atom, s.end_atom
+            backbone, r0, th = list(s.backbone), list(s.r0), list(s.theta0)
+            start, end = s.start, s.end
+            path = None if s.path is None else np.asarray(s.path, float)
+            lead_start = lead_end = None
+            if backbone and int(backbone[0]) in stub_at and len(backbone) >= 2:
+                a, xa = lead[int(backbone[0])]
+                lead_start = (a, xa, r0[0], th[0])
+                start_atom, start = backbone[0], stub_at[int(backbone[0])]
+                held[int(start_atom)] = start
+                backbone, r0, th = backbone[1:], r0[1:], th[1:]
+                if path is not None:      # a designed path, one point per atom
+                    path = path[1:]
+            elif int(start_atom) in cage_at:
+                # a strand too short to start on its stub starts on the
+                # attachment atom, where the cage put it (not the junction,
+                # which is the cage's centre)
+                start = cage_at[int(start_atom)]
+            if backbone and int(backbone[-1]) in stub_at and len(backbone) >= 2:
+                a, xa = lead[int(backbone[-1])]
+                lead_end = (a, xa, r0[-1], th[-1])
+                end_atom, end = backbone[-1], stub_at[int(backbone[-1])]
+                held[int(end_atom)] = end
+                backbone, r0, th = backbone[:-1], r0[:-1], th[:-1]
+                if path is not None:
+                    path = path[:-1]
+            elif int(end_atom) in cage_at:
+                end = cage_at[int(end_atom)]
+            vec = end - start
+            vec = vec - box * np.round(vec / box)
+            if path is not None and len(path) and (lead_start or lead_end):
+                # a designed path is drawn from its junction, the cage's
+                # centre, so it is led out of the cage round it, along its
+                # own curve
+                # in the strand's own image: the pair is drawn in the image
+                # of its first strand, a whole cell away for the other
+                drawn = path - box * np.round((path[0] - start) / box)
+                out_s = out_e = None
+                if lead_start:
+                    out_s = lead_out_of_body(start, drawn, start + vec,
+                                             stub_body[int(start_atom)], box)
+                led_path = drawn if out_s is None else out_s
+                if lead_end:
+                    out_e = lead_out_of_body(start + vec, led_path[::-1], start,
+                                             stub_body[int(end_atom)], box)
+                    if out_e is not None:
+                        led_path = out_e[::-1]
+                if out_s is not None or out_e is not None:
+                    led += 1
+                    path = led_path
+                designed.append(([start_atom] + list(backbone) + [end_atom],
+                                 np.vstack([start, drawn, start + vec]),
+                                 np.vstack([start, led_path, start + vec])))
+            elif path is not None:
+                chain = np.vstack([start, path, start + vec])
+                designed.append(([start_atom] + list(backbone) + [end_atom], chain, chain))
+            cls = s.cls
+            if cls == "loop" and (lead_start or lead_end or start_atom != end_atom):
+                # a loop on a cage leaves it twice, from two stubs or two
+                # corners, so its two ends are apart: drawn as a strand
+                # between them
+                cls = "bridge"
+            spec = type(s)(edge=s.edge, cls=cls, start_atom=start_atom,
+                           end_atom=end_atom, backbone=backbone,
+                           start=np.asarray(start, float),
+                           end=np.asarray(start, float) + vec,
+                           r0=r0, theta0=th, away_from=s.away_from,
+                           path=path, lead_start=lead_start, lead_end=lead_end)
+            if path is None and cls != "loop":
+                # a chord through a cage's core (a loop between two corners
+                # of a bare cage, or a bridge past a cage on a third site) is
+                # drawn round the cage: no turn about the chord takes it out
+                for body in bodies:
+                    via = cage_detour(spec.start, spec.end, body, box,
+                                      attached=body.attach.get(k, ()))
+                    if via is not None:
+                        spec.via = via
+                        spec.keep_off = keep_off_points(body, spec.start, box)
+                        detours += 1
+                        break
+            moved.append(spec)
+        record = {"cages": len(bodies),
+                  "detoured": detours,
+                  "templates": len({t.signature for t in templates}),
+                  # of them, how many the stored shapes gave
+                  "templates_stored": len({t.signature for t in templates
+                                           if t.source == "stored"}),
+                  "seeds": sorted({t.seed for t in templates}),
+                  "atoms_per_cage": sorted({len(t.atoms) for t in templates}),
+                  "template_bond_strain_max": round(max(t.max_strain for t in templates), 5),
+                  "core_radius": round(max(t.core for t in templates), 4)}
+        if led:
+            # the designed paths led out of their cages, and whether leading
+            # them out took a bond through a bond of any designed path, theirs
+            # or another's (which would change a designed winding)
+            from topon.conformation.segments import passing_pairs
+
+            ids = [np.asarray(c[0], int) for c in designed]
+            sizes = np.array([len(x) for x in ids])
+            starts_ = np.concatenate([[0], np.cumsum(sizes)[:-1]])
+            rows = np.concatenate([np.stack([np.arange(s0, s0 + m - 1),
+                                             np.arange(s0 + 1, s0 + m)], axis=1)
+                                   for s0, m in zip(starts_, sizes)])
+            flat = np.concatenate(ids)
+            before = np.vstack([c[1] for c in designed])
+            after = np.vstack([c[2] for c in designed])
+            passed = passing_pairs(before, after, rows, flat[rows], box)[0]
+            record["led_out"] = led
+            record["led_out_passages"] = int(len(passed))
+        return bodies, moved, held, record
 
     def _place_atomistic(self, mol, scale: float, chem_dir) -> None:
         """Backbones as chains at bond length, and every other atom off them.
@@ -1463,7 +1690,10 @@ class Pipeline:
         ``conformation.atomistic_placement`` picks the shape. The result goes
         out through the same displacement files as the historic placement (in
         lattice units, since the files carry the scale), so the conformation
-        stage reads it unchanged.
+        stage reads it unchanged. A POSS node is placed whole
+        (:meth:`_place_cages`), and its atoms go in the nodes file,
+        written again with them, so stage 5's overlap pass holds the cage
+        as it holds the junctions.
         """
         from topon.conformation.atomistic import place_network
         from topon.conformation.entanglement.realize import entangled_backbone_paths
@@ -1471,37 +1701,72 @@ class Pipeline:
         from topon.utils import write_lammps_displacement_file
 
         b = self._builder
-        if b.poss_usage or getattr(b, "poss_structure", None):
-            raise ValueError(
-                "conformation.atomistic_placement does not place POSS cages; "
-                "leave it unset for a network with POSS nodes")
         conf = self.config.conformation
         shape = self._atomistic_placement()
         box = np.asarray(self.dims, float) * scale
         specs = self._atomistic_strand_specs(mol, scale)
 
         ent_cfg = self.config.assignment.entanglements
+        sites = {}
         drawn = entangled_backbone_paths(
             self.graph, self.dims, {s.edge: s.backbone for s in specs},
-            method=ent_cfg.method, kink_params=ent_cfg.kink_params.model_dump())
+            method=ent_cfg.method, kink_params=ent_cfg.kink_params.model_dump(),
+            sites=sites)
         for s in specs:
             if s.edge in drawn:
                 s.path = np.asarray(drawn[s.edge], float) * scale
+        # Each designed braid in A, once per pair, for the placement to keep
+        # the other strands out of.
+        braids = list({id(v): {"mid": v["mid"] * scale, "axis": v["axis"],
+                               "half": v["half"] * scale,
+                               "radius": v["radius"] * scale}
+                       for v in sites.values()}.values())
+        # POSS nodes, placed whole before any strand is drawn
+        bodies, specs, stub_at, cage_record = self._place_cages(mol, scale, specs, box)
+        cage_nodes = {body.node for body in bodies}
+        # every cage atom, and the strand atoms its stubs hold
+        body_atoms = {int(a): x for body in bodies for a, x in zip(body.atoms, body.xyz)}
+        body_atoms.update(stub_at)
 
         anchors = {}
         for node, ref in b.node_map.items():
+            if node in cage_nodes:
+                continue
             anchors[int(ref)] = (np.asarray(self.graph.nodes[node].get(
                 "pos", (0.0, 0.0, 0.0)), float) * scale)
+        anchors.update(stub_at)
         neighbours = {a.GetIdx(): [n.GetIdx() for n in a.GetNeighbors()]
                       for a in mol.GetAtoms()}
-        # Drawn from the global stream, so np.random.seed pins it as it pins
-        # every other draw of a pipeline run.
-        rng = np.random.default_rng(int(np.random.randint(0, 2 ** 31 - 1)))
-        coords, report = place_network(
-            specs, neighbours, anchors, getattr(self, "_bond_r0", {}), box,
-            shape, rng, clearance=conf.atomistic_clearance, keep_frames=True,
-            waves=conf.meander_waves, min_bond=conf.min_bond,
-            min_sep=conf.min_self_separation, jitter=conf.path_jitter)
+        # From a stream of its own, keyed on the study name, as stage 5's
+        # noise and the historic side chains are. It used to take its seed
+        # from NumPy's global stream, which `topon generate` never seeds, so
+        # a config with every seed pinned placed different backbones on
+        # every run. A fresh generator from the same key draws the same
+        # network, which is what the coil-radius search needs.
+        study = self.config.study.name
+
+        def stream():
+            return _stable_rng("placement", study)
+
+        knobs = dict(waves=conf.meander_waves, min_bond=conf.min_bond,
+                     min_sep=conf.min_self_separation, jitter=conf.path_jitter,
+                     radius=conf.atomistic_coil_radius,
+                     parallel_strands=conf.parallel_strands)
+        target = conf.entanglement.target_Z
+
+        def place(radius):
+            return place_network(
+                specs, neighbours, anchors, getattr(self, "_bond_r0", {}), box,
+                shape, stream(), clearance=conf.atomistic_clearance,
+                keep_frames=True, braids=braids, bodies=bodies or None,
+                **{**knobs, "radius": radius})
+
+        if target is None:
+            coords, report = place(knobs["radius"])
+            z_target = None
+        else:
+            coords, report, z_target = self._place_for_target(
+                specs, box, shape, stream, knobs, float(target), place, mol)
         if report.frames is not None:
             # The settling pass read as a trajectory: no backbone bond may
             # have gone through another on the way.
@@ -1513,9 +1778,15 @@ class Pipeline:
                       for k, x in enumerate(steps)]
             bonds, strand = [], []
             for k, s in enumerate(specs, start=1):
-                chain = [s.start_atom] + list(s.backbone) + [s.end_atom]
+                chain = (([s.lead_start[0]] if s.lead_start else []) + [s.start_atom]
+                         + list(s.backbone) + [s.end_atom]
+                         + ([s.lead_end[0]] if s.lead_end else []))
                 bonds += [(a + 1, b + 1) for a, b in zip(chain[:-1], chain[1:])]
                 strand += [k] * (len(chain) - 1)
+            # and every strand against the cages' bonds, which do not move
+            for k, body in enumerate(bodies, start=len(specs) + 1):
+                bonds += [(int(a) + 1, int(c) + 1) for a, c in body.bonds]
+                strand += [k] * len(body.bonds)
             passed = find_crossings(frames, np.array(bonds, int), np.array(strand, int))
             report.settle["passages"] = len(passed.crossings)
             report.frames = None
@@ -1523,7 +1794,7 @@ class Pipeline:
         backbone_ids = {int(i) for s in specs for i in s.backbone}
         files = {"backbone": {}, "grafts": {}, "pendant": {}, "hydrogens": {}}
         for idx, xyz in coords.items():
-            if idx in anchors:
+            if idx in anchors or idx in body_atoms:
                 continue
             key = ("backbone" if idx in backbone_ids else
                    "hydrogens" if mol.GetAtomWithIdx(idx).GetAtomicNum() == 1
@@ -1536,8 +1807,25 @@ class Pipeline:
                           ("hydrogens", "system_hydrogens.displace")):
             write_lammps_displacement_file(files[key], scale, scale, scale,
                                            str(chem_dir / name), key)
+        if bodies:
+            # The nodes file again, every cage atom in it where the cage was
+            # placed: stage 4 wrote the attachment atom on the junction
+            nodes = {}
+            for node, ref in b.node_map.items():
+                if node in cage_nodes:
+                    continue
+                primary = ref[0] if isinstance(ref, (list, tuple)) else ref
+                nodes[int(primary)] = tuple(self.graph.nodes[node].get("pos", (0.0, 0.0, 0.0)))
+            for idx, xyz in body_atoms.items():
+                nodes[idx] = tuple(np.asarray(xyz, float) / scale)
+            write_lammps_displacement_file(nodes, scale, scale, scale,
+                                           str(chem_dir / "system_nodes.displace"), "nodes")
         summary = report.summary()
         summary["unplaced_atoms"] = int(missing)
+        if z_target is not None:
+            summary["z_target"] = z_target
+        if cage_record is not None:
+            summary.setdefault("cages", {}).update(cage_record)
         worst = sorted((r for r in report.strands
                         if r.get("chord_over_extended") is not None),
                        key=lambda r: -r["chord_over_extended"])[:5]
@@ -1548,6 +1836,81 @@ class Pipeline:
               f"{summary['routines']}, {summary['taut']} taut, "
               f"{summary['over_contour']} over their contour, backbone bond / r0 "
               f"{summary['backbone_bond_ratio']}")
+        par = summary.get("parallel")
+        if par:
+            print(f"  Secondary loops: {par['drawn_apart']} of {par['strands']} strands on "
+                  f"{par['chords']} shared chords drawn on their own side")
+        br = summary.get("braids")
+        if br:
+            print(f"  Designed braids: {br['braids']}; strands turned out of them "
+                  f"{br['turned_clear']} of {br['inside']} found inside, "
+                  f"{len(br['left_inside'])} left inside")
+        rg = summary.get("rings")
+        if rg:
+            through = rg.get("bonds_through") or {}
+            print(f"  Rings in the backbones: {rg['stretches']} stretches"
+                  f"{' settled whole' if rg['held_flat'] else ' (not settled)'}, "
+                  f"{rg['closed']} closed on their drawn stretch (largest fit offset "
+                  f"{rg['fit_off_max']:.3f} A); bonds through a ring as placed: "
+                  f"{through.get('backbone', 0)} backbone, {through.get('other', 0)} other")
+            if through.get("backbone") or through.get("other"):
+                # counted, not moved: see USAGE on rings in a backbone
+                import warnings as _warnings
+                _warnings.warn(
+                    f"{through.get('backbone', 0)} backbone bond(s) and "
+                    f"{through.get('other', 0)} other bond(s) pass through the face of "
+                    f"a ring a backbone runs through, as placed; the first stage "
+                    f"starts with them there", RuntimeWarning, stacklevel=2)
+        pr = summary.get("pendant_rings")
+        if pr:
+            through_p = pr.get("bonds_through") or {}
+            print(f"  Pendant rings: {pr['rings']} placed whole, {pr['turned']} turned off a "
+                  f"bond through them, {pr['left_threaded']} with none clear; bonds through "
+                  f"a pendant ring as placed: {through_p.get('backbone', 0)} backbone, "
+                  f"{through_p.get('other', 0)} other")
+            if through_p.get("backbone") or through_p.get("other"):
+                # counted, not moved: see USAGE on pendant rings
+                import warnings as _warnings
+                _warnings.warn(
+                    f"{through_p.get('backbone', 0)} backbone bond(s) and "
+                    f"{through_p.get('other', 0)} other bond(s) pass through the face of "
+                    f"a pendant ring, as placed; the first stage starts with them there",
+                    RuntimeWarning, stacklevel=2)
+        cg = summary.get("cages")
+        if cg:
+            through = cg.get("bonds_through_faces")
+            print(f"  POSS cages placed whole: {cg['cages']} ({cg['templates']} "
+                  f"template(s), {cg.get('templates_stored', 0)} stored, bonds within "
+                  f"{100 * cg['template_bond_strain_max']:.2f} % "
+                  f"of r0); strands turned out of them {cg.get('turned_clear', 0)} of "
+                  f"{cg.get('inside', 0)} found inside"
+                  + (f" ({cg['near_arms']} by another cage's arms)" if cg.get("near_arms") else "")
+                  + f", {len(cg.get('left_inside', []))} "
+                  f"left inside, {cg.get('detoured', 0)} drawn round one"
+                  + (f", {cg['led_out']} designed led out of one "
+                     f"({cg['led_out_passages']} passages)" if cg.get("led_out") else "")
+                  + f"; bonds through a cage face {through}; every bond / r0 "
+                  f"{cg.get('bond_ratio_all')}")
+            if cg.get("led_out_passages"):
+                import warnings as _warnings
+                _warnings.warn(
+                    f"leading {cg['led_out']} designed path(s) out of their cages took "
+                    f"{cg['led_out_passages']} pair(s) of their bonds through each "
+                    f"other; a designed winding may have changed", RuntimeWarning,
+                    stacklevel=2)
+            if through:
+                import warnings as _warnings
+                _warnings.warn(
+                    f"{through} bond(s) pass through a POSS cage face as placed; no "
+                    f"relaxation takes a bond back out through a ring",
+                    RuntimeWarning, stacklevel=2)
+            span = cg.get("bond_ratio_all")
+            if span and (span["min"] < 0.85 or span["max"] > 1.15):
+                import warnings as _warnings
+                _warnings.warn(
+                    f"a bond of the POSS build is placed at {span['min']:.3f} to "
+                    f"{span['max']:.3f} of its r0, more than 15 % off",
+                    RuntimeWarning, stacklevel=2)
         c = summary.get("settle")
         if c:
             print(f"  Backbones settled in {c['rounds']} rounds: bond pairs closer "
@@ -1556,18 +1919,132 @@ class Pipeline:
                   f"{c['angle_error_before']} -> {c['angle_error_after']}, largest "
                   f"shift {c['largest_shift']:.2f} A, {c.get('passages')} passages "
                   f"on the way")
-            if c["pairs_below_after"]:
+            rt = c.get("ring_threads")
+            if rt:
+                lay = (c.get("ring_lay") or {}).get("passages", 0)
+                print(f"  Ring shapes laid on their stretches: {lay} passage(s) of backbone "
+                      f"bonds; backbone bonds through a ring's face: {rt['drawn']} as the "
+                      f"settle starts, {rt['after']} settled")
+                if lay:
+                    import warnings as _warnings
+                    _warnings.warn(
+                        f"laying the ring shapes on their stretches carried {lay} pair(s) of "
+                        f"backbone bonds through each other, before the settle's rounds (whose "
+                        f"passages are counted apart)", RuntimeWarning, stacklevel=2)
+            # pairs left short, or a settle stopped at its round cap with
+            # none short (every build since 0.4.5)
+            from topon.conformation.atomistic import settle_warning
+
+            message = settle_warning(c)
+            if message:
                 import warnings as _warnings
-                _warnings.warn(
-                    f"{c['pairs_below_after']} pair(s) of backbone bonds are still "
-                    f"closer than {c['clearance']} A after {c['rounds']} rounds "
-                    f"(closest {c['closest_after']:.2f} A); the first stage may "
-                    f"push them through each other", RuntimeWarning, stacklevel=2)
+                _warnings.warn(message, RuntimeWarning, stacklevel=2)
         try:
             record_stage(self.output_dir, "placement", summary,
                          study=self.config.study.name)
         except Exception as exc:
             print(f"  (could not write the placement record: {exc})")
+
+    def _z_meter(self, specs, box, mol, seeds: int):
+        """Z1+ per bridge of backbones given as one path per strand, end to end.
+
+        Read on the points the gates read (one atom per repeat unit, between
+        the two junctions; :func:`topon.analysis.z1plus.export_system`), with
+        the junctions jittered as the export does, averaged over ``seeds``.
+        Returns ``measure(paths) -> float``.
+        """
+        from topon.analysis.z1plus import (Z1PlusFailed, jitter_ends, run_z1,
+                                           why_unavailable)
+
+        why = why_unavailable()
+        if why:
+            raise RuntimeError(
+                f"conformation.entanglement.target_Z on the atomistic route is "
+                f"met by measuring Z1+ on the build, and Z1+ is not available: "
+                f"{why}")
+        heads = {tuple(r["edge"]): r["repeat_heads"]
+                 for r in self._builder.strand_table(mol)["strands"]}
+        rows, cls = [], []
+        for spec in specs:
+            chain = [spec.start_atom] + list(spec.backbone) + [spec.end_atom]
+            where = {a: i for i, a in enumerate(chain)}
+            # in chain order: a dangling strand's table lists them from its
+            # other end
+            idx = sorted(where[h] for h in heads.get(spec.edge, []) if h in where)
+            idx = [0] + [i for i in idx if 0 < i < len(chain) - 1] + [len(chain) - 1]
+            rows.append(idx)
+            cls.append(spec.cls)
+        bridge = np.array([c == "bridge" for c in cls])
+
+        def measure(paths) -> float:
+            chains = [np.asarray(p, float)[r] for p, r in zip(paths, rows)]
+            zs, k, why = [], 0, None
+            while len(zs) < seeds and k < 3 * seeds:
+                try:
+                    z = run_z1(jitter_ends(chains, k), box, partners=False).Z
+                    zs.append(float(np.mean(z[bridge])) if bridge.any() else float(np.mean(z)))
+                except Z1PlusFailed as exc:
+                    why = exc
+                k += 1
+            if not zs:
+                raise RuntimeError(f"Z1+ failed on every seed of the drawn network: {why}")
+            return float(np.mean(zs))
+
+        return measure
+
+    def _place_for_target(self, specs, box, shape, stream, knobs, target, place, mol):
+        """Meet ``target_Z`` with the coil radius, on the build.
+
+        The radius is searched on the drawn network (every strand drawn from
+        a fresh ``stream()``, the placement's own, at each try, so the
+        reading moves only with the radius), the network is settled once at the radius found and read
+        again, and if settling moved it more than 5 % (or the controller's
+        tolerance, if tighter) the search runs once more, aimed off by what
+        settling added. Z1+ is read over 2 seeds while searching and 4 on the
+        settled build. ``met`` is read against the controller's tolerance.
+        """
+        from topon.conformation.atomistic import coil_radius_for, draw_network
+
+        ctl = self.config.conformation.entanglement.controller
+        search_meter = self._z_meter(specs, box, mol, seeds=2)
+        check_meter = self._z_meter(specs, box, mol, seeds=4)
+
+        def drawn_z(radius):
+            paths, _infos, _shared = draw_network(specs, shape, stream(),
+                                                  **{**knobs, "radius": radius})
+            return search_meter(paths)
+
+        def settled_z(coords):
+            return check_meter([np.vstack([s.start] + [coords[int(i)] for i in s.backbone]
+                                          + [s.end]) for s in specs])
+
+        close = min(float(ctl.tolerance), 0.05)
+        aim, rounds = target, []
+        for _attempt in range(2):
+            found = coil_radius_for(aim, drawn_z)
+            coords, report = place(found.radius)
+            z = settled_z(coords)
+            rounds.append({"aim": round(aim, 4), **found.as_dict(),
+                           "z_settled": round(z, 4)})
+            print(f"  Z target {target:g}: coil radius {found.radius:.2f} A "
+                  f"({found.status}, {len(found.trace)} draws), Z1+ per bridge "
+                  f"{found.z:.3f} drawn, {z:.3f} settled")
+            if (abs(z - target) <= close * target
+                    or found.status in ("floor", "ceiling")):
+                break
+            aim = max(1e-3, aim - (z - found.z))
+        final = rounds[-1]
+        met = abs(final["z_settled"] - target) <= ctl.tolerance * target
+        if not met:
+            import warnings as _warnings
+            _warnings.warn(
+                f"target_Z {target:g}: the settled build reads "
+                f"{final['z_settled']:.3f} per bridge at coil radius "
+                f"{final['radius']:.2f} A ({final['status']}), outside the "
+                f"tolerance {ctl.tolerance:g}", RuntimeWarning, stacklevel=2)
+        return coords, report, {"target": target, "radius": final["radius"],
+                                "z_settled": final["z_settled"], "met": bool(met),
+                                "tolerance": ctl.tolerance, "rounds": rounds}
 
     def _record_defects(self) -> None:
         """Put the defects stage's record in the run manifest.
@@ -1747,6 +2224,8 @@ class Pipeline:
         # needs to know which they are; stage 4 recorded them.
         backbone = {"backbone_types": getattr(self, "_backbone_types", None),
                     "n_atom_types": getattr(self, "_n_atom_types", None)}
+        if getattr(self, "_ring_types", None):
+            backbone["ring_types"] = self._ring_types
         if (model == "atomistic" and gen.atomistic_protocol == "hard_backbone"
                 and placed is None):
             import warnings as _warnings

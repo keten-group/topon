@@ -37,6 +37,9 @@ _PEROXIDE_FIX_APPLIED = True
 #: capped this way; the pipeline did not before 0.4.0.
 _METHYL_CAPPED = {"Si": 4}
 
+#: The repeat unit every atomistic graft side chain is built of.
+_PDMS_SMILES = "[Si](C)(C)O"
+
 
 class ChemistryBuilderError(ValueError):
     """The graph asks for a chemistry the configuration does not define."""
@@ -425,6 +428,16 @@ class ChemistryBuilder:
             Corner 7: (+1, +1, +1)
         
         The IsoOctyl arms extend along the space diagonal (outward from cage center).
+
+        The real AM0270 has -CH2CH2CH2-NH2 on corner 0, and a cure bonds its
+        N to an opened epoxide. The strands here carry no epoxide linker, so
+        the propyl's end carbon bonds straight to the strand's end atom,
+        standing in for the N and the linker: the head Si when this node is
+        the strand's u end (C-Si, a carbosilane), the tail O when it is the
+        v end (C-O, an alkoxysilane). An N kept on the arm would bond to that
+        Si or O, which the cure does not make; keeping it would mean building
+        the linker on the strand's end. So it is not built (``topon simbox``
+        builds the amine).
         """
         from rdkit import Chem
         
@@ -913,16 +926,55 @@ class ChemistryBuilder:
         self.edge_backbone_path[edge_id] = list(chain_idxs)
         self.edge_repeat_heads[edge_id] = list(chain_idxs)
 
+    def _repeat_units(self, edge_data: dict, dp: int, monomer_config) -> tuple[list, bool]:
+        """The monomer of every repeat of a strand, in order from its ``u`` end.
+
+        A copolymer strand carries ``monomer_sequence``, one monomer name per
+        repeat, which ``AssignmentManager`` writes from
+        ``assignment.copolymer``; every other strand repeats its edge type's
+        monomer ``dp`` times. Returns ``(units, sequenced)``.
+        """
+        seq = edge_data.get("monomer_sequence")
+        if not seq:
+            return [monomer_config] * dp, False
+        if len(seq) != dp:
+            raise ChemistryBuilderError(
+                f"monomer_sequence has {len(seq)} repeats for a strand of DP {dp}")
+        missing = sorted({m for m in seq if m not in self.config.monomers})
+        if missing:
+            hint = ""
+            if missing == [edge_data.get("edge_type", "A")]:
+                hint = (f"; a copolymer entry with no composition writes the edge "
+                        f"type's name ({missing[0]!r}) for every repeat, so give "
+                        f"assignment.copolymer.per_edge_type[{missing[0]!r}] a composition")
+            raise ChemistryBuilderError(
+                f"monomer_sequence names {missing}, which chemistry.monomers does not "
+                f"define (it has {sorted(self.config.monomers)}){hint}")
+        return [self.config.monomers[m] for m in seq], True
+
     def _build_chain_atomistic(self, u, v, key, dp, monomer_config, att_u, att_v, edge_data: dict = None):
         """Build an atomistic chain with smart bridge detection.
 
-        When ``edge_data['graft_positions']`` is non-empty AND the monomer
-        SMILES matches the PDMS reference ``[Si](C)(C)O``, falls back to a
-        per-repeat builder (``_build_pdms_chain_with_grafts``) that emits a
-        side chain at each marked backbone Si and records the per-edge graft
-        atom map. For non-PDMS monomers with grafts, a warning is emitted
-        and grafts are skipped — the SMILES-concatenation path can't add
-        conditional side chains at specific repeat positions.
+        The strand is ``dp`` repeat units: its edge type's monomer every
+        time, or on a copolymer strand the monomer ``monomer_sequence`` names
+        for each repeat in turn (before 0.4.5 the atomistic route read no
+        sequence and built every strand of the edge type's monomer). The
+        junction at ``u`` bonds to the first repeat's head and the one at
+        ``v`` to the last repeat's tail.
+
+        Without grafts the chain is the repeats' SMILES concatenated. When
+        ``edge_data['graft_positions']`` is non-empty it is built repeat by
+        repeat (``_build_chain_per_repeat``), which puts a PDMS side chain in
+        place of the last methyl on the head atom of each grafted repeat. A
+        grafted repeat whose monomer has no methyl on its head atom is left
+        ungrafted, with a warning. The side chain is PDMS whatever
+        ``graft_monomer`` names, and a strand asking for another says so in
+        a warning.
+
+        Each repeat's head (the first atom of its SMILES), and the tail the
+        next repeat bonds to, come from its monomer (``_unit_template``):
+        the ``u`` junction bonds to the first head, the ``v`` junction to the
+        last tail, and the backbone runs from one to the other.
         """
         from rdkit import Chem
 
@@ -930,38 +982,53 @@ class ChemistryBuilder:
             edge_data = {}
 
         edge_id = (u, v, key)
-        smiles = monomer_config.smiles
-        chain_head_atom = monomer_config.chain_head
-        chain_tail_atom = monomer_config.chain_tail
+        units, sequenced = self._repeat_units(edge_data, dp, monomer_config)
+        chain_head_atom = units[0].chain_head if units else monomer_config.chain_head
+        chain_tail_atom = units[-1].chain_tail if units else monomer_config.chain_tail
 
-        graft_positions = list(edge_data.get("graft_positions") or [])
+        try:
+            templates = [_unit_template(m.smiles) for m in units]
+        except ValueError as exc:
+            warnings.warn(f"Skipping edge ({u}, {v}): {exc}", RuntimeWarning, stacklevel=2)
+            return
+
         graft_dp = int(edge_data.get("graft_dp", 5))
-        use_per_repeat = bool(graft_positions) and smiles == "[Si](C)(C)O"
-
-        if graft_positions and not use_per_repeat:
+        positions = [int(k) for k in edge_data.get("graft_positions") or []
+                     if 0 <= int(k) < dp]
+        skipped = sorted({k for k in positions if templates[k].graft_site is None})
+        if skipped:
+            names = sorted({units[k].smiles for k in skipped})
             warnings.warn(
-                f"Edge ({u},{v}): graft_positions set but monomer SMILES "
-                f"is {smiles!r} — atomistic graft is currently implemented "
-                f"only for PDMS '[Si](C)(C)O'; grafts skipped.",
+                f"Edge ({u},{v}): no graft at repeat(s) {skipped}: the monomer "
+                f"({', '.join(names)}) has no methyl on its head atom for a side "
+                f"chain to replace; those grafts skipped.",
                 RuntimeWarning, stacklevel=2,
             )
-            graft_positions = []
+        graft_positions = [k for k in positions if k not in skipped]
+        side = edge_data.get("graft_monomer")
+        side_cfg = self.config.monomers.get(side) if side else None
+        if graft_positions and side and (side_cfg is None or side_cfg.smiles != _PDMS_SMILES):
+            warnings.warn(
+                f"Atomistic side chains are built of PDMS {_PDMS_SMILES}; the side-chain "
+                f"monomer {side!r}"
+                + (f" ({side_cfg.smiles})" if side_cfg is not None else "")
+                + " is not read.",
+                RuntimeWarning, stacklevel=2,
+            )
 
         edge_grafts: list[tuple[float, list[int]]] = []
 
-        if use_per_repeat:
-            chain_idxs, edge_grafts, backbone = self._build_pdms_chain_with_grafts(
-                dp, graft_positions, graft_dp
-            )
+        if graft_positions:
+            chain_idxs, edge_grafts, backbone, heads, chain_tail = (
+                self._build_chain_per_repeat(units, graft_positions, graft_dp))
             if not chain_idxs:
                 return
             chain_head = chain_idxs[0]
-            chain_tail = chain_idxs[-1]
         else:
-            # SMILES-concatenation path (fast for non-grafted PDMS or any
-            # custom monomer where per-position grafting isn't supported).
+            # SMILES-concatenation path (no grafts on this strand).
             try:
-                chain_mol = self._create_chain_from_smiles(smiles, dp)
+                chain_mol = self._create_chain_from_smiles(
+                    [m.smiles for m in units] if sequenced else monomer_config.smiles, dp)
             except ValueError as exc:
                 warnings.warn(
                     f"Skipping edge ({u}, {v}): {exc}",
@@ -983,14 +1050,24 @@ class ChemistryBuilder:
             if not chain_idxs:
                 return
 
+            # Each repeat's first atom, counted along the concatenation
+            # (repeats of different monomers differ in size), and the last
+            # repeat's tail. For PDMS and PEG the tail is the chain's last
+            # atom; for a monomer whose SMILES ends in a branch (CC(C)) it is
+            # not, and before 0.4.5 the junction was bonded to the branch.
+            heads, at = [], 0
+            for t in templates:
+                heads.append(chain_idxs[at])
+                at += t.n_atoms
+            tail_local = at - templates[-1].n_atoms + templates[-1].tail
             chain_head = chain_idxs[0]
-            chain_tail = chain_idxs[-1]
+            chain_tail = chain_idxs[tail_local]
             # The backbone is the shortest route from the chain's head atom to
             # its tail through its own atoms (Si-O-Si-O... for PDMS), read on
             # the chain before it joins the network, where no shortcut
             # through a junction exists yet.
-            local = (list(Chem.GetShortestPath(chain_mol, 0, len(chain_idxs) - 1))
-                     if len(chain_idxs) > 1 else [0])
+            local = (list(Chem.GetShortestPath(chain_mol, 0, tail_local))
+                     if tail_local > 0 else [0])
             backbone = [chain_idxs[i] for i in local]
 
         bridge_u = bridge_v = None
@@ -998,7 +1075,7 @@ class ChemistryBuilder:
         # Check if need bridge on left side
         node_u_symbol = self.chemical_space.GetAtomWithIdx(att_u).GetSymbol()
         head_symbol = chain_head_atom
-        
+
         if self.config.connection.auto_bridge and node_u_symbol == head_symbol:
             # Same atom type - need bridge
             bridge = self.chemical_space.AddAtom(Chem.Atom(self.config.connection.default_bridge_atom))
@@ -1009,11 +1086,11 @@ class ChemistryBuilder:
         else:
             # Direct bond OK
             self.chemical_space.AddBond(att_u, chain_head, Chem.BondType.SINGLE)
-        
+
         # Check if need bridge on right side (usually not for PDMS)
         node_v_symbol = self.chemical_space.GetAtomWithIdx(att_v).GetSymbol()
         tail_symbol = chain_tail_atom
-        
+
         if self.config.connection.auto_bridge and node_v_symbol == tail_symbol:
             # Same atom type - need bridge
             bridge = self.chemical_space.AddAtom(Chem.Atom(self.config.connection.default_bridge_atom))
@@ -1033,135 +1110,127 @@ class ChemistryBuilder:
         self.edge_backbone_path[edge_id] = (
             ([bridge_u] if bridge_u is not None else []) + backbone
             + ([bridge_v] if bridge_v is not None else []))
-        # One atom per repeat unit: every repeat of a concatenated monomer
-        # puts the same number of atoms on the backbone, so the heads are
-        # the backbone taken at that stride (Si of each Si-O pair for PDMS,
-        # the first C of each C-O-C for PEG).
-        stride = len(backbone) // dp if dp > 0 and len(backbone) % dp == 0 else 1
-        self.edge_repeat_heads[edge_id] = backbone[::max(stride, 1)]
+        # One atom per repeat unit: its head (the Si of each Si-O pair for
+        # PDMS, the first C of each C-O-C for PEG). Before 0.4.5 the heads were
+        # the backbone at a stride, which is the same for those two and
+        # every atom of the backbone for a monomer ending in a branch.
+        self.edge_repeat_heads[edge_id] = heads
 
-    def _build_pdms_chain_with_grafts(
-        self,
-        dp: int,
-        graft_positions: list,
-        graft_dp: int,
-    ) -> tuple[list, list]:
-        """Build a PDMS chain repeat-by-repeat, attaching side chains.
+    def _build_chain_per_repeat(self, units: list, graft_positions: list, graft_dp: int):
+        """Build a chain one repeat unit at a time, in sequence order, with grafts.
 
-        Each backbone repeat is structurally ``Si(C)(C)O`` so the chain is
-        the same atom-order as ``[Si](C)(C)O`` × dp (matches the
-        SMILES-concatenation path's ``chain_idxs`` ordering, so any
-        index-based callers behave identically). For each backbone Si
-        whose index ``k`` is in ``graft_positions``, one of the two
-        methyl C caps is replaced by a branch O that leads into a side
-        chain of ``graft_dp`` repeat units (``Si(C)(C)O`` × graft_dp
-        but with the trailing O omitted on the last repeat). This keeps
-        every Si at valence 4.
+        Each repeat is its monomer's heavy atoms in SMILES order, its head
+        (the SMILES's first atom) bonded to the previous repeat's tail, as
+        the concatenated SMILES bonds them. In a repeat whose index is in
+        ``graft_positions`` the last methyl on the head atom (the second
+        methyl of a PDMS Si, the one methyl of a methylphenylsiloxane Si) is
+        replaced by an O that leads into a PDMS side chain of ``graft_dp``
+        repeats: ``Si(C)(C)O`` x ``graft_dp``, the last repeat without its
+        trailing O, so the tail Si caps at valence 4. The caller passes only
+        repeats whose monomer has such a methyl.
 
-        Returns:
-            (chain_idxs, edge_grafts, backbone) where
-                chain_idxs   = global RDKit atom indices in build order
-                edge_grafts  = [(frac, [side_atom_idx, ...]), ...]
-                               frac = (k+1)/(dp+1), matching the canonical
-                               workflow's per-edge graft_map shape.
-                backbone     = the Si and linker O of every repeat, in order
+        For a PDMS strand this is the chain the PDMS-only graft builder made
+        before 0.4.5, atom order and bond order included.
+
+        Returns ``(chain_idxs, edge_grafts, backbone, heads, tail)``:
+        ``chain_idxs`` the repeats' atoms in build order (each graft's
+        branch O included, its side chain not), ``edge_grafts`` one
+        ``(frac, [branch O and side-chain atoms])`` per graft with
+        ``frac = (k+1)/(dp+1)``, the shape the pipeline's graft placement
+        reads, ``backbone`` every repeat's head-to-tail path in order,
+        ``heads`` every repeat's head atom, ``tail`` the last repeat's tail
+        atom (the one the ``v`` junction bonds to).
         """
         from rdkit import Chem
 
         graft_set = set(int(p) for p in graft_positions)
         M = self.chemical_space
+        dp = len(units)
         chain_idxs: list = []
         edge_grafts: list[tuple[float, list[int]]] = []
         backbone: list = []
-        prev = None  # previous repeat's linker O
+        heads: list = []
+        prev = None  # previous repeat's tail
 
-        for k in range(dp):
-            si = M.AddAtom(Chem.Atom("Si"))
-            chain_idxs.append(si)
-            backbone.append(si)
-            if prev is not None:
-                M.AddBond(prev, si, Chem.BondType.SINGLE)
+        for k, unit in enumerate(units):
+            t = _unit_template(unit.smiles)
+            site = t.graft_site if k in graft_set else None
+            local: dict = {}
+            for atom in t.mol.GetAtoms():
+                i = atom.GetIdx()
+                idx = M.AddAtom(Chem.Atom("O") if i == site else Chem.Atom(atom))
+                local[i] = idx
+                chain_idxs.append(idx)
+                if i == 0 and prev is not None:
+                    M.AddBond(prev, idx, Chem.BondType.SINGLE)
+                for j in sorted(n.GetIdx() for n in atom.GetNeighbors()):
+                    if j < i:
+                        M.AddBond(local[j], idx,
+                                  t.mol.GetBondBetweenAtoms(j, i).GetBondType())
+                if i == site:
+                    edge_grafts.append(((k + 1) / (dp + 1),
+                                        [idx] + self._pdms_side_chain(idx, graft_dp)))
+            backbone.extend(local[i] for i in t.backbone)
+            heads.append(local[0])
+            prev = local[t.tail]
 
-            if k in graft_set:
-                # 1 methyl cap (instead of 2) + branch O + side chain
-                c1 = M.AddAtom(Chem.Atom("C"))
-                chain_idxs.append(c1)
-                M.AddBond(si, c1, Chem.BondType.SINGLE)
+        return chain_idxs, edge_grafts, backbone, heads, prev
 
-                g_o = M.AddAtom(Chem.Atom("O"))
-                chain_idxs.append(g_o)
-                M.AddBond(si, g_o, Chem.BondType.SINGLE)
+    def _pdms_side_chain(self, branch_o: int, graft_dp: int) -> list:
+        """A PDMS side chain of ``graft_dp`` repeats hung on ``branch_o``.
 
-                # Side chain: graft_dp repeats of Si(C)(C)O; drop the
-                # trailing O on the last repeat so the tail Si caps at
-                # valence 3 (Si + 2 methyls + 1 bridge from prev = 4).
-                g_atoms = [g_o]
-                g_prev = g_o
-                for j in range(graft_dp):
-                    g_si = M.AddAtom(Chem.Atom("Si"))
-                    g_atoms.append(g_si)
-                    M.AddBond(g_prev, g_si, Chem.BondType.SINGLE)
-                    g_c1 = M.AddAtom(Chem.Atom("C"))
-                    g_c2 = M.AddAtom(Chem.Atom("C"))
-                    g_atoms.extend([g_c1, g_c2])
-                    M.AddBond(g_si, g_c1, Chem.BondType.SINGLE)
-                    M.AddBond(g_si, g_c2, Chem.BondType.SINGLE)
-                    if j < graft_dp - 1:
-                        g_next_o = M.AddAtom(Chem.Atom("O"))
-                        g_atoms.append(g_next_o)
-                        M.AddBond(g_si, g_next_o, Chem.BondType.SINGLE)
-                        g_prev = g_next_o
-                edge_grafts.append(((k + 1) / (dp + 1), g_atoms))
-            else:
-                # Normal repeat: 2 methyl caps
-                c1 = M.AddAtom(Chem.Atom("C"))
-                c2 = M.AddAtom(Chem.Atom("C"))
-                chain_idxs.extend([c1, c2])
-                M.AddBond(si, c1, Chem.BondType.SINGLE)
-                M.AddBond(si, c2, Chem.BondType.SINGLE)
-
-            # Trailing linker O of this repeat
-            o = M.AddAtom(Chem.Atom("O"))
-            chain_idxs.append(o)
-            backbone.append(o)
-            M.AddBond(si, o, Chem.BondType.SINGLE)
-            prev = o
-
-        return chain_idxs, edge_grafts, backbone
-
-    def _create_chain_from_smiles(self, smiles: str, dp: int):
-        """Create a polymer chain from repeating SMILES unit.
-
-        Returns the RDKit molecule for a chain of *dp* repeat units, or
-        ``None`` if the chain cannot be constructed.  Raises ``ValueError``
-        if the SMILES concatenation fails and falls back to a single monomer
-        (which would silently produce an under-length chain).
+        ``Si(C)(C)O`` x ``graft_dp`` with the trailing O dropped on the last
+        repeat, so the tail Si caps at valence 4 (Si + 2 methyls + 1 bridge
+        from the previous O). Returns the side chain's atoms in build order.
         """
         from rdkit import Chem
 
-        # Remove trailing O for linking (if present)
-        if smiles.endswith("O"):
-            unit = smiles[:-1]
-            linker = "O"
-        else:
-            unit = smiles
-            linker = ""
+        M = self.chemical_space
+        g_atoms: list = []
+        g_prev = branch_o
+        for j in range(graft_dp):
+            g_si = M.AddAtom(Chem.Atom("Si"))
+            g_atoms.append(g_si)
+            M.AddBond(g_prev, g_si, Chem.BondType.SINGLE)
+            g_c1 = M.AddAtom(Chem.Atom("C"))
+            g_c2 = M.AddAtom(Chem.Atom("C"))
+            g_atoms.extend([g_c1, g_c2])
+            M.AddBond(g_si, g_c1, Chem.BondType.SINGLE)
+            M.AddBond(g_si, g_c2, Chem.BondType.SINGLE)
+            if j < graft_dp - 1:
+                g_next_o = M.AddAtom(Chem.Atom("O"))
+                g_atoms.append(g_next_o)
+                M.AddBond(g_si, g_next_o, Chem.BondType.SINGLE)
+                g_prev = g_next_o
+        return g_atoms
 
-        # Build full chain SMILES.
-        # The last repeat unit's linker O serves as the chain tail; the
-        # auto-bridge in `_build_chain_atomistic` direct-bonds it to the
-        # network/end-cap Si node. Do NOT append a trailing "[O]" — that
-        # produces a spurious -O-O- peroxide bond at the chain tail.
-        if linker:
-            chain_smiles = (unit + linker) * dp
-        else:
-            chain_smiles = unit * dp
+    def _create_chain_from_smiles(self, smiles, dp: int):
+        """Create a polymer chain from repeating SMILES units.
+
+        ``smiles`` is one repeat unit, taken ``dp`` times, or a list of
+        ``dp`` of them in chain order (a copolymer strand). Returns the
+        RDKit molecule of the chain, or ``None`` if the chain cannot be
+        constructed. Raises ``ValueError`` if the SMILES concatenation fails
+        rather than falling back to a single monomer, which would silently
+        produce an under-length chain.
+        """
+        from rdkit import Chem
+
+        units = [smiles] * dp if isinstance(smiles, str) else list(smiles)
+
+        # Every unit is written whole, its trailing linker (the O of PDMS)
+        # included: that linker is the bond to the next unit, and the last
+        # unit's is the chain tail, which the auto-bridge in
+        # `_build_chain_atomistic` direct-bonds to the network or end-cap Si
+        # node. Do NOT append a trailing "[O]": that produces a spurious
+        # -O-O- peroxide bond at the chain tail.
+        chain_smiles = "".join(units)
 
         mol = Chem.MolFromSmiles(chain_smiles)
         if mol is not None:
             return Chem.RemoveHs(mol)
 
-        # Chain SMILES failed — do NOT silently return a single monomer.
+        # Chain SMILES failed: do NOT silently return a single monomer.
         # That would embed a 1-unit chain instead of a dp-unit chain with
         # no warning, corrupting the molecular structure.
         raise ValueError(
@@ -1172,3 +1241,55 @@ class ChemistryBuilder:
             f"for chain building. Use a monomer with a terminal 'O' linker, "
             f"or check that repeated concatenation produces valid SMILES."
         )
+
+
+class _UnitTemplate(collections.namedtuple(
+        "_UnitTemplate", "mol n_atoms tail backbone graft_site")):
+    """One monomer's repeat unit as the per-repeat chain builder reads it.
+
+    ``mol`` the heavy-atom molecule, ``tail`` the atom the next repeat's head
+    bonds to (where the concatenated SMILES bonds it), ``backbone`` the path
+    from the head (atom 0) to the tail, ``graft_site`` the last methyl on the
+    head atom, or ``None`` when it has none.
+    """
+
+
+def takes_a_graft(smiles: str) -> bool:
+    """Whether a repeat of this monomer can carry an atomistic graft.
+
+    A graft replaces a methyl on the repeat's head atom, so it needs one
+    (PDMS has two, a methylphenylsiloxane one, a diphenylsiloxane none).
+    Raises ``ValueError`` for a SMILES that does not parse.
+    """
+    return _unit_template(smiles).graft_site is not None
+
+
+@functools.lru_cache(maxsize=None)
+def _unit_template(smiles: str) -> _UnitTemplate:
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ChemistryBuilderError(f"cannot parse monomer SMILES {smiles!r}")
+    mol = Chem.RemoveHs(mol)
+    n = mol.GetNumAtoms()
+    tail = n - 1
+    pair = Chem.MolFromSmiles(smiles + smiles)
+    if pair is not None and n:
+        pair = Chem.RemoveHs(pair)
+        if pair.GetNumAtoms() == 2 * n:
+            inward = [a.GetIdx() for a in pair.GetAtomWithIdx(n).GetNeighbors()
+                      if a.GetIdx() < n]
+            if inward:
+                tail = inward[0]
+    backbone = tuple(Chem.GetShortestPath(mol, 0, tail)) if n > 1 and tail != 0 else (0,)
+    site = None
+    if n:
+        methyls = [a.GetIdx() for a in mol.GetAtomWithIdx(0).GetNeighbors()
+                   if a.GetSymbol() == "C" and a.GetDegree() == 1
+                   and a.GetTotalNumHs() == 3 and not a.GetIsAromatic()
+                   and a.GetIdx() != tail
+                   and mol.GetBondBetweenAtoms(0, a.GetIdx()).GetBondType()
+                   == Chem.BondType.SINGLE]
+        site = max(methyls) if methyls else None
+    return _UnitTemplate(mol, n, tail, backbone, site)

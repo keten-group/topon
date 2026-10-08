@@ -1,12 +1,25 @@
 """
-SimBox crosslink workflow — packaged entry point.
+SimBox crosslink workflow, the packaged entry point.
 
-Contains the core ``run_workflow`` function and the ``UniversalTypeMapper``
-context manager that enforces consistent DREIDING type IDs across all
-simulation compositions (Amino-only, POSS-only, mixed).
+``run_workflow`` builds the molecules, packs the box and writes the LAMMPS
+files; ``prepare_bond_react`` then makes an epoxy-amine box ready for
+``fix bond/react``: it adds the bond, angle and dihedral types the cure
+creates and writes the reaction templates in the box's own type ids.
 
-This module is the canonical implementation.  The script at
-``tests/workflows/generate_simbox_crosslink.py`` delegates to this.
+Every type id is the one DREIDING typing gives the box. Before 0.4.5
+a ``UniversalTypeMapper`` patched ``topon.forcefield.dreiding`` at write time
+to force fixed ids (Si3 1, O_3 2, C_3 3, N_3 4, H_ 5, and fixed bond, angle
+and dihedral ids), so that hand-written templates fitted every composition.
+It matched dihedral types by their atom types only, so two types of one
+name and different K shared an id: the epoxide ring's torsions (K 0.125
+about the ring C-C bond, 0.5 about the ring C-O bond) were written with the
+chain's 0.111111 and 0.333333, and this writer listed both K under the one
+id, which LAMMPS refuses to read. Templates are now generated from each
+box's own types (:mod:`topon.simbox.react_templates`), so fixed ids
+have no use.
+
+This module is the canonical implementation. The regression driver of the
+development repository uses its ``prepare_bond_react``.
 """
 
 from __future__ import annotations
@@ -14,250 +27,80 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-# dreiding is imported lazily inside UniversalTypeMapper.__enter__ and
-# run_workflow to avoid a module-level rdkit import at CLI startup.
+# rdkit and dreiding are imported lazily (inside SimBox.write and
+# prepare_bond_react) to keep the CLI's startup free of them.
 from topon.simbox import SimBox, MoleculeLibrary
 
-
-# ---------------------------------------------------------------------------
-# Universal type maps — keep IDs stable across all compositions so that
-# pre-defined LAMMPS bond/react templates stay compatible.
-# ---------------------------------------------------------------------------
-
-ATOM_MAP = {
-    'Si3': 1, 'O_3': 2, 'C_3': 3, 'N_3': 4, 'H_': 5
-}
-
-BOND_MAP = {
-    ('O_3', 'Si3'): 1,
-    ('C_3', 'Si3'): 2,
-    ('C_3', 'C_3'): 3,
-    ('C_3', 'N_3'): 4,
-    ('H_', 'Si3'): 5,
-    ('C_3', 'H_'): 6,
-    ('H_', 'N_3'): 7,
-    ('C_3', 'O_3'): 8,
-    ('H_', 'O_3'): 9,
-}
-
-ANGLE_MAP = {
-    ('C_3', 'Si3', 'O_3'): 1,
-    ('H_', 'Si3', 'O_3'): 2,
-    ('C_3', 'Si3', 'C_3'): 3,
-    ('C_3', 'Si3', 'H_'): 4,
-    ('O_3', 'Si3', 'O_3'): 5,
-    ('Si3', 'O_3', 'Si3'): 6,
-    ('H_', 'C_3', 'Si3'): 7,
-    ('H_', 'C_3', 'H_'): 8,
-    ('C_3', 'C_3', 'Si3'): 9,
-    ('C_3', 'C_3', 'H_'): 10,
-    ('C_3', 'C_3', 'C_3'): 11,
-    ('C_3', 'C_3', 'N_3'): 12,
-    ('H_', 'C_3', 'N_3'): 13,
-    ('C_3', 'N_3', 'H_'): 14,
-    ('H_', 'N_3', 'H_'): 15,
-    ('C_3', 'C_3', 'O_3'): 16,
-    ('H_', 'C_3', 'O_3'): 17,
-    ('C_3', 'O_3', 'C_3'): 18,
-    ('C_3', 'O_3', 'H_'): 19,
-    ('C_3', 'N_3', 'C_3'): 20,
-}
-
-DIHEDRAL_MAP_LIST = [
-    (('O_3', 'Si3', 'O_3', 'Si3'), 1),
-    (('H_', 'Si3', 'O_3', 'Si3'), 2),
-    (('O_3', 'Si3', 'O_3', 'Si3'), 3),
-    (('H_', 'C_3', 'Si3', 'O_3'), 4),
-    (('C_3', 'Si3', 'C_3', 'H_'), 5),
-    (('H_', 'C_3', 'Si3', 'H_'), 6),
-    (('C_3', 'C_3', 'Si3', 'O_3'), 7),
-    (('C_3', 'C_3', 'Si3', 'C_3'), 8),
-    (('C_3', 'C_3', 'Si3', 'H_'), 9),
-    (('C_3', 'C_3', 'C_3', 'Si3'), 10),
-    (('H_', 'C_3', 'C_3', 'Si3'), 11),
-    (('C_3', 'C_3', 'C_3', 'H_'), 12),
-    (('H_', 'C_3', 'C_3', 'H_'), 13),
-    (('C_3', 'C_3', 'C_3', 'N_3'), 14),
-    (('H_', 'C_3', 'C_3', 'N_3'), 15),
-    (('C_3', 'C_3', 'N_3', 'H_'), 16),
-    (('H_', 'C_3', 'N_3', 'H_'), 17),
-    (('C_3', 'C_3', 'C_3', 'C_3'), 18),
-    (('C_3', 'C_3', 'C_3', 'O_3'), 19),
-    (('H_', 'C_3', 'C_3', 'O_3'), 20),
-    (('C_3', 'C_3', 'O_3', 'C_3'), 21),
-    (('C_3', 'O_3', 'C_3', 'H_'), 22),
-    (('O_3', 'C_3', 'C_3', 'O_3'), 23),
-    (('C_3', 'C_3', 'C_3', 'O_3'), 24),
-    (('C_3', 'C_3', 'C_3', 'H_'), 25),
-    (('H_', 'C_3', 'C_3', 'O_3'), 26),
-    (('H_', 'C_3', 'C_3', 'H_'), 27),
-    (('C_3', 'C_3', 'O_3', 'C_3'), 28),
-    (('C_3', 'O_3', 'C_3', 'H_'), 29),
-    (('N_3', 'C_3', 'C_3', 'O_3'), 30),
-    (('C_3', 'C_3', 'O_3', 'H_'), 31),
-    (('H_', 'C_3', 'O_3', 'H_'), 32),
-    (('C_3', 'N_3', 'C_3', 'H_'), 33),
-    (('C_3', 'C_3', 'N_3', 'C_3'), 34),
-]
+#: Reactive-site groups (``topon.simbox.molecule``) of an epoxy-amine box.
+EPOXIDE_GROUP = "epoxide"
+AMINE_GROUPS = ("primary_amine", "secondary_amine")
 
 
 # ---------------------------------------------------------------------------
-# UniversalTypeMapper
+# prepare_bond_react
 # ---------------------------------------------------------------------------
 
-class UniversalTypeMapper:
+def prepare_bond_react(system, output_dir: str | Path, files: dict,
+                       verbose: bool = True) -> dict:
+    """Make a written epoxy-amine box ready for ``fix bond/react``.
+
+    A reaction cannot add a type, so the data file must already list every
+    bond, angle and dihedral type the cure creates: the O-H bond, the C-O-H
+    and C-N-C angles and the torsions through the new C-N and O-H bonds,
+    which no molecule of an uncured box holds.
+    :func:`~topon.simbox.react_templates.add_reaction_types` appends them to
+    ``system.data`` (DREIDING's coefficients, a dihedral's K from the
+    torsions about its central bond in the template), and they are appended
+    to ``ff_coeffs.in`` as the same commands. The four molecule templates
+    and two maps of the primary- and secondary-amine reactions are then
+    written beside them in this box's type ids
+    (:func:`~topon.simbox.react_templates.write_epoxy_amine_templates`).
+
+    *system* is the box's ``AssembledSystem`` and *files* what
+    ``SimBox.write`` returned. A box without both an epoxide and an amine is
+    left as written. Returns ``{"types_added": [(kind, id, names,
+    coefficients)], "templates": [file names]}``, both empty for such a box;
+    *files* gains each template's path under its file stem.
     """
-    Context manager that patches ``topon.forcefield.dreiding`` functions to
-    enforce the universal DREIDING type-ID maps at write time.
+    groups = {entry.group_name for entry in system.reactive_sites}
+    if EPOXIDE_GROUP not in groups or not groups.intersection(AMINE_GROUPS):
+        if verbose and (EPOXIDE_GROUP in groups or groups.intersection(AMINE_GROUPS)):
+            print(f"[bond/react] the box holds {', '.join(sorted(groups))} but not both an "
+                  f"epoxide and an amine ({EPOXIDE_GROUP}; {' or '.join(AMINE_GROUPS)}): "
+                  f"no reaction types, no templates")
+        return {"types_added": [], "templates": []}
 
-    This guarantees that atom/bond/angle/dihedral IDs are identical across
-    all compositions (Amino-only, POSS-only, mixed), so pre-defined LAMMPS
-    bond/react templates remain compatible.
-    """
+    from topon.simbox.react_templates import add_reaction_types, write_epoxy_amine_templates
 
-    def __init__(self, atom_map=None, bond_map=None, angle_map=None, dihedral_map_list=None):
-        self.atom_map = atom_map or ATOM_MAP
-        self.bond_map = bond_map or BOND_MAP
-        self.angle_map = angle_map or ANGLE_MAP
-        self.dihedral_map_list = dihedral_map_list or DIHEDRAL_MAP_LIST
-        self.dihedral_map = dict(self.dihedral_map_list)
+    out = Path(output_dir)
+    data = Path(files["data"])
+    added = add_reaction_types(data, data)
+    if added and "ff_coeffs" in files:
+        _append_ff_coeffs(Path(files["ff_coeffs"]), added)
+    written = write_epoxy_amine_templates(data, out)
+    for name in written["files"]:
+        files[Path(name).stem] = str(out / name)
 
-        import topon.forcefield.dreiding as _dreiding
-        self._dreiding = _dreiding
-        self._orig_assign_atom_types = _dreiding.assign_atom_types
-        self._orig_extract_bonds = _dreiding.extract_bonds
-        self._orig_extract_angles = _dreiding.extract_angles
-        self._orig_extract_dihedrals = _dreiding.extract_dihedrals
+    if verbose:
+        for kind, tid, names, _c in added:
+            print(f"[bond/react] added {kind} type {tid} {'-'.join(names)} "
+                  f"(a reaction creates it)")
+        print(f"[bond/react] templates in this box's type ids: "
+              f"{', '.join(written['files'])}")
+    return {"types_added": added, "templates": written["files"]}
 
-    def __enter__(self):
-        atom_map = self.atom_map
-        bond_map = self.bond_map
-        angle_map = self.angle_map
-        dihedral_map = self.dihedral_map
-        dihedral_map_list = self.dihedral_map_list
-        orig_assign = self._orig_assign_atom_types
-        orig_bonds = self._orig_extract_bonds
-        orig_angles = self._orig_extract_angles
-        orig_dihedrals = self._orig_extract_dihedrals
-        _dreiding = self._dreiding
 
-        def patched_assign_atom_types(mol, dreiding_params):
-            orig_types_dict, orig_atom_data, orig_dreiding_types = orig_assign(mol, dreiding_params)
-            new_types_dict = {}
-            for type_name in orig_types_dict:
-                if type_name in atom_map:
-                    new_types_dict[type_name] = atom_map[type_name]
-                else:
-                    print(f"WARNING: Unknown atom type {type_name}, keeping original ID!")
-                    new_types_dict[type_name] = orig_types_dict[type_name]
-            for type_name, target_id in atom_map.items():
-                if target_id not in new_types_dict.values():
-                    if type_name not in new_types_dict:
-                        new_types_dict[type_name] = target_id
-            new_atom_data = []
-            for (idx, old_type_id, charge, x, y, z, element, hyb) in orig_atom_data:
-                type_name = orig_dreiding_types[idx]
-                new_type_id = new_types_dict.get(type_name, old_type_id)
-                new_atom_data.append((idx, new_type_id, charge, x, y, z, element, hyb))
-            return new_types_dict, new_atom_data, orig_dreiding_types
-
-        def patched_extract_bonds(mol, atom_dreiding_types, dreiding_params):
-            bond_types, bond_data = orig_bonds(mol, atom_dreiding_types, dreiding_params)
-            new_bond_types = {}
-            for sig, original_id in bond_types.items():
-                t1, t2 = sig[0], sig[1]
-                key = tuple(sorted((t1, t2)))
-                new_bond_types[sig] = bond_map.get(key, original_id)
-            existing_ids = set(new_bond_types.values())
-            for key, target_id in bond_map.items():
-                if target_id not in existing_ids:
-                    params = _dreiding.find_parameter(key, dreiding_params['bond_params'])
-                    if isinstance(params, dict):
-                        k, r0 = 0.5 * params['k'], params['r0']
-                    else:
-                        k, r0 = params
-                    new_bond_types[(key[0], key[1], k, r0)] = target_id
-                    existing_ids.add(target_id)
-            new_bond_data = []
-            for (bid, type_id, at1, at2) in bond_data:
-                final_id = type_id
-                for s, oid in bond_types.items():
-                    if oid == type_id:
-                        final_id = new_bond_types[s]
-                        break
-                new_bond_data.append((bid, final_id, at1, at2))
-            return new_bond_types, new_bond_data
-
-        def patched_extract_angles(mol, atom_dreiding_types, dreiding_params):
-            angle_types, angle_data = orig_angles(mol, atom_dreiding_types, dreiding_params)
-            new_angle_types = {}
-            for sig, original_id in angle_types.items():
-                t1, t2, t3 = sig[0], sig[1], sig[2]
-                outer = sorted((t1, t3))
-                key = (outer[0], t2, outer[1])
-                new_angle_types[sig] = angle_map.get(key, original_id)
-            existing_ids = set(new_angle_types.values())
-            for key, target_id in angle_map.items():
-                if target_id not in existing_ids:
-                    params = _dreiding.find_parameter(key, dreiding_params['angle_params'])
-                    if isinstance(params, dict):
-                        k = params.get('k', 100.0)
-                        theta = params.get('theta0', params.get('theta', 109.5))
-                    else:
-                        k, theta = params
-                    new_angle_types[(key[0], key[1], key[2], k, theta)] = target_id
-                    existing_ids.add(target_id)
-            new_angle_data = []
-            for (aid, type_id, at1, at2, at3) in angle_data:
-                final_id = type_id
-                for s, oid in angle_types.items():
-                    if oid == type_id:
-                        final_id = new_angle_types[s]
-                        break
-                new_angle_data.append((aid, final_id, at1, at2, at3))
-            return new_angle_types, new_angle_data
-
-        def patched_extract_dihedrals(mol, atom_dreiding_types, dreiding_params):
-            dihedral_types, dihedral_data = orig_dihedrals(mol, atom_dreiding_types, dreiding_params)
-            new_dihedral_types = {}
-            for sig, original_id in dihedral_types.items():
-                t1, t2, t3, t4 = sig[0], sig[1], sig[2], sig[3]
-                fwd, rev = (t1, t2, t3, t4), (t4, t3, t2, t1)
-                key = min(fwd, rev)
-                new_dihedral_types[sig] = dihedral_map.get(key, original_id)
-            existing_ids = set(new_dihedral_types.values())
-            for key, target_id in dihedral_map_list:
-                if target_id not in existing_ids:
-                    param_list = _dreiding.find_parameter(key, dreiding_params['dihedral_params'])
-                    if isinstance(param_list, list):
-                        for params in param_list:
-                            k, n, d = params['v_n'], params['n'], params['d']
-                            sig = (key[0], key[1], key[2], key[3], k, n, d)
-                            if sig in new_dihedral_types:
-                                sig = (key[0], key[1], key[2], key[3], k + 1e-6, n, d)
-                            new_dihedral_types[sig] = target_id
-                        existing_ids.add(target_id)
-            new_dihedral_data = []
-            for (did, type_id, at1, at2, at3, at4) in dihedral_data:
-                final_id = type_id
-                for s, oid in dihedral_types.items():
-                    if oid == type_id:
-                        final_id = new_dihedral_types[s]
-                        break
-                new_dihedral_data.append((did, final_id, at1, at2, at3, at4))
-            return new_dihedral_types, new_dihedral_data
-
-        _dreiding.assign_atom_types = patched_assign_atom_types
-        _dreiding.extract_bonds = patched_extract_bonds
-        _dreiding.extract_angles = patched_extract_angles
-        _dreiding.extract_dihedrals = patched_extract_dihedrals
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._dreiding.assign_atom_types = self._orig_assign_atom_types
-        self._dreiding.extract_bonds = self._orig_extract_bonds
-        self._dreiding.extract_angles = self._orig_extract_angles
-        self._dreiding.extract_dihedrals = self._orig_extract_dihedrals
+def _append_ff_coeffs(path: Path, added) -> None:
+    """The types a reaction creates, as ``*_coeff`` commands after the box's own."""
+    lines = ["# --- Types a reaction creates (fix bond/react; also in system.data) ---"]
+    for kind, tid, names, c in added:
+        label = "-".join(names)
+        if kind == "dihedral":
+            lines.append(f"dihedral_coeff {tid} {c[0]:.6f} {int(c[1])} {int(c[2])}  # {label}")
+        else:
+            lines.append(f"{kind}_coeff {tid} {c[0]:g} {c[1]:g}  # {label}")
+    with open(path, "a") as f:
+        f.write("\n".join(lines) + "\n\n")
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +140,11 @@ def run_workflow(
     -------
     dict
         Mapping of file labels to absolute path strings (keys: ``data``,
-        ``settings``, ``groups``, ``ff_coeffs``, ``minimize``, ``nvt``,
-        ``npt``, ``crosslink``).
+        ``settings``, ``groups``, ``ff_coeffs``, ``settings_x6``, ``minimize``,
+        ``nvt``, ``npt``, ``crosslink``, and for a box with epoxide and amine
+        the templates of :func:`prepare_bond_react`: ``pre_react_primary``,
+        ``post_react_primary``, ``rxn_map_primary`` and the same three for
+        ``secondary``).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -334,8 +180,8 @@ def run_workflow(
     if verbose:
         print(f"[4/4] Writing LAMMPS files to {output_dir}...")
 
-    with UniversalTypeMapper():
-        files = box.write(str(output_dir), forcefield="dreiding")
+    files = box.write(str(output_dir), forcefield="dreiding")
+    prepare_bond_react(box.system, output_dir, files, verbose=verbose)
 
     if verbose:
         elapsed = time.time() - t0

@@ -11,6 +11,12 @@
 - :mod:`~topon.inverse.verify` regenerates a config and holds it against the
   reference
 
+A network crosslinked along its chains (two chain beads bonded) is
+fitted by :mod:`~topon.inverse.crosslinked` to the crosslink generator
+(``topology.source: "crosslink"``) or to the lattice route, and verified
+by :mod:`~topon.inverse.crosslinked_verify`, with replicates of the reference
+as its scatter.
+
 Nothing here runs dynamics. The entanglement target a fit writes is a
 final-state number, checked only on a relaxed build (``--relaxed``).
 """

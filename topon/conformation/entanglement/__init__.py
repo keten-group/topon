@@ -44,6 +44,7 @@ from topon.conformation.entanglement.designed import (
     nearest_image_of,
     requests_from_config,
     route_designed_pairs,
+    unwound_paths,
 )
 from topon.conformation.entanglement.braid import (
     BraidShape,
@@ -82,6 +83,7 @@ __all__ = [
     "nearest_image_of",
     "requests_from_config",
     "route_designed_pairs",
+    "unwound_paths",
     "AllocatedContact",
     "Allocation",
     "BraidShape",

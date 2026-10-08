@@ -17,7 +17,14 @@ Molecule order is load-bearing, not cosmetic. The junctions take the first
 molecules and the strands follow in placement order, because the Z1+
 exporter walks molecules in sorted order: its chain *k* is
 ``placement.strands[k - 1]``, which is what lets a named-pair request be
-read straight off a Z1+ partner list.
+read straight off a Z1+ partner list. The sol chains are the last strands
+of a placement, so they take the last molecules and every other strand keeps
+the molecule id it has without them.
+
+The chains are the ones the pipeline's ``CGWriter`` writes for the same
+graph: a dangling chain is its edge's ``dp`` plus the free end (DP beads
+under ``dp_distribution.endlinked_dangling``), and every sol chain is a
+molecule of its own, types 1 and 2 like any chain, bonded to no junction.
 """
 from __future__ import annotations
 
@@ -85,8 +92,9 @@ def _bead_types(n: int) -> list[int]:
     Every strand class gets the same answer. A bridge gives both of its
     junction ends away and the beads next to them become the chain ends; a
     dangling strand's far end is its own last bead; a loop is a ring whose
-    two ends bond to the same junction. All three are chains of the same
-    length with the same two end beads, which is the point of the
+    two ends bond to the same junction; a sol chain's two ends are its own
+    first and last beads. All four are chains with the same two end beads,
+    of one length where the build has one DP, which is the point of the
     convention -- one parser reads all of them.
     """
     if n == 1:
@@ -112,7 +120,8 @@ def write_endlinked(path, placement, title: str = "topon end-linked build") -> d
     bonds: list[tuple] = []
     node_id: dict = {}
 
-    junctions = sorted({p.plan.u for p in placement.strands}
+    junctions = sorted({p.plan.u for p in placement.strands
+                        if p.plan.kind != "free"}
                        | {p.plan.v for p in placement.strands
                           if p.plan.kind == "bridge"})
     # Where each junction sits, preferring a strand that *starts* there.
@@ -129,7 +138,8 @@ def write_endlinked(path, placement, title: str = "topon end-linked build") -> d
     # on the far side to pull it back into agreement.
     origin: dict = {}
     for s in placement.strands:
-        origin.setdefault(s.plan.u, np.asarray(s.path[0], float))
+        if s.plan.kind != "free":
+            origin.setdefault(s.plan.u, np.asarray(s.path[0], float))
     for s in placement.strands:
         if s.plan.kind == "bridge":
             origin.setdefault(s.plan.v, np.asarray(s.path[-1], float))
@@ -152,6 +162,8 @@ def write_endlinked(path, placement, title: str = "topon end-linked build") -> d
             chain = [node_id[s.plan.u]] + ids + [node_id[s.plan.v]]
         elif s.plan.kind == "dangling":
             chain = [node_id[s.plan.u]] + ids
+        elif s.plan.kind == "free":             # a sol chain: no junction
+            chain = ids
         else:                                   # a loop closes on its anchor
             chain = [node_id[s.plan.u]] + ids + [node_id[s.plan.u]]
         bonds.extend(zip(chain[:-1], chain[1:]))

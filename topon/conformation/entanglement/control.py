@@ -27,10 +27,13 @@ The response curve
 ------------------
 Over the range that has been measured, Z is a power law in the actuator:
 ``Z = A * x^b`` with x the coil ratio (meander) or the build density (walk).
-The two exponents that come out of the crossing-free runs are 0.87 for the
-DP-20 meander and 0.30 for the DP-100 walk, so the curve is shallow and the
-controller's first move is usually its biggest. Two measured points fix A and
-b; with one, the exponent comes from the shipped table.
+The exponents in the shipped table are 0.22 for the DP-20 walk (place() with
+the junction jitter) and 0.30 for the DP-100 walk, so the curve is
+shallow and the controller's first move is usually its biggest. The DP-20
+meander with the pinch fix shows no slope at all over the coils it can be built
+at (final Z 0.2356 at 1.402, 0.2370 at 1.51, inside the seed spread), and
+rows that cannot tell a slope from noise fix a level only. Two measured
+points fix A and b; with one, the exponent comes from the shipped table.
 """
 from __future__ import annotations
 
@@ -49,6 +52,8 @@ __all__ = [
     "RoundResult",
     "actuator_name",
     "calibration_for",
+    "steering_rows",
+    "build_options",
     "seed_actuator",
     "solve_actuator",
     "floor_warning",
@@ -77,32 +82,42 @@ class CalibrationPoint:
     ``"hardcore_min"`` for the minimiser that preceded it. The minimiser
     stretched 85 bonds to 1.70 sigma and left 57 threaded, which added
     crossings of its own (N20 went 0.19 -> 0.24 through the protocol), so its
-    final-state points describe the minimiser as much as the placement and are
-    not used to steer.
+    final-state points describe the minimiser as much as the placement. They
+    steer only where the requested DP has nothing measured on the
+    crossing-free deck (:func:`steering_rows`).
 
     ``"pushoff"`` is the protocol's own name for the same deck ``"limit"``
-    names here, and
-    the duplication is deliberate rather than tidy. Renaming the older rows
-    would fold them in with the one row measured under ``pushoff``, and
-    :func:`seed_actuator` prefers ``"limit"`` over ``"hardcore_min"``: at DP 20
-    the walk route would go from a three-point power-law fit to a single row,
-    which fixes a level and not a slope. That is a worse seed, so the label
-    stays split until the other four DP-20 rows are re-measured and the whole
-    set can move together. Renaming then is a one-line change here and nothing
-    outside this module reads the field.
+    names here. Each row keeps the label it was recorded under, and the
+    lookup reads the two as one deck: :func:`calibration_for` asked for either
+    returns both. Before 0.4.5 they were kept apart on purpose, because a single
+    ``place()``-built row would otherwise have outranked the three-point
+    ``hardcore_min`` fit of the DP-20 walk; the DP-20 rows have since been
+    re-measured as a set, which is what that split was waiting for.
 
     ``builder`` is what drew the coordinates: ``"script"`` for
     ``bond_create_validation/scripts/``, ``"place"`` for
-    :func:`topon.conformation.place`. Every row below is ``"script"``, which
-    is worth saying out loud, because the controller steers ``place()`` builds
-    with a table measured on somebody else's placement. The two are not the
-    same placement: on the same graph and density the validation script and
-    ``place()`` put the placed-state Z at 0.0526 and 0.0287 respectively. That
-    difference washes out -- both jump in stage 1 and stay flat, to 0.186 and
-    0.215 -- which is why the table is keyed on post-protocol states and not
-    on the build. It is still a gap between what was measured and what is
-    being steered, and a row that does not say which side it came from hides
-    it. Re-measuring the DP-20 rows with ``place()`` is open and needs MD.
+    :func:`topon.conformation.place`, which is what the controller steers.
+    The two are not the same placement: on the same graph and density the
+    validation script and ``place()`` put the placed-state Z at 0.0526 and
+    0.0287 respectively, and after the push-off at 0.186 and 0.215. The table
+    is keyed on post-protocol states for that reason, and a row says which
+    side it came from so the gap stays visible.
+
+    ``superseded_by`` is set on a row a later measurement replaced, naming
+    what replaced it. Such a row is kept as the record of what was measured
+    and never steers: :func:`calibration_for` leaves it out unless asked.
+    ``note`` carries what the row needs to be read correctly, such as the
+    build settings it was measured with. ``z`` is a mean over velocity seeds
+    when the row says so, and ``z_sd`` is the standard deviation over them
+    (0 for a single seed): the seeding draws no slope between two rows that
+    differ by no more than it (:func:`_table_slope`).
+
+    ``junction_jitter`` and ``settle_clearance`` are the ``conformation`` keys
+    a ``place()`` row was built with (the pinch fix), 0 and ``None`` for a
+    row built without them or by the scripts. They are part of what the knob
+    means: the meander at coil 1.402 ends at 0.2356 with the fix and near
+    0.260 without it, where the build pinches. :func:`build_options` reads
+    them back for a config seeded from the row.
     """
 
     dp: int
@@ -114,6 +129,11 @@ class CalibrationPoint:
     graph: str = ""
     source: str = ""
     builder: str = "script"
+    note: str = ""
+    superseded_by: str = ""
+    z_sd: float = 0.0
+    junction_jitter: float = 0.0
+    settle_clearance: Optional[float] = None
 
 
 #: What has actually been measured, and where it came from. Every entry is a
@@ -131,12 +151,11 @@ class CalibrationPoint:
 #: ratios) and 1.45 (contour over the median chord), and neither reproduces the
 #: 2.8.
 #:
-#: All but one row is ``builder="script"``: the coordinates were drawn by
-#: ``bond_create_validation/scripts/``, not by :func:`topon.conformation.place`,
-#: which is what the controller actually steers. The exception is the DP-20
-#: walk pair at rho 0.035, measured with ``place()`` on 2026-09-21 and labelled
-#: ``"pushoff"``; the four DP-20 rows above it stayed script-built because their
-#: re-measurement stopped at stage 2 on the push-off's own bond gate.
+#: The DP-20 rows that steer are ``builder="place"``: the five cases of
+#: the validation scripts re-measured with :func:`topon.conformation.place`,
+#: which is what the controller steers, with the pinch fix on. The rows
+#: they replace are kept and carry ``superseded_by``; they never steer. The
+#: DP-100 rows are still script-built.
 #:
 #: A second ``place()``-built point exists and is deliberately not a row:
 #: DP 100 walk, rho_build 0.0894, final-state Z1+ 1.3081 against the reference
@@ -144,58 +163,160 @@ class CalibrationPoint:
 #: DP-100 fit the controller extrapolates on, and confirming that did no harm
 #: means re-running the controller, which needs MD.
 #:
+#: Since 0.4.5 ``place()`` builds differently from a graph whose edges carry ``dp``
+#: or that records sol chains: a dangling chain is one bead longer (DP beads
+#: under ``endlinked_dangling``, as the pipeline writes it) and the sol chains
+#: are placed. That is every graph built from a config through the
+#: pipeline's stages 1 to 3 (:func:`topon.inverse.scaffold.build_graph`, the
+#: graph ``topon generate --verify`` regenerates). On the N100 fit it is
+#: 100 499 beads where it was 100 226: on the walk route, steered by build
+#: density, a cell 0.09 % longer on a side; on the meander, steered by coil
+#: ratio, the cell follows the contours and the density moves instead. The
+#: rows here are unaffected: each names a graph of the validation scripts, and
+#: none of the 632 graphs under ``bond_create_validation/data`` carries an edge
+#: ``dp`` or a sol record, so ``place()`` builds them bead for bead as before
+#: (checked on six graphs, three of them the scripts'). The graph file of the
+#: unlisted DP-100 point above is not recorded, so it is not known which side
+#: of the change it sits on. A row measured on a config's graph from here on
+#: is a build with its dangling and sol chains whole.
+#:
 #: An earlier figure of 1.9 at rho 0.05 came from the DP-30 6x6x6 pilot cell
 #: and was never recomputed for the N20 one, where the value is 1.5. The table
 #: stays keyed on the build density, which is unambiguous and is what every
 #: run actually recorded.
 CALIBRATION: tuple[CalibrationPoint, ...] = (
     # --- DP 20, N20 MIX 90/5/5 4-shell graph, final box rho 0.3075 ---
-    # Crossing-free protocol (--stage1 limit), re-quenched to T = 0.4.
+    # Re-measured with place() and the pinch fix (1 Oct 2026): the
+    # graph data/sweep_cubic/N20__MIX_90-5-5_4_shells__matched__s1.gpickle,
+    # placement seed 1, the default five-stage push-off compressed to 0.3075
+    # and quenched to 0.4, through the controller's driver of the development
+    # repository at 8 OpenMP threads. Meander: junction jitter 0.15 and a 1-sigma settle.
+    # Walk: jitter 0.15 alone, since the settle does not converge on a random
+    # walk and a settle-1.0 walk build is byte for byte the jitter-only one.
+    # Final is stage 5, build is stage 3 (equilibrated at the build box).
+    # Six runs passed the bond gate as written (no bond over 1.2 sigma from
+    # stage 2 on). The coil-1.51 run failed it on one bond at 1.209 sigma at
+    # stage 3 only and passes it on persistent bonds (its note).
+    CalibrationPoint(20, "meander", 1.402, 0.2356, "final", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_m1402_v{1001,12345,777}_r1",
+                     builder="place", z_sd=0.0036,
+                     junction_jitter=0.15, settle_clearance=1.0,
+                     note="mean of velocity seeds 1001 / 12345 / 777 "
+                          "(0.2345 / 0.2327 / 0.2397); junction_jitter 0.15, "
+                          "settle_clearance 1.0; no bond over 1.2 sigma at "
+                          "any stage of any seed"),
+    CalibrationPoint(20, "meander", 1.402, 0.2017, "build", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_m1402_v{1001,12345,777}_r1",
+                     builder="place", z_sd=0.0048,
+                     junction_jitter=0.15, settle_clearance=1.0,
+                     note="stage 3, mean of velocity seeds 1001 / 12345 / 777 "
+                          "(0.2033 / 0.1963 / 0.2056); junction_jitter 0.15, "
+                          "settle_clearance 1.0"),
+    CalibrationPoint(20, "meander", 1.510, 0.2370, "final", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_m1510_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     settle_clearance=1.0,
+                     note="velocity seed 1001; junction_jitter 0.15, "
+                          "settle_clearance 1.0; one bond at 1.209 sigma at "
+                          "stage 3 only (1547-64544, no foreign bead within "
+                          "1.14 sigma), thermal by the gates' persistence rule, so "
+                          "stages 4-5 were run on from the stage-3 restart"),
+    CalibrationPoint(20, "meander", 1.510, 0.1986, "build", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_m1510_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     settle_clearance=1.0,
+                     note="stage 3, velocity seed 1001; junction_jitter 0.15, "
+                          "settle_clearance 1.0"),
+    CalibrationPoint(20, "walk", 0.035, 0.2365, "final", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_w0035_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     note="velocity seed 1001; junction_jitter 0.15, no settle; "
+                          "24 dangling strands drawn with bonds to 1.52 sigma "
+                          "(their lattice chord is longer than their contour "
+                          "at this box, as in the 2026-09-21 build), none over "
+                          "1.2 sigma from stage 1 on"),
+    CalibrationPoint(20, "walk", 0.035, 0.2220, "build", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_w0035_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     note="stage 3, velocity seed 1001; junction_jitter 0.15, "
+                          "no settle"),
+    CalibrationPoint(20, "walk", 0.095, 0.2891, "final", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_w0095_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     note="velocity seed 1001; junction_jitter 0.15, no settle"),
+    CalibrationPoint(20, "walk", 0.095, 0.2408, "build", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_w0095_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     note="stage 3, velocity seed 1001; junction_jitter 0.15, "
+                          "no settle"),
+    CalibrationPoint(20, "walk", 0.145, 0.3228, "final", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_w0145_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     note="velocity seed 1001; junction_jitter 0.15, no settle"),
+    CalibrationPoint(20, "walk", 0.145, 0.2950, "build", "pushoff",
+                     "N20_MIX90_4sh", "data/runs/v88_w0145_v1001_r1",
+                     builder="place", junction_jitter=0.15,
+                     note="stage 3, velocity seed 1001; junction_jitter 0.15, "
+                          "no settle"),
+
+    # --- the DP-20 rows the place() rows replaced, kept as the record -----
+    # Script-built: the crossing-free protocol (--stage1 limit), re-quenched
+    # to T = 0.4.
     CalibrationPoint(20, "meander", 1.402, 0.224, "final", "limit",
-                     "N20_MIX90_4sh", "REPORT.md 4.4, runs/N20_v3b"),
+                     "N20_MIX90_4sh", "REPORT.md 4.4, runs/N20_v3b",
+                     superseded_by="place() row at coil 1.402"),
     CalibrationPoint(20, "meander", 1.510, 0.239, "final", "limit",
-                     "N20_MIX90_4sh", "REPORT.md 4.4, runs/N20_v3"),
+                     "N20_MIX90_4sh", "REPORT.md 4.4, runs/N20_v3",
+                     superseded_by="place() row at coil 1.51"),
     # Build state, same runs: the placement on its own, before compression.
     CalibrationPoint(20, "meander", 1.402, 0.192, "build", "limit",
                      "N20_MIX90_4sh",
-                     "data/measure_N20_v3b_stage3_build.json"),
+                     "data/measure_N20_v3b_stage3_build.json",
+                     superseded_by="place() row at coil 1.402"),
     CalibrationPoint(20, "meander", 1.510, 0.192, "build", "limit",
                      "N20_MIX90_4sh",
-                     "data/measure_N20_v3_stage3_build.json"),
-    # Random walk, minimiser protocol. Build-state column of REPORT.md 4; these
-    # are the three the specification names, and they are what the floor rests on.
+                     "data/measure_N20_v3_stage3_build.json",
+                     superseded_by="place() row at coil 1.51"),
+    # Random walk, minimiser protocol. Build-state column of REPORT.md 4.
     CalibrationPoint(20, "walk", 0.145, 0.300, "build", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r145"),
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r145",
+                     superseded_by="place() row at rho 0.145"),
     CalibrationPoint(20, "walk", 0.095, 0.250, "build", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r095"),
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r095",
+                     superseded_by="place() row at rho 0.095"),
     CalibrationPoint(20, "walk", 0.035, 0.232, "build", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r035"),
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r035",
+                     superseded_by="place() row at rho 0.035"),
     CalibrationPoint(20, "walk", 0.145, 0.335, "final", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r145"),
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r145",
+                     superseded_by="place() row at rho 0.145"),
     CalibrationPoint(20, "walk", 0.095, 0.288, "final", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r095"),
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r095",
+                     superseded_by="place() row at rho 0.095"),
     CalibrationPoint(20, "walk", 0.035, 0.262, "final", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r035"),
-    CalibrationPoint(20, "meander", 1.274, 0.225, "final", "hardcore_min",
-                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_..._r030_meander"),
-
-    # --- the one DP-20 row measured with place() -------------------------
-    # Re-measuring the five DP-20 rows with place() was authorised and run on
-    # 2026-09-21. Four of the five stopped at stage 2 on the push-off's own
-    # bond gate, with 3 to 6 persistent 1.3-1.4 sigma bonds that the placed
-    # build did not have; those four stay script-built above and provisional.
-    # This one passed every gate with zero threaded bonds, and it lands on the
-    # script's number: final 0.2598 against 0.262, build 0.2388 against 0.232.
-    # Labelled "pushoff" so it does not steer on its own -- see
-    # CalibrationPoint for why that is deliberate.
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_mix90_4sh_r035",
+                     superseded_by="place() row at rho 0.035"),
+    # place() without the pinch fix, 2026-09-21: the one of five that passed
+    # the bond gate then (final 0.2598 against the script's 0.262).
     CalibrationPoint(20, "walk", 0.035, 0.2598, "final", "pushoff",
                      "N20_MIX90_4sh",
                      "tests/output/v54_2/recal_w0035/controller.json",
-                     builder="place"),
+                     builder="place",
+                     superseded_by="place() row at rho 0.035, the same "
+                                   "case with junction jitter 0.15"),
     CalibrationPoint(20, "walk", 0.035, 0.2388, "build", "pushoff",
                      "N20_MIX90_4sh",
                      "tests/output/v54_2/recal_w0035/controller.json",
-                     builder="place"),
+                     builder="place",
+                     superseded_by="place() row at rho 0.035, the same "
+                                   "case with junction jitter 0.15"),
+    # Not replaced: place() cannot build this coil on this graph (below
+    # about 1.37 the longest chords outgrow their contour; 1.35 fails the
+    # gate on 23 strands). Minimiser protocol, so it seeds nothing while the
+    # place() meander rows exist.
+    CalibrationPoint(20, "meander", 1.274, 0.225, "final", "hardcore_min",
+                     "N20_MIX90_4sh", "REPORT.md 4, runs/N20_..._r030_meander",
+                     note="script-built; no place() counterpart"),
 
     # --- DP 100, N100 SC 8-shell graph, final box rho 0.3015 ---
     CalibrationPoint(100, "walk", 0.060, 1.17, "final", "limit",
@@ -216,22 +337,40 @@ CALIBRATION: tuple[CalibrationPoint, ...] = (
 #: proved the floor is a floor -- but it is named, with the route that goes
 #: lower where there is one.
 #:
-#: The random-walk floor is the measured one: lowering the build density from
-#: 0.145 to 0.035 moved DP-20 Z only from 0.30 to 0.23 at the build state and
-#: 0.335 to 0.262 at the final state, because coiled chains collapse during the
-#: push-off at fixed volume and trap the crossings. Density alone does not get
-#: a random walk to the reference's 0.178; shape does.
+#: At DP 20 both floors are ``place()`` builds with the pinch fix, and the
+#: floors coincide: the walk at build density 0.035 ends at 0.2365 and the
+#: meander at coil 1.402 at 0.2356 (three seeds, sd 0.0036). The routes do not:
+#: at one build density the meander is the lower (the walk's power law gives
+#: 0.2435 at 0.040, where the meander gives 0.2356), but the walk is built
+#: further down, at coil 1.341. Against ``place()`` without the fix both drop
+#: (walk 0.2598 to 0.2365 at 0.035; meander 0.260 to 0.2356 at 1.402, that one
+#: a gate-off run with a pinch in it); against the validation scripts' rows the
+#: walk is lower and the meander higher (0.224), which is the change of builder,
+#: not the fix. Neither route gets to the reference's 0.178. ``z_sd`` is the
+#: seed spread of the floor's row (0 for one seed); :func:`floor_warning`
+#: compares two floors against it.
 FLOORS: dict[tuple[int, str], dict] = {
-    (20, "walk"): {"z_final": 0.262, "z_build": 0.232, "actuator": 0.035,
-                   "note": "random-walk chains collapse during the push-off "
-                           "at fixed volume and trap crossings; the meander "
-                           "route reaches the reference distribution exactly "
-                           "at the same state (REPORT.md 4)."},
-    (20, "meander"): {"z_final": 0.224, "z_build": 0.192, "actuator": 1.402,
-                      "note": "lowest measured over the build densities tried "
-                              "(rho 0.03-0.05); REPORT.md 4.5 puts the DP-20 "
-                              "excess on the meander's kinks per strand, so "
-                              "fewer waves (conformation.meander_waves) is "
+    (20, "walk"): {"z_final": 0.2365, "z_build": 0.2220, "actuator": 0.035,
+                   "z_sd": 0.0,
+                   "note": "place() with junction jitter 0.15, one velocity "
+                           "seed. Build density 0.035 is coil 1.341 on "
+                           "this graph, where 30 lattice chords are longer than "
+                           "their contour (24 strands are drawn overstretched "
+                           "after the jitter, and the push-off pulls them in); "
+                           "the meander's settle does not converge there."},
+    (20, "meander"): {"z_final": 0.2356, "z_build": 0.2017, "actuator": 1.402,
+                      "z_sd": 0.0036,
+                      "note": "place() with junction jitter 0.15 and a 1-sigma "
+                              "settle, mean of three velocity seeds. "
+                              "At coil 1.37 and below (build density 0.037) 30 "
+                              "lattice chords of this graph are longer than "
+                              "their contour (none at 1.38) and the settle does "
+                              "not converge (coil 1.35: 23 strands fail the "
+                              "gate), and between "
+                              "1.402 and 1.51 Z does not move beyond the seed "
+                              "spread (0.2370 at 1.51). REPORT.md 4.5 puts the "
+                              "DP-20 excess on the meander's kinks per strand, "
+                              "so fewer waves (conformation.meander_waves) is "
                               "the untried lever below this."},
 }
 
@@ -239,13 +378,10 @@ FLOORS: dict[tuple[int, str], dict] = {
 #: Routes whose rows were re-measured with :func:`topon.conformation.place`
 #: and did not come back, and what stopped them. The rows of such a route
 #: describe the validation scripts' placement only, and anything seeded from
-#: them (``topon fit``) says so.
-REMEASURED: dict[tuple[int, str], str] = {
-    (20, "meander"): ("the place()-built meander builds at coil 1.40 and 1.51 "
-                      "stopped at stage 2 on the push-off bond gate, each "
-                      "with 3 persistent bonds at 1.3-1.4 sigma, so "
-                      "neither DP-20 meander row has a place() counterpart"),
-}
+#: them (``topon fit``) says so. Empty since 0.4.5: the DP-20 meander builds
+#: that stopped on the bond gate on 2026-09-21 pass it with the pinch fix, and
+#: every DP-20 route now has place() rows.
+REMEASURED: dict[tuple[int, str], str] = {}
 
 
 def actuator_name(placement: str) -> str:
@@ -260,9 +396,20 @@ def actuator_name(placement: str) -> str:
     return "build_density" if placement == "walk" else "coil_ratio"
 
 
+#: Protocol labels that name one deck. The crossing-free push-off was first
+#: labelled ``"limit"`` and then ``"pushoff"``; rows keep the label they were
+#: recorded under and are looked up as one.
+_DECK = {"limit": "pushoff", "pushoff": "pushoff"}
+
+
+def _deck(protocol: str) -> str:
+    return _DECK.get(protocol, protocol)
+
+
 def calibration_for(dp: int, placement: str, state: str = "final",
                     protocol: str = "limit",
-                    table: Sequence[CalibrationPoint] = CALIBRATION
+                    table: Sequence[CalibrationPoint] = CALIBRATION,
+                    include_superseded: bool = False
                     ) -> list[CalibrationPoint]:
     """Entries for this route, nearest DP first, then by actuator.
 
@@ -271,10 +418,16 @@ def calibration_for(dp: int, placement: str, state: str = "final",
     DP-dependent (0.18 at DP 20 against 1.32 at DP 100 on the same reference
     family), so a table row from another DP fixes the *slope* and not the
     level.
+
+    ``"limit"`` and ``"pushoff"`` are one deck, so asking for either returns
+    both. A row with ``superseded_by`` set is left out unless
+    ``include_superseded``: it is the record of a measurement that was
+    replaced, not something to steer on.
     """
     rows = [c for c in table
             if c.placement == placement and c.state == state
-            and c.protocol == protocol]
+            and _deck(c.protocol) == _deck(protocol)
+            and (include_superseded or not c.superseded_by)]
     if not rows:
         return []
     exact = [c for c in rows if c.dp == dp]
@@ -285,16 +438,49 @@ def calibration_for(dp: int, placement: str, state: str = "final",
                   key=lambda c: c.actuator)
 
 
+#: The order in which protocols seed the controller: the crossing-free deck,
+#: then the minimiser's rows where nothing else was measured.
+_SEED_ORDER = ("pushoff", "hardcore_min")
+
+
+def steering_rows(dp: int, placement: str, state: str = "final",
+                  table: Sequence[CalibrationPoint] = CALIBRATION
+                  ) -> list[CalibrationPoint]:
+    """The rows the controller seeds from: this DP first, then the nearest.
+
+    Rows measured at the requested DP win over rows of another DP whatever
+    protocol measured them, crossing-free deck first; only a DP with none of
+    its own borrows the nearest DP's, in the same protocol order. Superseded
+    rows never steer.
+
+    Borrowing is a starting guess and no more. Z per strand grows steeply with
+    DP, so another DP's rows fix a slope, not a level, and the nearest DP
+    changes as rows are added: since 0.4.5 a DP-50 walk borrows the DP-20 walk
+    rows (30 away) rather than DP 100's (50 away), which is what it borrowed
+    while DP 20 had only minimiser rows.
+    """
+    for protocol in _SEED_ORDER:
+        rows = [c for c in calibration_for(dp, placement, state, protocol,
+                                           table) if c.dp == dp]
+        if rows:
+            return rows
+    for protocol in _SEED_ORDER:
+        rows = calibration_for(dp, placement, state, protocol, table)
+        if rows:
+            return rows
+    return []
+
+
 def _power_law(points: Sequence[tuple[float, float]]):
     """``(A, b)`` of ``z = A x^b`` through the two points furthest apart in x.
 
     The widest pair gives the most stable exponent at this sample size:
-    intermediate points are noise, and the shipped table is two rows wide in
-    every case anyway.
+    intermediate points are noise, and most routes in the shipped table are
+    two or three rows wide.
 
     Returns ``None`` when the points cannot fix an exponent -- one point, two
-    at the same actuator, or two whose Z is the same (which the DP-20 meander
-    build-state rows are, 0.192 at two coil ratios).
+    at the same actuator, or two whose Z is the same. Whether a calibration
+    slope is worth lending is :func:`_table_slope`'s question.
     """
     usable = [(x, z) for x, z in points if x > 0 and z > 0]
     if len(usable) < 2:
@@ -310,6 +496,63 @@ def _power_law(points: Sequence[tuple[float, float]]):
     return A, b
 
 
+def build_options(rows: Sequence[CalibrationPoint],
+                  actuator: Optional[float] = None) -> dict:
+    """The ``conformation`` keys these rows were built with.
+
+    A knob read off a calibration row means what it measured only with the
+    build that row had: the DP-20 ``place()`` rows carry the pinch fix
+    (junction jitter, and for the meander a settle), and a build at the same
+    knob without it pinches and ends elsewhere. Returns
+    ``{"junction_jitter": ..., "settle_clearance": ...}`` with only the keys
+    that were on, from the rows at ``actuator`` when there are any, else from
+    all of them, taking the row nearest ``actuator`` when they disagree.
+    Empty for script-built rows and ``place()`` rows built without the fix.
+    """
+    rows = [c for c in rows if c.builder == "place"]
+    if not rows:
+        return {}
+    if actuator is not None:
+        at = [c for c in rows if abs(c.actuator - actuator) < 1e-9]
+        rows = at or sorted(rows, key=lambda c: abs(c.actuator - actuator))[:1]
+    first = rows[0]
+    out: dict = {}
+    if first.junction_jitter:
+        out["junction_jitter"] = float(first.junction_jitter)
+    if first.settle_clearance:
+        out["settle_clearance"] = float(first.settle_clearance)
+    return out
+
+
+def _table_slope(rows: Sequence[CalibrationPoint]):
+    """:func:`_power_law` over calibration rows, kept only when it is a slope.
+
+    Two conditions, both about what the rows can tell apart. Z has to rise
+    with the knob: no route has been seen to fall with it beyond its noise,
+    and following a negative exponent sends the seed the wrong way. And the
+    two rows the exponent is drawn through have to differ by more than the
+    seed spread either carries (``z_sd``): a difference inside it is noise,
+    and its exponent extrapolates to nonsense. A single-seed row carries
+    ``z_sd`` 0 and is taken at its word, so two single-seed rows closer than
+    their unmeasured spread still lend a slope. The DP-20 meander with
+    the pinch fix is the case for both: final Z 0.2356 (sd 0.0036 over three
+    seeds) at coil 1.402 and 0.2370 at 1.51, exponent 0.08, and at the build
+    state 0.2017 (sd 0.0048) against 0.1986, exponent -0.21.
+
+    Measured rounds (:func:`solve_actuator`) are not filtered here; the table
+    only decides where to start and what slope to lend.
+    """
+    fit = _power_law([(c.actuator, c.z) for c in rows])
+    if fit is None or fit[1] <= 0:
+        return None
+    usable = sorted((c for c in rows if c.actuator > 0 and c.z > 0),
+                    key=lambda c: c.actuator)
+    lo, hi = usable[0], usable[-1]
+    if abs(hi.z - lo.z) <= max(lo.z_sd, hi.z_sd):
+        return None
+    return fit
+
+
 def seed_actuator(dp: int, placement: str, target_z: float,
                   table: Sequence[CalibrationPoint] = CALIBRATION,
                   state: str = "final") -> tuple[float, dict]:
@@ -320,29 +563,39 @@ def seed_actuator(dp: int, placement: str, target_z: float,
     measured span -- which it usually is, because the shipped span is two
     points wide.
     """
-    rows = calibration_for(dp, placement, state, "limit", table)
-    if not rows:
-        rows = calibration_for(dp, placement, state, "hardcore_min", table)
+    rows = steering_rows(dp, placement, state, table)
     if not rows:
         other = "build" if state == "final" else "final"
-        rows = calibration_for(dp, placement, other, "limit", table)
+        rows = calibration_for(dp, placement, other, "pushoff", table)
     if not rows:
         raise ValueError(
             f"nothing measured for DP {dp} {placement}: give an explicit "
             f"coil_ratio or build_density to start from")
 
     pts = [(c.actuator, c.z) for c in rows]
-    fit = _power_law(pts)
+    fit = _table_slope(rows)
     note = {"rows": [asdict(c) for c in rows],
             "dp_used": rows[0].dp,
             "state_used": rows[0].state,
             "protocol_used": rows[0].protocol}
+    if fit is None and _power_law(pts) is not None:
+        # Several rows, and no slope between them that their seed spread
+        # can tell from noise (see _table_slope).
+        note["exponent"] = None
+        note["why"] = ("the rows do not rise with the knob by more than their "
+                       "seed spread, so they fix a level and not a slope: the "
+                       "first round starts from the row nearest the target, "
+                       "and with no slope to lend the loop stops after it "
+                       "unless a second knob is measured")
+        nearest = min(rows, key=lambda c: abs(c.z - target_z))
+        return float(nearest.actuator), note
     if fit is None:
         # One row: keep its actuator and say the level is all that is known.
         note["exponent"] = None
-        note["why"] = ("a single calibration row fixes a level, not a slope, "
-                       "so the first round repeats it and the second round "
-                       "gets the slope from the measurement")
+        note["why"] = ("a single calibration row fixes a level, not a slope: "
+                       "the first round repeats it, and with no slope to lend "
+                       "the loop stops after it unless a second knob is "
+                       "measured")
         return float(rows[0].actuator), note
 
     A, b = fit
@@ -398,14 +651,20 @@ def floor_warning(dp: int, placement: str, target_z: float,
                   floors: dict = FLOORS) -> Optional[str]:
     """A sentence naming the floor, when the target is under it.
 
-    Returns ``None`` when the target is reachable by everything measured.
+    Returns ``None`` when the target is reachable by everything measured. For
+    the walk it also names the meander's floor at the DP the walk's floor was
+    measured at: as the route to switch to when it is lower by more than the
+    seed spread either floor carries (``z_sd``), and as no lower when it is
+    not, which is the DP-20 case since 0.4.5 (0.2356 against 0.2365).
     """
+    src = dp
     entry = floors.get((dp, placement))
     if entry is None:
         nearest = [k for k in floors if k[1] == placement]
         if not nearest:
             return None
         key = min(nearest, key=lambda k: abs(k[0] - dp))
+        src = key[0]
         entry = dict(floors[key])
         entry["note"] = (f"measured at DP {key[0]}, not DP {dp}: "
                          + entry["note"])
@@ -416,8 +675,21 @@ def floor_warning(dp: int, placement: str, target_z: float,
            f"at {actuator_name(placement)} {entry['actuator']:g}). "
            f"{entry['note']}")
     if placement == "walk":
-        msg += (" Switch conformation.placement to 'meander' to go lower; "
-                "it is the shape, not the density, that sets the floor.")
+        meander = floors.get((src, "meander"))
+        if meander is None:
+            msg += (" Nothing is measured for the meander route "
+                    "(conformation.placement 'meander') here; it is the "
+                    "other one to try.")
+        else:
+            spread = max(meander.get("z_sd", 0.0), entry.get("z_sd", 0.0))
+            where = (f"{meander['z_final']:g} at DP {src} (coil_ratio "
+                     f"{meander['actuator']:g})")
+            if meander["z_final"] < entry["z_final"] - spread:
+                msg += (f" The meander route has reached {where}; switch "
+                        f"conformation.placement to 'meander' for that.")
+            else:
+                msg += (f" The meander route's floor is {where}, no lower "
+                        f"within the seed spread.")
     return msg
 
 
@@ -619,10 +891,8 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
             manifest["warnings"].append(warn)
             say(f"  [WARN] {warn}")
 
-    table_rows = (calibration_for(dp, placement, state, "limit", table)
-                  or calibration_for(dp, placement, state, "hardcore_min",
-                                     table))
-    table_fit = _power_law([(c.actuator, c.z) for c in table_rows])
+    table_rows = steering_rows(dp, placement, state, table)
+    table_fit = _table_slope(table_rows) if table_rows else None
     table_exponent = None if table_fit is None else table_fit[1]
 
     measured: list[tuple[float, float]] = []
@@ -690,9 +960,9 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
             # One point and no slope to borrow. That is a table gap, not a
             # failure of the build, so the loop stops and says which: guessing
             # a direction here would spend an hour of LAMMPS on a coin toss.
-            msg = (f"stopped after round {r}: {exc}. Add a second "
-                   f"{knob} by hand, or run with a wider max_rounds from a "
-                   f"different starting point.")
+            msg = (f"stopped after round {r}: {exc}. Measure a second "
+                   f"{knob} by hand; the two readings fix the slope "
+                   f"(solve_actuator).")
             manifest["warnings"].append(msg)
             say(f"  [WARN] {msg}")
             break

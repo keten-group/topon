@@ -1,0 +1,18 @@
+100/1308 in      3 s
+200/1308 in     24 s
+300/1308 in     45 s
+400/1308 in     84 s
+500/1308 in    161 s
+600/1308 in    230 s
+700/1308 in    281 s
+800/1308 in    286 s
+900/1308 in    291 s
+1000/1308 in    313 s
+1100/1308 in    378 s
+1200/1308 in    442 s
+1300/1308 in    507 s
+1308/1308 in    519 s
+C_exact         reached 327/327  median 0.04983 s  p90 0.4031 s  max 0.5243 s
+C_pruning       reached 325/327  median 0.04352 s  p90 0.9038 s  max 54.1 s
+python_exact    reached 327/327  median 0.4851 s  p90 13.45 s  max 23.13 s
+python_pruning  reached 319/327  median 0.1559 s  p90 2.83 s  max 90.81 s

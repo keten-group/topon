@@ -11,7 +11,7 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 pair_style      soft 3.0
 
 read_data       system_after_soft.data
@@ -34,8 +34,8 @@ fix             lang all langevin 300.0 300.0 100.0 7811
 fix             cap all nve/limit 0.1
 timestep        1.0
 thermo          1000
-# RUNTIME: 5000 steps
-run             5000
+# RUNTIME: 2500 steps
+run             2500
 unfix           cap
 unfix           lang
 unfix           ramp

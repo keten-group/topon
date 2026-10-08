@@ -346,6 +346,160 @@ def check_site_count(target_counts, max_func, search, n_sites, label="",
             f"{n_sites}; enlarge lattice_size or lower the counts.{hint}")
 
 
+def _active_component(adj, node_status, start):
+    """The sites reached from ``start`` over edges with both ends ACTIVE."""
+    seen = {start}
+    stack = [start]
+    while stack:
+        for nbr in adj[stack.pop()]:
+            if nbr not in seen and node_status[nbr] == "ACTIVE":
+                seen.add(nbr)
+                stack.append(nbr)
+    return seen
+
+
+class _ActiveConnectivity:
+    """The strict sculptor's connectivity check, answered from the last answer.
+
+    ``run_single_trial`` asks after every edge it removes in stages 2 to 4
+    whether the subgraph of ACTIVE sites is still connected, and
+    ``_is_subgraph_connected`` answers by searching all of it. At three SC
+    shells that was about 28,700 full searches a trial and 98.7 % of its
+    time. This gives the same answer from the state before the move:
+
+    * connected before, edge (u, v) removed: connected after exactly when v
+      is still reached from u. A search from both ends, one site from each
+      in turn, stops as soon as the two meet (on a lattice, within a step
+      or two), or, when the edge was a bridge, once the smaller side has
+      run out;
+    * disconnected before: disconnected after, since removing an edge
+      joins nothing;
+    * not known (a trial's start, stage 1's removals, which are never
+      checked, and a site leaving the active set in a way that could join
+      the rest): the components of the two ends are walked in full, which
+      gives the answer and whether the removed edge had joined them.
+
+    The question is ``_is_subgraph_connected``'s: only ACTIVE sites count,
+    an edge counts only when both its ends are ACTIVE, and no ACTIVE site
+    at all counts as connected. The answers never depend on search order,
+    and nothing here draws a random number or touches the graph (putting
+    an edge back reorders NetworkX's adjacency, and so what the sculptor's
+    shuffles return), so a seed builds the same graph as with the full
+    search. ``run_single_trial`` reports every removal and restore and
+    every site it marks.
+    """
+
+    def __init__(self, g, node_status, full_check):
+        adj = getattr(g, "_adj", None)
+        self._adj = g.adj if adj is None else adj
+        self._g = g
+        self._status = node_status
+        self._full_check = full_check
+        self._state = None    # connected now; None when not known
+        self._before = None   # the state before the last removal
+
+    def _full(self):
+        return self._full_check(self._g, self._status)
+
+    def connected(self):
+        """Whether the ACTIVE subgraph is connected now."""
+        if self._state is None:
+            self._state = self._full()
+        return self._state
+
+    def dropped(self):
+        """An edge was just removed."""
+        self._before = self._state
+        self._state = None
+
+    def restored(self):
+        """The edge removed last was just put back.
+
+        Only that edge: the state it returns to is the one before the last
+        removal, so putting back any earlier edge would leave it wrong.
+        """
+        self._state = self._before
+
+    def keeps_connected(self, u, v):
+        """Edge (u, v) was just removed: is the ACTIVE subgraph connected?"""
+        status = self._status
+        before = self._before
+        if u == v or status[u] != "ACTIVE" or status[v] != "ACTIVE":
+            # Not an edge of the ACTIVE subgraph, which is unchanged.
+            if before is None:
+                before = self._full()
+            after = before
+        elif before is True:
+            after = self._reaches(u, v)
+        elif before is False:
+            after = False
+        else:
+            adj = self._adj
+            n_active = sum(1 for n in adj if status[n] == "ACTIVE")
+            seen_u = _active_component(adj, status, u)
+            if len(seen_u) == n_active:
+                before = after = True
+            elif v in seen_u:
+                before = after = False
+            else:
+                # Put back, the edge joins u's side to v's; connected
+                # before exactly when the two sides were all of it.
+                seen_v = _active_component(adj, status, v)
+                before = len(seen_u) + len(seen_v) == n_active
+                after = False
+        self._before = before
+        self._state = after
+        return after
+
+    def deactivate(self, n):
+        """Site ``n`` is about to leave the ACTIVE set."""
+        if self._state is None:
+            return
+        status = self._status
+        partners = {m for m in self._adj[n]
+                    if m != n and status[m] == "ACTIVE"}
+        if len(partners) == 1:
+            # A leaf: removing it neither splits the rest nor joins it.
+            return
+        if not partners:
+            # Isolated. If the subgraph was connected, n was all of it and
+            # none is left, which counts as connected; if it was not, n
+            # may have been the only other piece.
+            if self._state is False:
+                self._state = None
+            return
+        self._state = None
+
+    def _reaches(self, u, v):
+        """Whether v is reached from u over ACTIVE sites (u != v).
+
+        A breadth-first search from each end, one site from each side in
+        turn. The two sides stay disjoint, since each looks for the other
+        before it claims a site, so they meet exactly when a path exists;
+        a side that runs out is a whole component without the other end.
+        """
+        adj, status = self._adj, self._status
+        seen_u, seen_v = {u}, {v}
+        queue_u, queue_v = [u], [v]
+        i = j = 0
+        while i < len(queue_u) and j < len(queue_v):
+            for nbr in adj[queue_u[i]]:
+                if nbr in seen_v:
+                    return True
+                if nbr not in seen_u and status[nbr] == "ACTIVE":
+                    seen_u.add(nbr)
+                    queue_u.append(nbr)
+            i += 1
+            for nbr in adj[queue_v[j]]:
+                if nbr in seen_u:
+                    return True
+                if nbr not in seen_v and status[nbr] == "ACTIVE":
+                    seen_v.add(nbr)
+                    queue_v.append(nbr)
+            j += 1
+        return False
+
+
 class PythonTopologyGenerator:
     """
     A Python implementation of the 'Strict Sculpting' algorithm for polymer network generation.
@@ -1138,6 +1292,16 @@ class PythonTopologyGenerator:
         # Default active
         node_status = {n: "ACTIVE" for n in g.nodes()}
 
+        # Whether the ACTIVE subgraph is connected, carried from one check
+        # to the next instead of searched for in full each time (see
+        # _ActiveConnectivity). It hears of every edge change through
+        # drop/restore and of every site marked through mark().
+        conn = _ActiveConnectivity(g, node_status, self._is_subgraph_connected)
+
+        def mark(n, status):
+            conn.deactivate(n)
+            node_status[n] = status
+
         # Running degree histogram: hist[d] is the number of sites of
         # degree d, kept in step with every edge removed or put back. The
         # move-safety check and stage 4's completion test read it instead
@@ -1155,9 +1319,11 @@ class PythonTopologyGenerator:
             hist[dv] -= 1
             hist[dv - 1] += 1
             g.remove_edge(u, v)
+            conn.dropped()
 
         def restore(u, v):
             g.add_edge(u, v)
+            conn.restored()
             du, dv = deg[u], deg[v]
             hist[du - 1] -= 1
             hist[du] += 1
@@ -1203,8 +1369,8 @@ class PythonTopologyGenerator:
                 
                 if not removed:
                     return None # Failed to isolate node
-            
-            node_status[node_idx] = "IS_DEGREE_0"
+
+            mark(node_idx, "IS_DEGREE_0")
             
         # --- Stage 2: Set d1 (Strict) ---
         for _ in range(n1_target):
@@ -1230,8 +1396,8 @@ class PythonTopologyGenerator:
                         continue
 
                     drop(node_idx, neighbor)
-                    
-                    if self._is_subgraph_connected(g, node_status):
+
+                    if conn.keeps_connected(node_idx, neighbor):
                         move_history.append({'stage': 2, 'edge': (node_idx, neighbor), 'reason': 'd1'})
                         removed = True
                         break
@@ -1240,8 +1406,8 @@ class PythonTopologyGenerator:
                         
                 if not removed:
                     return None # Failed to reduce to d1
-            
-            node_status[node_idx] = "IS_DEGREE_1"
+
+            mark(node_idx, "IS_DEGREE_1")
 
         # --- Stage 3: Enforce Max Functionality (Strict) ---
         for i in range(total_nodes):
@@ -1263,7 +1429,7 @@ class PythonTopologyGenerator:
                         continue
 
                     drop(node_idx, neighbor)
-                    if self._is_subgraph_connected(g, node_status):
+                    if conn.keeps_connected(node_idx, neighbor):
                         move_history.append({'stage': 3, 'edge': (node_idx, neighbor), 'reason': 'max_func'})
                         removed = True
                         break
@@ -1313,11 +1479,11 @@ class PythonTopologyGenerator:
                          # e:N mode
                         if current_degree_sum != target_degree_sum:
                             is_done = False
-                        if not self._is_subgraph_connected(g, node_status):
+                        if not conn.connected():
                             is_done = False
                     else:
                         # Legacy mode (d0 already met, just need connectivity)
-                        if self._is_subgraph_connected(g, node_status):
+                        if conn.connected():
                              is_done = True
                         else:
                              return None # Failed connectivity check at end
@@ -1355,8 +1521,8 @@ class PythonTopologyGenerator:
                     continue
 
                 drop(u, v)
-                
-                if self._is_subgraph_connected(g, node_status):
+
+                if conn.keeps_connected(u, v):
                     move_history.append({'stage': 4, 'edge': (u, v), 'reason': 'systematic'})
                     move_made = True
                     break # Restart loop
@@ -1396,6 +1562,13 @@ class PythonTopologyGenerator:
         calls per check on a 1000-node lattice. Since this function is
         roughly 99% of the generator's runtime, that made the whole
         generator about eight times slower than it needed to be.
+
+        Since 0.4.5 ``run_single_trial`` asks ``_ActiveConnectivity``, which
+        calls this only when it does not know the state and the question
+        is not about a removed edge of the ACTIVE subgraph. Such a removal
+        is answered from the state before it: a search between the two
+        ends, no search when already split, or walks of the two ends'
+        components when not known.
         """
         # Edges count only when BOTH ends are ACTIVE, matching the C
         # searcher: `if (node_status[pCrawl->dest] == ACTIVE) unite_sets(...)`.
@@ -1414,15 +1587,7 @@ class PythonTopologyGenerator:
                     start = n
         if start is None:
             return True
-
-        seen = {start}
-        stack = [start]
-        while stack:
-            for nbr in adj[stack.pop()]:
-                if nbr not in seen and node_status[nbr] == "ACTIVE":
-                    seen.add(nbr)
-                    stack.append(nbr)
-        return len(seen) == n_active
+        return len(_active_component(adj, node_status, start)) == n_active
 
 
     def _is_move_safe(self, g, u, v, stage, target_degree_sum, current_total_degree_sum,

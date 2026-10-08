@@ -98,6 +98,7 @@ __all__ = [
     "requests_from_config",
     "contour_cost",
     "route_designed_pairs",
+    "unwound_paths",
 ]
 
 #: Points used to measure a routed path's arc length. The braid is a smooth
@@ -176,10 +177,16 @@ class PairOutcome:
 
 @dataclass
 class DesignReport:
-    """Every request, and the paths that came back changed."""
+    """Every request, and the paths that came back changed.
+
+    ``routes`` keeps, per braided strand, the braids it carries and the wave
+    count and radius scale its path was drawn with, so the same strand can be
+    drawn again with the braids at zero turns (:func:`unwound_paths`).
+    """
 
     outcomes: list[PairOutcome] = field(default_factory=list)
     paths: dict[int, np.ndarray] = field(default_factory=dict)
+    routes: dict[int, dict] = field(default_factory=dict)
 
     @property
     def accepted(self) -> list[PairOutcome]:
@@ -211,9 +218,10 @@ class DesignReport:
 def chords_of(placement, indices: Optional[Iterable[int]] = None) -> dict:
     """``{strand index: (start, end)}`` for the strands that have a chord.
 
-    A primary loop has none -- both of its ends are the same junction -- so it
-    is left out, and a request naming one is refused on that ground rather than
-    crashing on a degenerate chord.
+    A primary loop has none -- both of its ends are the same junction -- and
+    nor does a sol chain, which meets no junction, so both are left out, and a
+    request naming one is refused on that ground rather than crashing on a
+    degenerate chord.
 
     The chords come back in each strand's own image, which is where its beads
     are. Bringing a pair into one image is :func:`nearest_image_of`'s job and
@@ -223,7 +231,7 @@ def chords_of(placement, indices: Optional[Iterable[int]] = None) -> dict:
     out = {}
     wanted = None if indices is None else set(int(i) for i in indices)
     for i, s in enumerate(placement.strands):
-        if s.plan.kind == "loop":
+        if not s.plan.chorded:
             continue
         if wanted is not None and i not in wanted:
             continue
@@ -601,8 +609,8 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
             known = len(placement.strands)
             out.reason = (
                 f"strand {missing[0]} has no chord to braid about "
-                f"(a primary loop, or out of range: the build has {known} "
-                f"strands)")
+                f"(a primary loop, a sol chain, or out of range: the build "
+                f"has {known} strands)")
             report.outcomes.append(out)
             continue
 
@@ -729,6 +737,9 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
             min_bond=placement.limits.min_bond,
             min_sep=placement.limits.min_sep, waves=waves,
             is_loop=st.plan.kind == "loop")
+        report.routes[idx] = {"entries": list(entries),
+                              "waves": notes[idx]["waves"],
+                              "radius_scale": notes[idx]["radius_scale"]}
 
     if not apply:
         return report
@@ -861,3 +872,91 @@ def route_designed_pairs(placement, requests: Sequence[PairRequest], *,
                 f"free run left over cannot carry the contour without folding "
                 f"-- lower the coil ratio, or ask for fewer windings")
     return report
+
+
+def _untwist(path, contact, half, side, windings, n_radius, m_radius, ramp):
+    """``path`` with one braid's phase rotation taken out, in place.
+
+    Every bead inside the braid's span is moved by the difference between
+    where :func:`~topon.conformation.entanglement.braid.braid_path` put the
+    arm at its axial coordinate and where the arm would be at phase zero,
+    weighted by the same blend. What the drawing did to the beads after the
+    arm was laid (the wave, the unfold, the bond relaxation) is kept.
+    """
+    p = np.array(path, float)
+    if half <= 0.0 or windings == 0:
+        return p
+    ramp_u = min(ramp, 0.45 * 2.0 * half)
+    p_lo, p_hi = -half + ramp_u, half - ramp_u
+    u = (p - contact.origin) @ contact.axis
+    inside = np.abs(u) < half
+    for k in np.flatnonzero(inside):
+        uk = float(u[k])
+        if uk < p_lo:
+            frac, w = 0.0, (uk + half) / max(p_lo + half, 1e-12)
+        elif uk > p_hi:
+            frac, w = 1.0, (half - uk) / max(half - p_hi, 1e-12)
+        else:
+            frac, w = (uk - p_lo) / max(p_hi - p_lo, 1e-12), 1.0
+        w = float(np.clip(w, 0.0, 1.0))
+        w = w * w * (3.0 - 2.0 * w)
+        phi = 2.0 * np.pi * windings * frac
+        p[k] += w * side * (n_radius * (1.0 - np.cos(phi)) * contact.toward
+                            - m_radius * np.sin(phi) * contact.across)
+    return p
+
+
+def unwound_paths(placement, report: DesignReport, method: str = "untwist",
+                  reach: float = 0.4) -> dict[int, np.ndarray]:
+    """Every strand the report braided, drawn without its windings.
+
+    The reference a designed winding is read against
+    (:mod:`topon.analysis.windings`). Two ways:
+
+    * ``"untwist"`` (the default) takes the phase rotation out of each braid
+      in place. Inside the braid's span the strand keeps to its own side of
+      the shared axis and does not go round its partner, and every other
+      bead is where the braided drawing put it. The two drawings differ only
+      inside the braids, so a strand of either cycle running through a braid
+      is the one thing that can make the reading depend on the cycles chosen.
+    * ``"redraw"`` draws the strand again from its chord with the same
+      contacts, spans, sides, wave count and radius scale, at zero turns:
+      the control of the designed-pair check, "the same machinery with no
+      braid". The wave is
+      re-solved to the shorter arm, so the free run moves too.
+
+    Measured on SC 6x6x6 at DP 60, 80 pairs from coil 2.84 to 6.12: of the 36
+    pairs the designed-pair check delivers, the untwist reads the requested count
+    on every cycle pair for 34 and the redraw for 33; of the 44 it refuses,
+    the untwist reads the requested count for none and the redraw for 8,
+    whose re-waved free run winds the partner by itself. ``reach`` must be
+    the one the paths were drawn with. Strands the report put back have no
+    braided path and are left out.
+    """
+    if method not in ("untwist", "redraw"):
+        raise ValueError(f"unknown method {method!r} (untwist or redraw)")
+    chords = chords_of(placement)
+    out = {}
+    for idx, route in report.routes.items():
+        if idx not in report.paths:
+            continue
+        scale = float(route["radius_scale"])
+        if method == "redraw":
+            st = placement.strands[idx]
+            entries = [(c, half, side, 0, shape)
+                       for c, half, side, _e, shape in route["entries"]]
+            w = float(route["waves"])
+            out[idx], _info = _braided_path(
+                chords[idx], entries, len(st.path), float(placement.bond),
+                min_bond=placement.limits.min_bond,
+                min_sep=placement.limits.min_sep, waves=w, min_waves=w,
+                is_loop=st.plan.kind == "loop", radius_scales=(scale,),
+                reach=reach)
+            continue
+        p = np.asarray(report.paths[idx], float)
+        for contact, half, side, windings, shape in route["entries"]:
+            n_r = min(shape.n_radius * scale, reach * contact.gap)
+            p = _untwist(p, contact, half, side, windings, n_r,
+                         shape.m_radius, shape.ramp)
+        out[idx] = p
+    return out

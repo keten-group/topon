@@ -146,8 +146,17 @@ class ChainType:
 
     ``reactive`` are bead indices, 0 being a chain end, interior beads only
     (a crosslink on an end bead would give it two bonds, which is not a
-    junction). ``site_types`` labels each reactive bead (one label for all,
-    or one per bead) for the pairing rule of :func:`crosslink_chains`.
+    junction) unless ``allow_ends``. ``site_types`` labels each reactive bead
+    (one label for all, or one per bead) for the pairing rule of
+    :func:`crosslink_chains`.
+
+    Two opt-in rules, which the pipeline does not use: ``allow_ends``
+    lets the end beads be sites (an end crosslinked to an interior bead
+    makes a junction of 3, two ends crosslinked to each other only join
+    their chains), and ``pendants`` hangs one side bead from each of these
+    beads, the side bead being the site (``pendant_types`` labels them as
+    ``site_types`` does the reactive beads). A crosslink between two side
+    beads joins their anchors.
     """
 
     count: int
@@ -155,6 +164,9 @@ class ChainType:
     reactive: tuple
     site_types: object = "X"
     name: str = "A"
+    allow_ends: bool = False
+    pendants: tuple = ()
+    pendant_types: object = "X"
 
     def __post_init__(self):
         if int(self.count) < 1:
@@ -166,22 +178,50 @@ class ChainType:
         if list(r) != sorted(set(r)):
             raise CrosslinkingError(f"chain type {self.name!r}: reactive beads "
                                     f"must be distinct and increasing")
-        bad = [x for x in r if not 1 <= x <= int(self.dp) - 2]
-        if bad:
-            raise CrosslinkingError(
-                f"chain type {self.name!r}: reactive beads {bad[:5]} are not "
-                f"interior (1 to {int(self.dp) - 2}); a crosslink on a chain "
-                f"end bead leaves it with two bonds, which is no junction")
-        object.__setattr__(self, "reactive", r)
-        if isinstance(self.site_types, str):
-            types = (self.site_types,) * len(r)
+        if self.allow_ends:
+            bad = [x for x in r if not 0 <= x <= int(self.dp) - 1]
+            if bad:
+                raise CrosslinkingError(f"chain type {self.name!r}: reactive beads "
+                                        f"{bad[:5]} are not on a chain of {self.dp}")
         else:
-            types = tuple(str(t) for t in self.site_types)
-            if len(types) != len(r):
+            bad = [x for x in r if not 1 <= x <= int(self.dp) - 2]
+            if bad:
                 raise CrosslinkingError(
-                    f"chain type {self.name!r}: {len(types)} site types for "
-                    f"{len(r)} reactive beads")
-        object.__setattr__(self, "site_types", types)
+                    f"chain type {self.name!r}: reactive beads {bad[:5]} are not "
+                    f"interior (1 to {int(self.dp) - 2}); a crosslink on a chain "
+                    f"end bead leaves it with two bonds, which is no junction")
+        object.__setattr__(self, "reactive", r)
+        object.__setattr__(self, "site_types", self._labels(self.site_types, len(r),
+                                                            "reactive beads"))
+        pend = tuple(int(x) for x in self.pendants)
+        if list(pend) != sorted(set(pend)):
+            raise CrosslinkingError(f"chain type {self.name!r}: pendant anchors must be "
+                                    f"distinct and increasing")
+        bad = [x for x in pend if not 0 <= x <= int(self.dp) - 1]
+        if bad:
+            raise CrosslinkingError(f"chain type {self.name!r}: pendant anchors {bad[:5]} "
+                                    f"are not on a chain of {self.dp}")
+        if set(pend) & set(r):
+            raise CrosslinkingError(f"chain type {self.name!r}: beads "
+                                    f"{sorted(set(pend) & set(r))[:5]} are both reactive "
+                                    f"and a pendant's anchor")
+        object.__setattr__(self, "pendants", pend)
+        object.__setattr__(self, "pendant_types", self._labels(self.pendant_types, len(pend),
+                                                               "pendants"))
+
+    def _labels(self, given, n, what):
+        if isinstance(given, str):
+            return (given,) * n
+        types = tuple(str(t) for t in given)
+        if len(types) != n:
+            raise CrosslinkingError(f"chain type {self.name!r}: {len(types)} site types for "
+                                    f"{n} {what}")
+        return types
+
+    @property
+    def n_sites(self) -> int:
+        """Reactive beads and pendant side beads."""
+        return len(self.reactive) + len(self.pendants)
 
     @classmethod
     def every(cls, count: int, dp: int, every: int = 1, start: int = 1,
@@ -224,8 +264,13 @@ class CrosslinkedMelt:
     ``positions[c]`` are chain ``c``'s bead coordinates in lattice units,
     unwrapped along the chain (wrap them into ``box`` for a periodic frame).
     ``crosslinks`` are ``((chain, bead), (chain, bead))`` in the order they
-    were made, chains counted from 0. ``graph`` is the strand graph of all
-    of them; :meth:`graph_at` gives it for any prefix.
+    were made, chains counted from 0; a bead from the chain's length on is
+    a pendant side bead (``dp + k`` the side bead of its ``k``-th pendant,
+    whose position is ``pendant_positions[c][k]``). ``graph`` is the strand
+    graph of all of them; :meth:`graph_at` gives it for any prefix. With the
+    general site rules in use (``general``) the graph is read from the bead
+    system by :func:`topon.analysis.crosslinked.from_beads`, side beads
+    reduced to their anchors.
     """
 
     graph: nx.MultiGraph
@@ -234,6 +279,9 @@ class CrosslinkedMelt:
     box: np.ndarray
     chain_types: list
     record: dict = field(default_factory=dict)
+    pendant_positions: Optional[list] = None
+    pendant_anchors: Optional[list] = None
+    general: bool = False
 
     @property
     def lengths(self) -> list:
@@ -243,6 +291,9 @@ class CrosslinkedMelt:
         """The strand graph after the first ``n`` crosslinks of this run."""
         if not 0 <= int(n) <= len(self.crosslinks):
             raise CrosslinkingError(f"n {n} outside 0 to {len(self.crosslinks)}")
+        if self.general:
+            return _site_graph(self.positions, self.crosslinks[:int(n)], self.box,
+                               self.chain_types, self.pendant_positions, self.pendant_anchors)
         return strand_graph(self.positions, self.crosslinks[:int(n)], self.box,
                             chain_types=self.chain_types)
 
@@ -251,25 +302,59 @@ class CrosslinkedMelt:
 
         Bead ids from 1 in chain order, molecule ids from 1 per chain, bond
         type 1 along a chain and 2 for a crosslink, positions wrapped into
-        the box: what :func:`topon.analysis.crosslinked.from_beads` reads.
+        the box: what :func:`topon.analysis.crosslinked.from_beads` reads. A
+        chain's pendant side beads follow its last bead, each bonded to its
+        anchor by a bond of type 3.
         """
-        pos, mol, bonds, types = {}, {}, [], []
-        first = {}
-        nxt = 1
-        for c, P in enumerate(self.positions):
-            first[c] = nxt
-            W = np.mod(P, self.box)
-            for b in range(len(P)):
-                pos[nxt] = W[b]
+        return _bead_system(self.positions, self.crosslinks, self.box,
+                            self.pendant_positions, self.pendant_anchors)
+
+
+def _bead_system(positions, crosslinks, box, pendant_positions=None, pendant_anchors=None):
+    pos, mol, bonds, types = {}, {}, [], []
+    first = {}
+    nxt = 1
+    for c, P in enumerate(positions):
+        first[c] = nxt
+        W = np.mod(P, box)
+        for b in range(len(P)):
+            pos[nxt] = W[b]
+            mol[nxt] = c + 1
+            if b:
+                bonds.append((nxt - 1, nxt))
+                types.append(1)
+            nxt += 1
+        if pendant_positions is not None:
+            for k, a in enumerate(pendant_anchors[c]):
+                pos[nxt] = np.mod(pendant_positions[c][k], box)
                 mol[nxt] = c + 1
-                if b:
-                    bonds.append((nxt - 1, nxt))
-                    types.append(1)
+                bonds.append((first[c] + int(a), nxt))
+                types.append(3)
                 nxt += 1
-        for (ci, bi), (cj, bj) in self.crosslinks:
-            bonds.append((first[ci] + bi, first[cj] + bj))
-            types.append(2)
-        return pos, mol, bonds, types
+    for (ci, bi), (cj, bj) in crosslinks:
+        bonds.append((first[ci] + bi, first[cj] + bj))
+        types.append(2)
+    return pos, mol, bonds, types
+
+
+def _site_graph(positions, crosslinks, box, chain_types, pendant_positions=None,
+                pendant_anchors=None) -> nx.MultiGraph:
+    """The strand graph under the general site rules, read as any bead system is.
+
+    Ends crosslinked, crosslinked neighbours fused and side beads reduced to
+    their anchors follow :func:`topon.analysis.crosslinked.from_beads`,
+    which the default graph of :func:`strand_graph` is identical to.
+    """
+    from topon.analysis.crosslinked import from_beads   # the reader's convention, kept in one place
+
+    pos, mol, bonds, types = _bead_system(positions, crosslinks, box, pendant_positions,
+                                          pendant_anchors)
+    side = {b for (i, b), t in zip(bonds, types) if t == 3}
+    G = from_beads(pos, mol, bonds, box, bond_types=types, crosslink_bond_types=(2,),
+                   side_beads=side or None).graph
+    for m, rec in G.graph["chains"].items():
+        rec["type"] = int(chain_types[m - 1])
+    return G
 
 
 # ---------------------------------------------------------------------------
@@ -285,17 +370,29 @@ def lattice_size(n_beads: int, packing: float) -> int:
 
 
 def grow_melt(lengths: Sequence[int], L: int, persistence: float, rng,
-              max_tries: int = 1000) -> tuple[list, dict]:
+              max_tries: int = 1000,
+              pendants: Optional[Sequence[Sequence[int]]] = None) -> tuple[list, dict]:
     """Self-avoiding chains grown one after another on a periodic ``L^3`` lattice.
 
     Returns the chains' unwrapped coordinates (one ``(dp, 3)`` array each)
     and a record of the restarts (chains that walked into a dead end and
     began again from another free site).
+
+    ``pendants`` lists, per chain, the beads that carry a side bead:
+    as soon as such a bead is placed its side bead goes on a free
+    neighbouring site, drawn uniformly, and the chain grows on around it (a
+    bead with no free neighbour left is a dead end). The record then holds
+    ``pendants``, each chain's side beads as an ``(k, 3)`` array of unwrapped
+    coordinates in the order of its sorted anchors. Chains without side
+    beads draw exactly what they draw without the argument.
     """
     lengths = [int(n) for n in lengths]
     V = int(L) ** 3
-    if sum(lengths) > V:
-        raise CrosslinkingError(f"{sum(lengths)} beads do not fit on {V} sites")
+    n_side = sum(len(set(a)) for a in pendants) if pendants is not None else 0
+    if pendants is not None and len(pendants) != len(lengths):
+        raise CrosslinkingError(f"pendants for {len(pendants)} chains, {len(lengths)} grown")
+    if sum(lengths) + n_side > V:
+        raise CrosslinkingError(f"{sum(lengths) + n_side} beads do not fit on {V} sites")
     p = float(persistence)
     if not 0.0 <= p < 1.0:
         raise CrosslinkingError(f"persistence {p} outside [0, 1)")
@@ -303,8 +400,25 @@ def grow_melt(lengths: Sequence[int], L: int, persistence: float, rng,
     turn = (1.0 - p) / 4.0
     L2 = L * L
     occ = bytearray(V)
-    positions, restarts = [], 0
-    for n in lengths:
+    positions, side_out, restarts = [], [], 0
+
+    def side_bead(x, y, z, draw):
+        """A free neighbour of (x, y, z), drawn uniformly: (direction, site) or None."""
+        free = []
+        for d in range(6):
+            dx, dy, dz = steps[d]
+            f = ((z + dz) % L) * L2 + ((y + dy) % L) * L + (x + dx) % L
+            if not occ[f]:
+                free.append((d, f))
+        if not free:
+            return None
+        return free[min(int(draw * len(free)), len(free) - 1)]
+
+    for ci, n in enumerate(lengths):
+        anc = sorted({int(a) for a in pendants[ci]}) if pendants is not None else []
+        if any(not 0 <= a < n for a in anc):
+            raise CrosslinkingError(f"chain {ci}: pendant anchors {anc} on a chain of {n}")
+        where = {a: j for j, a in enumerate(anc)}
         for _ in range(int(max_tries)):
             while True:
                 site = int(rng.integers(V))
@@ -315,7 +429,17 @@ def grow_melt(lengths: Sequence[int], L: int, persistence: float, rng,
             occ[site] = 1
             used, moves, last = [site], [], -1
             u = rng.random(n)
+            pv = rng.random(len(anc)) if anc else None
+            sides, ok = [], True
+            if 0 in where:
+                s = side_bead(x, y, z, pv[where[0]])
+                ok = s is not None
+                if ok:
+                    occ[s[1]] = 1
+                    sides.append(s)
             for k in range(1, n):
+                if not ok:
+                    break
                 opts, tot = [], 0.0
                 for d in range(6):
                     dx, dy, dz = steps[d]
@@ -335,15 +459,21 @@ def grow_melt(lengths: Sequence[int], L: int, persistence: float, rng,
                 occ[f] = 1
                 used.append(f)
                 moves.append(last)
-            if len(used) == n:
+                if k in where:
+                    s = side_bead(x, y, z, pv[where[k]])
+                    ok = s is not None
+                    if ok:
+                        occ[s[1]] = 1
+                        sides.append(s)
+            if ok and len(used) == n:
                 break
-            for f in used:                         # a dead end: start again
+            for f in used + [s[1] for s in sides]:     # a dead end: start again
                 occ[f] = 0
             restarts += 1
         else:
             raise CrosslinkingError(
                 f"a chain of {n} beads found no room in {max_tries} tries at "
-                f"packing {sum(lengths) / V:.3f}; lower the packing")
+                f"packing {(sum(lengths) + n_side) / V:.3f}; lower the packing")
         z, r = divmod(used[0], L2)
         y, x = divmod(r, L)
         P = np.empty((n, 3))
@@ -351,7 +481,13 @@ def grow_melt(lengths: Sequence[int], L: int, persistence: float, rng,
         if n > 1:
             P[1:] = P[0] + np.cumsum(_DIRS[np.asarray(moves, dtype=np.int64)], axis=0)
         positions.append(P)
-    return positions, {"restarts": restarts}
+        if pendants is not None:
+            side_out.append(np.array([P[a] + _DIRS[s[0]] for a, s in zip(anc, sides)],
+                                     dtype=float).reshape(-1, 3))
+    record = {"restarts": restarts}
+    if pendants is not None:
+        record["pendants"] = side_out
+    return positions, record
 
 
 def measured_c_inf(positions: Sequence[np.ndarray], n: int = 64) -> Optional[float]:
@@ -453,19 +589,36 @@ def _contacts(X, lo, hi, L, chain_of, bead_of, type_of, min_gap, allowed):
 
 
 class _Pairing:
-    """The crosslinks made so far and the rules a new one must pass."""
+    """The crosslinks made so far and the rules a new one must pass.
 
-    def __init__(self, positions, box_edge, bound, keep_windings):
+    A site is ``(chain, bead)``; a bead from the chain's length on is a
+    pendant side bead, which reacts at its own position and counts
+    along the chain as its anchor (``anchors[chain][k]`` for side bead
+    ``k``).
+    """
+
+    def __init__(self, positions, box_edge, bound, keep_windings, allow_neighbours=False,
+                 pendant_positions=None, anchors=None):
         self.P = positions
         self.L = float(box_edge)
         self.half = 0.5 * self.L
         self.bound = bound                       # chord bound per bond, or None
         self.keep_windings = bool(keep_windings)
-        self.on = collections.defaultdict(list)  # chain -> crosslinked beads
+        self.allow_neighbours = bool(allow_neighbours)
+        self.PP = pendant_positions
+        self.anchors = anchors
+        self.on = collections.defaultdict(list)  # chain -> crosslinked beads (anchors)
         self.jpos = {}                           # (chain, bead) -> junction, chain frame
         self.mids = set()                        # junction sites, doubled
         self.made = []
         self.rejected = collections.Counter()
+
+    def _site(self, c, b):
+        """(the bead the site counts as along its chain, its position)."""
+        n = len(self.P[c])
+        if b < n:
+            return b, self.P[c][b]
+        return int(self.anchors[c][b - n]), self.PP[c][b - n]
 
     def _strands_ok(self, c, beads):
         """Every strand of chain ``c`` touching ``beads`` (tentatively in)."""
@@ -487,6 +640,8 @@ class _Pairing:
             else:
                 sides.append((P[n - 1] - here, n - 1 - b))
             for v, bonds in sides:
+                if bonds == 0:
+                    continue                         # a crosslinked end bead: no strand
                 # the builder draws a strand along the minimum image of its
                 # chord; one that ran more than half the box in the melt is
                 # drawn the short way round
@@ -500,26 +655,30 @@ class _Pairing:
         return True
 
     def offer(self, a, b) -> bool:
-        (ci, bi), (cj, bj) = a, b
+        (ci, si), (cj, sj) = a, b
+        bi, pi = self._site(ci, si)
+        bj, pj = self._site(cj, sj)
         for c, x in ((ci, bi), (cj, bj)):
             lst = self.on[c]
             k = bisect.bisect_left(lst, x)
             if k < len(lst) and lst[k] == x:
                 return False                       # reacted already
+            if self.allow_neighbours:
+                continue
             if (k > 0 and lst[k - 1] == x - 1) or (k < len(lst) and lst[k] == x + 1):
                 self.rejected["neighbour"] += 1
                 return False
-        d = np.mod(self.P[cj][bj], self.L) - np.mod(self.P[ci][bi], self.L)
+        d = np.mod(pj, self.L) - np.mod(pi, self.L)
         d -= self.L * np.round(d / self.L)
         oi = 0.5 * d
-        mid = tuple(np.round(2 * np.mod(self.P[ci][bi] + oi, self.L)).astype(int)
+        mid = tuple(np.round(2 * np.mod(pi + oi, self.L)).astype(int)
                     % int(round(2 * self.L)))
         if mid in self.mids:
             self.rejected["coincident"] += 1
             return False
         # tentatively in, then every strand the two beads touch
-        self.jpos[(ci, bi)] = self.P[ci][bi] + oi
-        self.jpos[(cj, bj)] = self.P[cj][bj] - oi
+        self.jpos[(ci, bi)] = pi + oi
+        self.jpos[(cj, bj)] = pj - oi
         bisect.insort(self.on[ci], bi)
         bisect.insort(self.on[cj], bj)
         if ci == cj:
@@ -532,7 +691,7 @@ class _Pairing:
             del self.jpos[(ci, bi)], self.jpos[(cj, bj)]
             return False
         self.mids.add(mid)
-        self.made.append(((int(ci), int(bi)), (int(cj), int(bj))))
+        self.made.append(((int(ci), int(si)), (int(cj), int(sj))))
         return True
 
 
@@ -555,7 +714,10 @@ def crosslink_chains(chains: Sequence[ChainType], *,
                      lattice: Optional[int] = None,
                      positions: Optional[Sequence[np.ndarray]] = None,
                      seed: Optional[int] = None,
-                     rng: Optional[np.random.Generator] = None) -> CrosslinkedMelt:
+                     rng: Optional[np.random.Generator] = None,
+                     allow_neighbours: bool = False,
+                     pendant_positions: Optional[Sequence[np.ndarray]] = None
+                     ) -> CrosslinkedMelt:
     """Grow the chains as a lattice melt and crosslink their contacts.
 
     Args:
@@ -617,6 +779,25 @@ def crosslink_chains(chains: Sequence[ChainType], *,
             that the melt is self-avoiding.
         seed, rng: the one random stream (``rng`` wins when both are given;
             the record's ``seed`` is then None).
+        allow_neighbours: crosslink a bead whose chain neighbour is
+            crosslinked already (the two fuse into one junction, of 6
+            for two neighbouring crosslinks and more for a longer run, as
+            the bead-level reader reads them), the neighbour rule left out
+            as ``fix bond/create`` leaves it out.
+        pendant_positions: with a given melt whose chain types carry
+            pendants, each chain's side beads (``grow_melt``'s
+            ``record["pendants"]``).
+
+    The general site rules (``allow_neighbours``, chain types with
+    ``allow_ends`` or ``pendants``) are for the Python API: the pipeline's
+    ``topology.crosslinking`` does not take them, and with any of them in
+    use the graph is read from the bead system by
+    :func:`topon.analysis.crosslinked.from_beads` (side beads reduced to
+    their anchors), ``strands_rewound`` is not counted, and pendant sites
+    need ``build_density=None`` (the builder builds no side bead). End
+    sites and side beads are never left out by ``min_dangling_dp``, and
+    the refusal of a second junction on one midpoint stays (``fix
+    bond/create`` has no such rule).
 
     Raises:
         CrosslinkingError: an impossible or unreachable request, with the
@@ -643,7 +824,12 @@ def crosslink_chains(chains: Sequence[ChainType], *,
         lengths += [int(ct.dp)] * int(ct.count)
         type_of_chain += [t] * int(ct.count)
     n_chains, n_beads = len(lengths), int(sum(lengths))
-    labels = sorted({s for ct in chains for s in ct.site_types})
+    has_pendants = any(ct.pendants for ct in chains)
+    general = bool(allow_neighbours) or has_pendants or any(ct.allow_ends for ct in chains)
+    if has_pendants and build_density is not None:
+        raise CrosslinkingError("pendant sites need build_density=None: the coarse-grained "
+                                "builder builds no side bead, so no chord bound applies")
+    labels = sorted({s for ct in chains for s in ct.site_types + ct.pendant_types})
     label_id = {s: i for i, s in enumerate(labels)}
     if pairs is not None:
         pairs = [tuple(pr) for pr in pairs]
@@ -653,21 +839,33 @@ def crosslink_chains(chains: Sequence[ChainType], *,
                 f"pairs names site types {unknown} that no chain type carries "
                 f"(the chains carry {labels})")
     m = int(min_dangling_dp)
-    n_reactive = sum(len(ct.reactive) * int(ct.count) for ct in chains)
-    site_chain, site_bead, site_type = [], [], []
-    excluded = 0
+    n_reactive = sum(ct.n_sites * int(ct.count) for ct in chains)
+    # a site is (chain, bead), a pendant's side bead counted from the chain's
+    # length on; along the chain it counts as its anchor
+    site_chain, site_bead, site_anchor, site_type = [], [], [], []
+    excluded = n_end_sites = 0
     for c, t in enumerate(type_of_chain):
         ct = chains[t]
         for bead, lab in zip(ct.reactive, ct.site_types):
-            if bead - 1 < m or ct.dp - 2 - bead < m:
+            is_end = bead in (0, ct.dp - 1)
+            n_end_sites += is_end
+            if not is_end and (bead - 1 < m or ct.dp - 2 - bead < m):
                 excluded += 1
                 continue
             site_chain.append(c)
             site_bead.append(bead)
+            site_anchor.append(bead)
+            site_type.append(label_id[lab])
+        for k, (anchor, lab) in enumerate(zip(ct.pendants, ct.pendant_types)):
+            site_chain.append(c)
+            site_bead.append(int(ct.dp) + k)
+            site_anchor.append(anchor)
             site_type.append(label_id[lab])
     site_chain = np.array(site_chain, dtype=np.int64)
     site_bead = np.array(site_bead, dtype=np.int64)
+    site_anchor = np.array(site_anchor, dtype=np.int64)
     site_type = np.array(site_type, dtype=np.int64)
+    anchors = [chains[t].pendants for t in type_of_chain] if has_pendants else None
     n_sites = len(site_chain)
     allowed = None
     if pairs is not None:
@@ -692,17 +890,26 @@ def crosslink_chains(chains: Sequence[ChainType], *,
     # step 1: the melt
     if positions is not None and lattice is None:
         raise CrosslinkingError("a given melt needs the lattice it sits on")
-    L = int(lattice) if lattice is not None else lattice_size(n_beads, packing)
-    packing_actual = n_beads / L ** 3
+    n_side = sum(len(a) for a in anchors) if anchors else 0
+    L = int(lattice) if lattice is not None else lattice_size(n_beads + n_side, packing)
+    packing_actual = (n_beads + n_side) / L ** 3
     if packing_actual > MAX_PACKING + 1e-9 and positions is None:
         raise CrosslinkingError(f"packing {packing_actual:.3f} on a {L}^3 lattice "
                                 f"is above {MAX_PACKING}")
     t0 = time.perf_counter()
+    PP = None
     if positions is not None:
         positions = [np.asarray(P, dtype=float).reshape(-1, 3) for P in positions]
         if [len(P) for P in positions] != lengths:
             raise CrosslinkingError("the given melt's chains do not match the chain "
                                     "types' counts and lengths")
+        if has_pendants:
+            if pendant_positions is None:
+                raise CrosslinkingError("a given melt with pendants needs pendant_positions")
+            PP = [np.asarray(x, dtype=float).reshape(-1, 3) for x in pendant_positions]
+            if [len(x) for x in PP] != [len(a) for a in anchors]:
+                raise CrosslinkingError("the given side beads do not match the chain types' "
+                                        "pendants")
         p, growth = None, {"given": True}
     else:
         if c_inf is not None:
@@ -710,7 +917,8 @@ def crosslink_chains(chains: Sequence[ChainType], *,
                                 seed=int(rng.integers(2 ** 31)))
         else:
             p = UNIFORM_PERSISTENCE if persistence is None else float(persistence)
-        positions, growth = grow_melt(lengths, L, p, rng)
+        positions, growth = grow_melt(lengths, L, p, rng, pendants=anchors)
+        PP = growth.pop("pendants", None)
     t_grow = time.perf_counter() - t0
 
     # the chord bound, per bond, in lattice units
@@ -721,16 +929,16 @@ def crosslink_chains(chains: Sequence[ChainType], *,
 
     # step 2: the crosslinks, shell by shell
     t0 = time.perf_counter()
-    X = np.mod(np.array([positions[c][b] for c, b in zip(site_chain, site_bead)],
+    pg = _Pairing(positions, L, bound, keep_windings, allow_neighbours, PP, anchors)
+    X = np.mod(np.array([pg._site(c, b)[1] for c, b in zip(site_chain, site_bead)],
                         dtype=float).reshape(-1, 3), L)
-    pg = _Pairing(positions, L, bound, keep_windings)
     shells = contact_shells(float(contact_radius), max(float(max_radius), float(contact_radius)))
     lo, offered, used = 0.0, 0, 0
     for hi in shells:
         if len(pg.made) >= target:
             break
         used += 1
-        pr = _contacts(X, lo, hi, L, site_chain, site_bead, site_type,
+        pr = _contacts(X, lo, hi, L, site_chain, site_anchor, site_type,
                        int(min_gap), allowed)
         lo = hi
         for t in rng.permutation(len(pr)):
@@ -750,17 +958,22 @@ def crosslink_chains(chains: Sequence[ChainType], *,
 
     t0 = time.perf_counter()
     box = np.array([L, L, L], dtype=float)
-    G = strand_graph(positions, pg.made, box, chain_types=type_of_chain)
+    if general:
+        G = _site_graph(positions, pg.made, box, type_of_chain, PP, anchors)
+    else:
+        G = strand_graph(positions, pg.made, box, chain_types=type_of_chain)
     t_graph = time.perf_counter() - t0
 
     counts = collections.Counter()
     for u, v, d in G.edges(data=True):
         counts[d["cls"]] += 1
-    rewound = _rewound(positions, pg.jpos, G, L)
+    rewound = None if general else _rewound(positions, pg.jpos, G, L)
     record = {
         "chains": n_chains, "beads": n_beads,
         "chain_types": [{"name": ct.name, "count": int(ct.count), "dp": int(ct.dp),
-                         "reactive": len(ct.reactive)} for ct in chains],
+                         "reactive": len(ct.reactive),
+                         **({"pendants": len(ct.pendants)} if ct.pendants else {})}
+                        for ct in chains],
         "reactive_beads": n_reactive, "reactive_left_out": excluded,
         "crosslinks": len(pg.made), "conversion": 2 * len(pg.made) / max(1, n_reactive),
         "lattice": L, "packing": packing_actual, "persistence": p,
@@ -780,9 +993,14 @@ def crosslink_chains(chains: Sequence[ChainType], *,
                     "total": round(time.perf_counter() - t_start, 4)},
         "seed": seed if rng_given is False else None,
     }
+    if general:
+        n_pend = sum(len(ct.pendants) * int(ct.count) for ct in chains)
+        record.update({"allow_neighbours": bool(allow_neighbours), "end_sites": n_end_sites,
+                       "pendant_sites": n_pend})
     G.graph["crosslinking"] = record
     return CrosslinkedMelt(graph=G, positions=positions, crosslinks=list(pg.made),
-                           box=box, chain_types=type_of_chain, record=record)
+                           box=box, chain_types=type_of_chain, record=record,
+                           pendant_positions=PP, pendant_anchors=anchors, general=general)
 
 
 def _rewound(positions, jpos, G, L) -> int:

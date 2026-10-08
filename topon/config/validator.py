@@ -162,6 +162,12 @@ def _check_monomer_references(config: ToponConfig) -> list[str]:
     # Check copolymer references
     if config.assignment.copolymer.enabled:
         for edge_type, copoly_config in config.assignment.copolymer.per_edge_type.items():
+            if not copoly_config.composition:
+                # Stage 3 then writes the edge type's name for every repeat,
+                # which names no monomer on this route.
+                errors.append(
+                    f"Copolymer entry for edge type '{edge_type}' has no composition"
+                )
             for comp in copoly_config.composition:
                 if comp.monomer not in available_monomers:
                     errors.append(

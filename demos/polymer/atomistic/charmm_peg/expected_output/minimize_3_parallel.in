@@ -26,7 +26,7 @@ dump            bbdump bbdump custom 10 traj_stage3.lammpstrj id xu yu zu
 dump_modify     bbdump sort id format float %.4f
 
 min_style       cg
-minimize        1.0e-6 1.0e-8 2000 20000
+minimize        1.0e-6 1.0e-8 1000 10000
 write_data      system_minimized_final.data
 
 undump          bbdump

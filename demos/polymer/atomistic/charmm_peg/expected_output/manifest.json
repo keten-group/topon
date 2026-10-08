@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "created": "2026-09-29T16:58:41+00:00",
+  "created": "2026-10-05T08:13:15+00:00",
   "stages": {
     "topology": {
       "source": "generate",
@@ -35,7 +35,7 @@
           "3": 0,
           "4": 64
         },
-        "seconds": 0.0,
+        "seconds": 0.0010006427764892578,
         "achieved": {
           "0": 0,
           "1": 0,
@@ -49,7 +49,7 @@
         "seed": 1319393300,
         "attempts": 1
       },
-      "seconds": 0.005,
+      "seconds": 0.061,
       "nodes": 64,
       "edges": 128,
       "box": [
@@ -6438,13 +6438,16 @@
         "max": 0.460320720753744
       },
       "backbone_bond_ratio": {
-        "min": 0.9393731339915936,
-        "max": 1.0240199405910624
+        "min": 0.9393731339915916,
+        "max": 1.024019940591062
+      },
+      "waves_drawn": {
+        "1.5": 128
       },
       "settle": {
         "clearance": 1.5,
-        "pairs_below_before": 845,
-        "closest_before": 0.6221860426418069,
+        "pairs_below_before": 874,
+        "closest_before": 0.02916881630835606,
         "pairs_below_after": 0,
         "closest_after": null,
         "angle_error_before": {
@@ -6452,18 +6455,20 @@
           "max": 65.999
         },
         "angle_error_after": {
-          "mean": 0.169,
-          "max": 4.193
+          "mean": 0.146,
+          "max": 4.992
         },
         "bond_ratio": {
-          "min": 0.9929421719192392,
-          "max": 1.019514205677855
+          "min": 0.9801973640367151,
+          "max": 1.018691848536293
         },
         "converged": true,
-        "rounds": 78,
-        "largest_shift": 2.645021738375988,
+        "rounds": 91,
+        "largest_shift": 2.087413846897406,
         "moves_put_back": 0,
         "touching_parted": 0,
+        "touching_moves_put_back": 0,
+        "sideless_parted": 0,
         "passages": 0
       },
       "unplaced_atoms": 0,
@@ -6533,9 +6538,9 @@
   },
   "study": "run",
   "run": {
-    "pid": 36336,
+    "pid": 66476,
     "host": "<host>",
-    "started": "2026-09-29T16:58:41+00:00"
+    "started": "2026-10-05T08:13:15+00:00"
   },
-  "updated": "2026-09-29T16:59:06+00:00"
+  "updated": "2026-10-05T08:14:05+00:00"
 }

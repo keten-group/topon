@@ -28,7 +28,8 @@ demos/
 ```
 
 - [polymer/](polymer/README.md) lists the polymer demos and the config section behind each feature.
-- [poss/](poss/README.md) explains the POSS chain caps.
+- [poss/](poss/README.md) explains the POSS chain caps, and its `expected_output/` holds the settings, groups, stage
+  scripts and run manifest of one build (LAMMPS has not been run on it).
 - [protein/](protein/README.md) builds resilin networks with `topon protein`, all-atom and coarse-grained.
 - [topology/](topology/README.md) builds a network without any chemistry.
 - [workflows/](workflows/README.md) scripts a batch of networks.

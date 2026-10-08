@@ -21,7 +21,11 @@ data/
                                 and equilibrated (see data/raw/README.md)
 scripts/
   appendix_figures.py           Figs. 8 and 9 as a standalone script (same code as the notebook cell)
-  make_timing_table.py          Table 1 (Appendix B) from data/derived/generator_benchmark/ -> tables_checks/
+  make_timing_table.py          earlier version of Table 1 (Appendix B) from the t8 files of
+                                data/derived/generator_benchmark/ -> tables_checks/
+  t10/                          the t10 generator benchmark (code of topon 0.4.5) behind Tables 1 and 2 and the
+                                supplementary benchmark table, with t10_tables.py for Table 1 -> tables_checks/
+                                (see data/derived/generator_benchmark/README.md)
   checks/threshold_cv/          threshold and cross-validation checks of the quadrant analysis (Figs. 6 and 7),
                                 with its own README and reference outputs in out/
   build_raw_data.py             how data/raw/ was packed from the simulation folders (a record, not needed to run)

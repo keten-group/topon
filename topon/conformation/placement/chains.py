@@ -7,7 +7,11 @@ walks floor at Z = 0.23 per DP-20 strand at *any* build density -- 0.145, 0.095
 and 0.035 give 0.30, 0.25 and 0.23 -- while a meander of the same contour at
 rho 0.05 reproduces the reference's per-strand distribution exactly (Z 0.189
 against 0.178, KS p = 1.0, partner degree and Ne_CK inside noise). Density does
-move Z, but only over the range shape leaves it.
+move Z, but only over the range shape leaves it. Those are the validation
+scripts' builds. Built here with the pinch fix and relaxed through the full
+push-off, the two shapes' final-state floors coincide at DP 20 (walk
+0.2365 at rho 0.035, meander 0.2356 at coil 1.402), both above the reference's
+0.178, though at one build density the meander is still the lower.
 
 So this module makes both explicit. :func:`place` takes a graph, a DP and one of
 three shapes, sizes the build box from the bead count and the build density (or,
@@ -44,12 +48,19 @@ from typing import Optional
 import numpy as np
 
 from topon.conformation.paths import (
+    Clearance,
+    STRAIGHT_AT,
+    _emptiest,
     bond_lengths,
     bridging_walk,
+    chord_side,
     closed_meander,
+    closed_walk,
     fold_into_box,
+    free_walk,
     meander_chain,
     self_contact,
+    shared_chords,
     straight_chain,
     unfold,
 )
@@ -57,6 +68,8 @@ from topon.conformation.placement.settle import chord_triples, settle_strands
 
 __all__ = [
     "BOND",
+    "LOOP_SEPARATION",
+    "LOOP_SHAPES",
     "SELF_SEPARATION",
     "bead_bond_gaps",
     "separate_coincident",
@@ -66,6 +79,8 @@ __all__ = [
     "PlacedStrand",
     "Placement",
     "PLACEMENTS",
+    "PARALLEL_STRANDS",
+    "sol_lengths",
     "strand_plans",
     "lattice_frame",
     "bead_count",
@@ -85,6 +100,10 @@ BOND = 0.97
 #: The three shapes :func:`place` knows.
 PLACEMENTS = ("straight", "meander", "walk")
 
+#: How :func:`place` draws bridges that share both junctions on the meander
+#: route: on opposite sides of their chord, or as any other strand.
+PARALLEL_STRANDS = ("opposite", "together")
+
 #: How close a bead may come to a non-adjacent bead of its own chain, by
 #: route. For a drawn path -- a meander or a jittered chord -- a sub-sigma
 #: contact is an artifact of the drawing and 1.0 is a real gate: it is what
@@ -100,6 +119,23 @@ PLACEMENTS = ("straight", "meander", "walk")
 #: the walk's floor is an overlap floor, and it is the one the validation
 #: script used when it nudged near-coincident pairs apart.
 SELF_SEPARATION = {"meander": 1.0, "straight": 1.0, "walk": 0.05}
+
+#: How a primary loop is drawn. ``ring`` is the regular polygon of
+#: :func:`~topon.conformation.paths.closed_meander`, whose radius grows with
+#: the DP (15.6 sigma at DP 100); ``compact`` is the closed self-avoiding walk
+#: of :func:`~topon.conformation.paths.closed_walk`, about the size a ring of
+#: that DP has in a melt.
+LOOP_SHAPES = ("ring", "compact")
+
+#: The least floor a ``compact`` loop is grown to, in sigma: no bead of the
+#: ring within a bead diameter of another that is not its bonded neighbour,
+#: the junction included. A loop has no chord to hold it open, so without
+#: excluded volume it is an ideal ring (radius of gyration 2.8 sigma at
+#: DP 100), well inside the 4.5 a DP-100 loop has in the N100 reference; at
+#: 1.0 the walk gives 4.29 there, and 1.85 at DP 20 against the N20
+#: reference's 1.96. On the walk route, whose own floor is 0.05, the loops
+#: are therefore grown to 1.0; a route floor above it is kept.
+LOOP_SEPARATION = 1.0
 
 
 @dataclass(frozen=True)
@@ -130,20 +166,30 @@ class GuardLimits:
 class StrandPlan:
     """One strand of the graph, before it has coordinates.
 
-    ``key`` is the edge key ``(u, v, k)`` for a bridge or a dangling strand and
-    ``(u, u, k)`` for a primary loop. ``n_bonds`` counts the bonds of the whole
-    strand including the two that attach it to its junctions, so a DP-20 bridge
-    has 21 and a DP-20 dangling strand 20 -- its far end *is* its twentieth
-    bead, which is the end-linked convention every reference dataset uses.
+    ``key`` is the edge key ``(u, v, k)`` for a bridge or a dangling strand,
+    ``(u, u, k)`` for a primary loop and ``("sol", i)`` for the ``i``-th sol
+    chain, which has no edge and no junction (``u`` and ``v`` are ``None``).
+    ``n_bonds`` counts the bonds of the whole strand including the two that
+    attach it to its junctions, so a DP-20 bridge has 21 and a DP-20 dangling
+    strand 20 -- its far end *is* its twentieth bead, which is the end-linked
+    convention every reference dataset uses -- and a DP-20 sol chain 19.
+    ``dp`` is the chain's bead count, the same number as ``n_beads``.
     """
 
     key: tuple
-    kind: str                      # "bridge" | "dangling" | "loop"
-    u: int
-    v: int
+    kind: str                      # "bridge" | "dangling" | "loop" | "free"
+    u: Optional[int]
+    v: Optional[int]
     dp: int
     n_bonds: int
     n_beads: int                   # beads this strand owns (junctions excluded)
+
+    @property
+    def chorded(self) -> bool:
+        """Whether the strand runs between two sites: a bridge or a dangling
+        strand. A loop leaves and returns to one junction and a sol chain
+        touches none, so neither has a chord."""
+        return self.kind in ("bridge", "dangling")
 
 
 @dataclass
@@ -159,23 +205,33 @@ class PlacedStrand:
     bond_max: float = 0.0
     self_contact: float = float("inf")
     chord: float = 0.0
+    #: The height of the bow a strand sharing its chord with another was
+    #: drawn on (:func:`_parallel_strands`), 0 if it was not drawn on a side
+    #: (it went straight, or the meander fell back to a walk); ``None`` for a
+    #: strand that shares its chord with none, or off the meander route.
+    bow: Optional[float] = None
 
     @property
     def contour(self) -> float:
         return float(bond_lengths(self.path).sum())
 
-    def beads(self) -> np.ndarray:
-        """The beads this strand owns, junctions excluded.
+    @property
+    def own(self) -> slice:
+        """Where along ``path`` the beads this strand owns sit.
 
         A bridge gives up both ends (they are junctions); a dangling strand
         keeps its far end, which is its own free bead; a loop keeps everything
-        between its two visits to the anchor.
+        between its two visits to the anchor; a sol chain is all its own.
         """
-        if self.plan.kind == "bridge":
-            return self.path[1:-1]
         if self.plan.kind == "dangling":
-            return self.path[1:]
-        return self.path[1:-1]
+            return slice(1, None)
+        if self.plan.kind == "free":
+            return slice(0, None)
+        return slice(1, -1)
+
+    def beads(self) -> np.ndarray:
+        """The beads this strand owns, junctions excluded (see :attr:`own`)."""
+        return self.path[self.own]
 
     def measure(self) -> None:
         """Re-read the gate off the path as it now stands.
@@ -183,10 +239,11 @@ class PlacedStrand:
         Called after anything that moves beads -- the junction shells, the
         coincidence pass, a designed braid -- so the reading in
         :meth:`Placement.guard_report` is always of the coordinates that will
-        be written, not of an earlier draft of them.
+        be written, not of an earlier draft of them. A sol chain of one bead
+        has no bond, and reads as none too short and none too long.
         """
         bl = bond_lengths(self.path)
-        self.bond_min = float(bl.min()) if len(bl) else 0.0
+        self.bond_min = float(bl.min()) if len(bl) else float("inf")
         self.bond_max = float(bl.max()) if len(bl) else 0.0
         self.self_contact = self_contact(self.path,
                                          closed=self.plan.kind == "loop")
@@ -207,7 +264,7 @@ class Placement:
     """Every strand placed, with the box they were drawn in.
 
     ``coil_ratio`` is the contour of a strand over its chord, averaged over the
-    strands that have a chord (loops do not). It is the density-free way to say
+    strands that have a chord (loops and sol chains do not). It is the density-free way to say
     how coiled the build is, and it is the actuator the controller turns for the
     meander route; ``build_density`` is the same knob for the walk route. The
     two are one knob seen from two sides, since the box scales as
@@ -230,8 +287,55 @@ class Placement:
     junction_jitter: dict = field(default_factory=dict)
     settle: dict = field(default_factory=dict)
     chord_triples: dict = field(default_factory=dict)
+    loop_shape: str = "ring"
 
     # ---------------- reporting ----------------
+
+    def loop_report(self) -> dict:
+        """The primary loops as they stand: shape, floor and size.
+
+        The radius of gyration is over each loop's own beads, junction
+        excluded, which is how a relaxed reference's loops are read
+        (:mod:`topon.analysis.endlinked`, ``strand_path(junctions=False)``).
+        Empty for a build with no loop.
+        """
+        rings = [s for s in self.strands if s.plan.kind == "loop"]
+        if not rings:
+            return {}
+        rg = np.array([float(np.sqrt(((b - b.mean(axis=0)) ** 2)
+                                     .sum(axis=1).mean()))
+                       for b in (s.beads() for s in rings)])
+        return {"shape": self.loop_shape, "count": len(rings),
+                "floor": (round(max(self.limits.min_sep, LOOP_SEPARATION), 6)
+                          if self.loop_shape == "compact" else None),
+                "rg_mean": round(float(rg.mean()), 4),
+                "rg_min": round(float(rg.min()), 4),
+                "rg_max": round(float(rg.max()), 4),
+                "self_contact_min": round(min(s.self_contact for s in rings),
+                                          6)}
+
+    def parallel_report(self) -> dict:
+        """The strands that share both junctions with another, and how they
+        were drawn: ``{}`` on a graph with none."""
+        shared = [s for s in self.strands if s.bow is not None]
+        if not shared:
+            return {}
+        chords = {frozenset((s.plan.u, s.plan.v)) for s in shared}
+        bows = np.array([s.bow for s in shared if s.bow > 0.0], float)
+        apart = [s for s in shared if s.bow > 0.0]
+        # the angle each bow leaves its junctions at
+        angle = np.degrees(np.arctan(np.pi * bows / np.array(
+            [s.chord for s in apart], float))) if len(apart) else bows
+        return {
+            "chords": len(chords),
+            "strands": len(shared),
+            "drawn_apart": len(apart),
+            "left_on_chord": len(shared) - len(apart),
+            "bow_mean": round(float(bows.mean()), 4) if len(bows) else None,
+            "bow_min": round(float(bows.min()), 4) if len(bows) else None,
+            "bow_max": round(float(bows.max()), 4) if len(bows) else None,
+            "angle_min": round(float(angle.min()), 3) if len(bows) else None,
+        }
 
     @property
     def failed(self) -> list[PlacedStrand]:
@@ -254,8 +358,11 @@ class Placement:
         for s in self.strands:
             by_routine[s.routine] = by_routine.get(s.routine, 0) + 1
         bad = self.failed
-        want = sum(s.plan.n_bonds * self.bond for s in self.strands)
-        have = sum(s.contour for s in self.strands)
+        # The realised contour is a reading of the drawn shapes; a sol chain
+        # is grown at the design bond exactly and would only dilute it.
+        drawn = [s for s in self.strands if s.plan.kind != "free"]
+        want = sum(s.plan.n_bonds * self.bond for s in drawn)
+        have = sum(s.contour for s in drawn)
         return {
             "strands": len(self.strands),
             "beads": self.n_beads,
@@ -272,9 +379,11 @@ class Placement:
             "junction_shells": dict(self.junction_shells),
             "bead_bond": dict(self.bead_bond),
             "chord_triples": dict(self.chord_triples),
+            "parallel": self.parallel_report(),
             "junction_jitter": dict(self.junction_jitter),
             "settle": dict(self.settle),
             "coincidence": dict(self.coincidence),
+            "loops": self.loop_report(),
             "failed_examples": [
                 {"key": list(s.plan.key), "kind": s.plan.kind,
                  "why": s.failures(self.limits),
@@ -353,21 +462,64 @@ def lattice_frame(graph, dims=None):
     return pos, box
 
 
+def sol_lengths(graph, dp: int) -> list[int]:
+    """The bead count of every sol chain ``G.graph["sol_chains"]`` records.
+
+    Read as the chemistry builder reads it: ``dps`` (DP to count) when the
+    chains differ in length, as a crosslinked melt records them, otherwise
+    ``count`` chains of ``dp``; a count of zero or a length below one is no
+    chain. A record with only a count, as :mod:`topon.analysis.endlinked`,
+    :mod:`topon.analysis.crosslinked` and :mod:`topon.inverse.measure` write
+    when they read a system back, takes ``dp`` here. The builder takes 25
+    for such a record; the records the defects stage and
+    :mod:`topon.topology.chain_crosslinking` write always carry a length, so
+    the two agree on every graph built from a config.
+    """
+    spec = graph.graph.get("sol_chains")
+    if not isinstance(spec, dict) or int(spec.get("count") or 0) <= 0:
+        return []
+    if spec.get("dps"):
+        lengths = [int(d) for d, k in sorted(spec["dps"].items())
+                   for _ in range(int(k))]
+    else:
+        given = spec.get("dp")
+        lengths = [int(dp if given is None else given)] * int(spec["count"])
+    return [d for d in lengths if d > 0]
+
+
 def strand_plans(graph, dp: int) -> list[StrandPlan]:
     """Every strand of the graph, in a fixed order.
 
-    The order is the graph's edge order, and it is what indexes a strand
-    everywhere downstream -- the ``pairs`` of a designed-entanglement request,
-    the chain ids of a Z1+ export, the molecule ids of an end-linked data file.
+    The order is the graph's edge order, then the sol chains, and it is what
+    indexes a strand everywhere downstream -- the ``pairs`` of a
+    designed-entanglement request, the chain ids of a Z1+ export, the
+    molecule ids of an end-linked data file. The sol chains come last so
+    that the index of every other strand is what it was on a graph without
+    them.
+
     A per-edge ``dp`` overrides the argument, so a DP distribution placed by
-    the assignment stage is honoured.
+    the assignment stage is honoured, and it is read the way the chemistry
+    builder reads it (:mod:`topon.analysis.crosslinked` states the same
+    convention): the beads strictly between the strand's two nodes. A
+    dangling strand's free end is a node, and a bead of its own, so the
+    strand is ``dp + 1`` beads: DP under
+    ``dp_distribution.endlinked_dangling``, which writes DP - 1 on that edge,
+    and DP + 1 in topon's own convention, as the pipeline builds it either
+    way. The argument, when an edge carries no ``dp``, is the chain's DP, and
+    a dangling chain is then DP beads with the end site the last of them.
+    Every graph the validation scripts saved is of that kind (none of 632
+    carries an edge ``dp``).
+
+    Sol chains (``G.graph["sol_chains"]``, :func:`sol_lengths`) are
+    ``"free"`` strands of that many beads.
     """
     multi = graph.is_multigraph()
     plans: list[StrandPlan] = []
     edges = (graph.edges(keys=True, data=True) if multi
              else ((u, v, 0, d) for u, v, d in graph.edges(data=True)))
     for u, v, key, data in edges:
-        d = int(data.get("dp", dp))
+        given = data.get("dp")
+        d = int(dp if given is None else given)
         if u == v:
             # A primary loop leaves its junction and comes back: DP beads
             # between DP + 1 bonds.
@@ -379,14 +531,22 @@ def strand_plans(graph, dp: int) -> list[StrandPlan]:
         if _kind_of(graph, b) == "junction":
             plans.append(StrandPlan((a, b, key), "bridge", a, b, d, d + 1, d))
         else:
-            # Dangling: the degree-1 node is the strand's DP-th bead, not an
-            # extra one, so it carries DP - 1 interior beads plus that node.
-            plans.append(StrandPlan((a, b, key), "dangling", a, b, d, d, d))
+            # Dangling: the degree-1 node is one of the strand's beads. An
+            # edge dp does not count it; a DP passed in does.
+            n = d + 1 if given is not None else d
+            plans.append(StrandPlan((a, b, key), "dangling", a, b, n, n, n))
+    for i, n in enumerate(sol_lengths(graph, dp)):
+        plans.append(StrandPlan(("sol", i), "free", None, None, n, n - 1, n))
     return plans
 
 
 def bead_count(graph, dp: int, plans=None) -> int:
-    """Beads the build will contain: one per junction plus every strand's."""
+    """Beads the build will contain: one per junction plus every strand's.
+
+    The sol chains are strands here, so this is the chemistry stage's bead
+    budget (:func:`topon.assignment.defects.bead_budget`) for a graph that
+    came through the pipeline, and the box the density is set in holds them.
+    """
     plans = strand_plans(graph, dp) if plans is None else plans
     n_junction = sum(1 for n in graph if _kind_of(graph, n) == "junction")
     return n_junction + sum(p.n_beads for p in plans)
@@ -417,7 +577,7 @@ def _chords(graph, plans, pos, box_lat) -> np.ndarray:
     """Minimum-image chord of every strand that has one, in lattice units."""
     out = []
     for p in plans:
-        if p.kind == "loop":
+        if not p.chorded:
             continue
         d = pos[p.v] - pos[p.u]
         d = d - box_lat * np.round(d / box_lat)
@@ -452,7 +612,7 @@ def coil_ratio_of(graph, dp: int, build_density: float, bond: float = BOND,
     if not len(chords):
         return float("nan")
     contour = float(np.mean([p.n_bonds * bond for p in plans
-                             if p.kind != "loop"]))
+                             if p.chorded]))
     return contour / (float(chords.mean()) * scale)
 
 
@@ -480,8 +640,14 @@ def density_for_coil_ratio(graph, dp: int, coil_ratio: float,
 # Placement
 # ---------------------------------------------------------------------------
 
-def _draw(kind_of_path, c0, c1, n_bonds, bond, rng, waves, limits, jitter):
-    """One strand's path and the note that says how it was drawn."""
+def _draw(kind_of_path, c0, c1, n_bonds, bond, rng, waves, limits, jitter,
+          side=None):
+    """One strand's path and the note that says how it was drawn.
+
+    ``side`` is passed to :func:`~topon.conformation.paths.meander_chain`
+    (a strand drawn on one side of a chord it shares); the other routes do
+    not take it.
+    """
     if kind_of_path == "walk":
         p = bridging_walk(c0, c1, n_bonds, bond, rng)
         # Separate the hard overlaps and leave the melt-like contacts alone.
@@ -508,7 +674,7 @@ def _draw(kind_of_path, c0, c1, n_bonds, bond, rng, waves, limits, jitter):
         return p, {"routine": "straight", "waves": 0.0, "draws": 1}
     return meander_chain(c0, c1, n_bonds, bond, rng, waves=waves,
                          min_sep=limits.min_sep, min_bond=limits.min_bond,
-                         jitter=jitter)
+                         jitter=jitter, side=side)
 
 
 def limits_from(config, placement: str) -> GuardLimits:
@@ -586,7 +752,7 @@ def _jitter_junctions(graph, plans, P, box, fraction: float, bond: float,
     offs = rng.normal(0.0, sd, (len(nodes), 3))
     row = {n: k for k, n in enumerate(nodes)}
 
-    chorded = [p for p in plans if p.kind != "loop"]
+    chorded = [p for p in plans if p.chorded]
     iu = np.array([row.get(p.u, -1) for p in chorded], int)
     iv = np.array([row.get(p.v, -1) for p in chorded], int)
     contour = np.array([p.n_bonds * bond for p in chorded], float)
@@ -665,6 +831,89 @@ def _jitter_junctions(graph, plans, P, box, fraction: float, bond: float,
     }
 
 
+def _grow_loops(placed, pending, box, bond: float, floor: float, rng) -> None:
+    """Grow the compact loops, in place, clear of the strands at their junction.
+
+    ``pending`` holds ``(index, plan, anchor, hint)`` for every loop, whose
+    slot in ``placed`` is empty. A loop's first bond leaves along the
+    emptiest direction away from the first bonds of the strands at its
+    junction (the hint, drawn where a ring would draw it, breaks the tie, as
+    in :func:`~topon.conformation.paths.closed_meander`), and the walk keeps
+    ``floor`` from the beads of those strands and of any loop grown at that
+    junction before it, where it can
+    (:func:`~topon.conformation.paths.closed_walk` with ``avoid``).
+
+    Only those. A loop grown free of its junction's strands can curl round
+    one of them, and the settle cannot part the two without passing one
+    through the other: on SC 3^3 at DP 20 with the jitter (seed 6) it ran
+    its 400 rounds against a loop bond jammed on a sibling bridge and put
+    the build back. Strands from elsewhere are left to thread the loop as
+    they would a ring of a melt chain. On the N100 fit the loops read Z1+
+    0.81 per loop at build this way, 1.35 grown with nothing in view and
+    0.27 kept clear of every strand (the relaxed reference's is 1.04).
+    """
+    L = np.asarray(box, float).reshape(3)
+    beads_at: dict = {}          # junction -> beads of the strands there
+    bonds_at: dict = {}          # junction -> their bonds leaving it
+    for s in placed:
+        if s is None:
+            continue
+        ends = [(s.plan.u, s.path[1] - s.path[0])]
+        if s.plan.kind == "bridge":
+            ends.append((s.plan.v, s.path[-2] - s.path[-1]))
+        for node, leaving in ends:
+            beads_at.setdefault(node, []).append(s.beads())
+            bonds_at.setdefault(node, []).append(leaving)
+    for i, plan, anchor, hint in pending:
+        first = _emptiest(hint, bonds_at.get(plan.u) or None)
+        here = beads_at.get(plan.u)
+        room = Clearance(np.vstack(here), L, floor) if here else None
+        ring = closed_walk(anchor, plan.n_bonds, bond, rng, min_sep=floor,
+                           first=first, avoid=room)
+        beads_at.setdefault(plan.u, []).append(ring)
+        bonds_at.setdefault(plan.u, []).extend([ring[0] - anchor,
+                                                ring[-1] - anchor])
+        placed[i] = PlacedStrand(plan=plan,
+                                 path=np.vstack([anchor, ring, anchor]),
+                                 routine="closed_walk", draws=1, chord=0.0)
+
+
+def _loop_stream(rng):
+    """The stream ``compact`` loops grow on, spawned from the placement's.
+
+    ``Generator.spawn`` derives a child from the generator's seed sequence
+    and draws nothing from the generator, so the strands drawn after a loop
+    see the same stream they would beside a ring. A generator whose bit
+    generator has no seed sequence cannot spawn; the loops then grow on the
+    placement's own stream, and the strands after the first loop move.
+    """
+    try:
+        return rng.spawn(1)[0]
+    except (AttributeError, TypeError, ValueError):
+        return rng
+
+
+def _parallel_strands(plans) -> dict:
+    """Bridges that share both junctions with another, by plan index:
+    :func:`~topon.conformation.paths.shared_chords` on the plans' bridges.
+
+    Returns ``{index: (chord, rank, count)}``: ``chord`` the pair of
+    junctions, ``rank`` the strand's place among the ``count`` strands on it
+    in strand order. Each one's side comes from
+    :func:`~topon.conformation.paths.chord_side`, which takes the one number
+    the meander's turn would have taken, at the strand's own place in the
+    strand order, so every other strand is drawn as before. Two exceptions
+    shift the stream for what comes after: a side meander that falls back to
+    a walk (the walk draws after this number, where the drawing before 0.4.5
+    drew without it; not seen on any build), and the coincidence pass, which
+    draws a direction for beads drawn exactly on top of each other, as
+    before 0.4.5 the two strands of a loop of odd DP are at their middle beads
+    and the strands drawn apart are not.
+    """
+    return shared_chords([(p.u, p.v) if p.kind == "bridge" else None
+                          for p in plans])
+
+
 def place(graph, dp: int, placement: str = "meander",
           coil_ratio: Optional[float] = None,
           build_density: Optional[float] = None,
@@ -675,17 +924,33 @@ def place(graph, dp: int, placement: str = "meander",
           junction_shell_spacing: Optional[float] = None,
           junction_shell_blend: int = 4,
           junction_jitter: float = 0.0,
-          settle_clearance: Optional[float] = None) -> Placement:
+          settle_clearance: Optional[float] = None,
+          parallel_strands: str = "opposite",
+          loop_shape: str = "ring") -> Placement:
     """Draw every strand of ``graph`` at the build state.
 
     ``placement`` is one of ``straight`` (the chord with a jitter), ``meander``
     (:func:`~topon.conformation.paths.meander_chain`, which falls back to the
     chord when there is no slack to wave) or ``walk``
     (:func:`~topon.conformation.paths.bridging_walk`). Primary loops have no
-    chord to interpolate along and are always drawn with
-    :func:`~topon.conformation.paths.closed_meander` whatever ``placement``
-    says; there is only one shape that closes on a junction with every bond
-    exact.
+    chord to interpolate along, so ``placement`` does not apply to them and
+    ``loop_shape`` says how they are drawn: ``ring`` (the default) as the
+    regular polygon of :func:`~topon.conformation.paths.closed_meander`, which
+    at DP 100 is an open ring of radius 15.6 sigma, or ``compact`` as the
+    closed self-avoiding walk of :func:`~topon.conformation.paths.closed_walk`,
+    grown to ``max(route floor, LOOP_SEPARATION)`` (radius of gyration about
+    4.3 sigma at DP 100). A compact loop takes the two draws the ring takes
+    from ``rng``, where the ring takes them, for the direction of its first
+    bond, and is grown after every bridge and dangling strand, clear of the
+    strands at its own junction (:func:`_grow_loops`), on a stream spawned
+    from ``rng`` (``Generator.spawn``). So every other strand of the build is
+    drawn exactly as beside a ring, and a build with no loop is the same
+    build under either shape. ``guard_report()["loops"]`` gives their size.
+    Sol chains (``G.graph["sol_chains"]``) have no junction at all:
+    each is a free walk from a random point of the cell, grown so no bead
+    comes within the route's self-contact floor of another of its own
+    (:func:`~topon.conformation.paths.free_walk` with ``min_sep``), and they
+    are drawn after every other strand and kept last in ``strands``.
 
     Give exactly one of ``coil_ratio`` and ``build_density``: they are the same
     knob, and :func:`density_for_coil_ratio` converts. Giving neither is an
@@ -713,6 +978,16 @@ def place(graph, dp: int, placement: str = "meander",
     ``guard_report()["chord_triples"]`` counts the close chord triples the
     build carries either way.
 
+    On the ``meander`` route the bridges that share both junctions (a
+    secondary loop) are drawn on opposite sides of their chord
+    (``parallel_strands="opposite"``, the default; :func:`_parallel_strands`,
+    ``meander_chain(..., side=...)``); one meander turned twice about a
+    chord meets itself wherever its wave crosses the chord.
+    ``guard_report()["parallel"]`` says what was drawn so.
+    ``parallel_strands="together"`` draws them as any other strand, the
+    drawing before 0.4.5. A graph with no shared chord draws the same either
+    way.
+
     Returns a :class:`Placement`. It is *not* checked for you -- read
     ``Placement.ok()`` or ``guard_report()`` and decide. The gate is advisory
     here on purpose: a caller sweeping build densities wants the failures
@@ -722,6 +997,14 @@ def place(graph, dp: int, placement: str = "meander",
         raise ValueError(
             f"unknown placement {placement!r}; expected one of "
             f"{', '.join(PLACEMENTS)}")
+    if parallel_strands not in PARALLEL_STRANDS:
+        raise ValueError(
+            f"unknown parallel_strands {parallel_strands!r}; expected one of "
+            f"{', '.join(PARALLEL_STRANDS)}")
+    if loop_shape not in LOOP_SHAPES:
+        raise ValueError(
+            f"unknown loop_shape {loop_shape!r}; expected one of "
+            f"{', '.join(LOOP_SHAPES)}")
     if (coil_ratio is None) == (build_density is None):
         raise ValueError(
             "give exactly one of coil_ratio and build_density: they are the "
@@ -759,10 +1042,32 @@ def place(graph, dp: int, placement: str = "meander",
         jitter_report = _jitter_junctions(graph, plans, P, box_sigma,
                                           float(junction_jitter), bond, rng)
 
-    placed: list[PlacedStrand] = []
-    for plan in plans:
+    # Strands that share both junctions (secondary loops) are drawn on
+    # opposite sides of their chord on the meander route; see
+    # paths.meander_chain(side=...). A graph with none draws as before, and
+    # so does "together", which leaves every strand to the usual draw.
+    parallel = (_parallel_strands(plans)
+                if placement == "meander" and parallel_strands == "opposite"
+                else {})
+    frames: dict = {}
+
+    loop_floor = max(float(limits.min_sep), LOOP_SEPARATION)
+    pending: list = []
+    placed: list = []
+    for k_plan, plan in enumerate(plans):
+        if plan.kind == "free":
+            continue                       # drawn below, after every other
         if plan.kind == "loop":
             anchor = P[plan.u]
+            if loop_shape == "compact":
+                # The ring's two draws (the hints of its direction and of its
+                # plane), taken where the ring takes them; the walk is grown
+                # below, once every strand it keeps clear of is drawn.
+                hint = rng.normal(size=3)
+                rng.normal(size=3)
+                pending.append((len(placed), plan, anchor, hint))
+                placed.append(None)
+                continue
             away = []
             for a, b in graph.edges(plan.u):
                 other = b if a == plan.u else a
@@ -781,13 +1086,41 @@ def place(graph, dp: int, placement: str = "meander",
             d = d - box_sigma * np.round(d / box_sigma)
             c1 = c0 + d
             chord = float(np.linalg.norm(d))
+            side = None
+            if (k_plan in parallel
+                    and float(np.linalg.norm(c1 - c0))
+                    < STRAIGHT_AT * (plan.n_bonds * bond)):
+                # A chord the meander would draw straight keeps its draw,
+                # which takes from the stream what it always took. The test
+                # is meander_chain's own, on the same number.
+                side = chord_side(d, parallel[k_plan][1], parallel[k_plan][2],
+                                  frames, parallel[k_plan][0], rng)
             path, note = _draw(placement, c0, c1, plan.n_bonds, bond, rng,
-                               waves, limits, jitter)
+                               waves, limits, jitter, side=side)
+            if k_plan in parallel:
+                note.setdefault("bow", 0.0)
         placed.append(PlacedStrand(plan=plan, path=np.asarray(path, float),
                                    routine=note["routine"],
                                    waves=float(note.get("waves", 0.0)),
                                    draws=int(note.get("draws", 1)),
-                                   chord=chord))
+                                   chord=chord, bow=note.get("bow")))
+
+    if pending:
+        _grow_loops(placed, pending, box_sigma, bond, loop_floor,
+                    _loop_stream(rng))
+
+    # The sol chains, last, so a build without them draws exactly what it
+    # drew before. Each starts anywhere in the cell, as the pipeline drops
+    # its own, and is grown self-avoiding to the route's own floor: a free
+    # walk opened up afterwards misses it (paths.free_walk).
+    for plan in plans:
+        if plan.kind != "free":
+            continue
+        start = rng.random(3) * box_sigma
+        path = free_walk(start, plan.n_bonds, bond, rng,
+                         min_sep=limits.min_sep)
+        placed.append(PlacedStrand(plan=plan, path=path,
+                                   routine="free_walk", draws=1))
 
     junction_shells = {}
     if junction_shell_spacing:
@@ -813,7 +1146,8 @@ def place(graph, dp: int, placement: str = "meander",
                    coincidence=coincidence,
                    junction_shells=junction_shells,
                    junction_jitter=jitter_report,
-                   chord_triples=chord_triples(placed, box_sigma))
+                   chord_triples=chord_triples(placed, box_sigma),
+                   loop_shape=loop_shape)
     if settle_clearance:
         settle_placement(pl, float(settle_clearance), rng)
     else:
@@ -918,9 +1252,12 @@ def separate_coincident(placed, box, floor: float, rng, rounds: int = 8,
     starts = np.cumsum([0] + sizes[:-1])
     n_mobile = int(sum(sizes))
 
-    # The junctions, once each: they are obstacles, not movers.
+    # The junctions, once each: they are obstacles, not movers. A sol chain
+    # has none, and every one of its beads moves.
     seen: dict = {}
     for s in placed:
+        if s.plan.kind == "free":
+            continue
         seen.setdefault(s.plan.u, np.asarray(s.path[0], float))
         if s.plan.kind != "dangling":
             seen.setdefault(s.plan.v, np.asarray(s.path[-1], float))
@@ -937,6 +1274,8 @@ def separate_coincident(placed, box, floor: float, rng, rounds: int = 8,
     # (strand, bead index) -> the row of the junction that bead is bonded to.
     own_anchor: dict = {}
     for k, s in enumerate(placed):
+        if s.plan.kind == "free":
+            continue
         own_anchor[(k, 0)] = n_mobile + anchor_row[s.plan.u]
         if s.plan.kind == "bridge":
             own_anchor[(k, sizes[k] - 1)] = n_mobile + anchor_row[s.plan.v]
@@ -958,11 +1297,8 @@ def separate_coincident(placed, box, floor: float, rng, rounds: int = 8,
         return pairs[~bonded]
 
     def interior_mask(strand):
-        n = len(strand.path)
-        m = np.zeros(n, bool)
-        m[1:-1] = True
-        if strand.plan.kind == "dangling":
-            m[-1] = True
+        m = np.zeros(len(strand.path), bool)
+        m[strand.own] = True
         return m
 
     def gather():
@@ -1024,11 +1360,7 @@ def separate_coincident(placed, box, floor: float, rng, rounds: int = 8,
         moved |= touched
         for k in sorted(touched):
             st = placed[k]
-            own = xyz[starts[k]:starts[k] + sizes[k]]
-            if st.plan.kind == "dangling":
-                st.path[1:] = own
-            else:
-                st.path[1:-1] = own
+            st.path[st.own] = xyz[starts[k]:starts[k] + sizes[k]]
             _relax_bonds(st.path, bond, interior_mask(st), 64, 0.0,
                          floor=min_bond)
 
@@ -1113,6 +1445,8 @@ def bead_bond_gaps(placed, box, cutoff: float = 0.4) -> dict:
         owner.append(np.full(len(b), si))
     nodes: dict = {}
     for st in placed:
+        if st.plan.kind == "free":
+            continue
         nodes.setdefault(st.plan.u, st.path[0])
         if st.plan.kind != "dangling":
             nodes.setdefault(st.plan.v, st.path[-1])
@@ -1124,15 +1458,19 @@ def bead_bond_gaps(placed, box, cutoff: float = 0.4) -> dict:
     P = np.vstack(pts)
     owner = np.concatenate(owner)
 
-    # Every bond, with the strand that owns it and the junction tags it ends on.
+    # Every bond, with the strand that owns it and the junction tags it ends
+    # on. An end that is no junction (a free end, either end of a sol chain)
+    # is tagged -1, which no owner carries: strands are 0 up and junctions -2
+    # down. It used to be 0, the first strand's own tag, so that strand's
+    # beads were never compared with a dangling strand's bonds.
     segs, seg_owner, ends_u, ends_v = [], [], [], []
     for si, st in enumerate(placed):
         p = st.path
         segs.append(np.stack([p[:-1], p[1:]], axis=1))
         n = len(p) - 1
         seg_owner.append(np.full(n, si))
-        ends_u.append(np.full(n, at.get(st.plan.u, 0)))
-        ends_v.append(np.full(n, at.get(st.plan.v, 0)))
+        ends_u.append(np.full(n, at.get(st.plan.u, -1)))
+        ends_v.append(np.full(n, at.get(st.plan.v, -1)))
     S = np.concatenate(segs, axis=0)
     seg_owner = np.concatenate(seg_owner)
     ends_u = np.concatenate(ends_u)
@@ -1184,7 +1522,7 @@ def _seat_on_shells(placed, spacing: float, blend: int, bond: float,
 
     Loops are left out: both of a loop's ends are the same junction, and a
     shell seat that pulls its two ends apart opens the ring it was drawn to
-    close.
+    close. So are sol chains, which meet no junction.
 
     **A junction seats all of its chains or none of them.** The spread a shell
     delivers is the spread of every chain meeting at one node, so keeping the
@@ -1217,7 +1555,10 @@ def _seat_on_shells(placed, spacing: float, blend: int, bond: float,
     shell is worth most -- pulling apart chains that leave a junction in nearly
     the same direction -- so the cases with most to gain are the ones least
     able to pay. Measured at spacing 1.0: 1 junction of 8 on SC 2 at DP 60, 4
-    of 27 on SC 3 at DP 60, none at all at DP 20 or on SC 3 at DP 100.
+    of 27 on SC 3 at DP 60, none at all at DP 20 or on SC 3 at DP 100. (The
+    SC 2 numbers are from before 0.4.5, when both strands of each SC 2 chord
+    were drawn on top of each other; on SC 3 at DP 20 all 27 junctions seat
+    at seed 4.)
     """
     from topon.conformation.junction_shell import apply_junction_shells
     from topon.conformation.paths import _relax_bonds
@@ -1234,7 +1575,7 @@ def _seat_on_shells(placed, spacing: float, blend: int, bond: float,
         _relax_bonds(path, bond, m, 200, 0.0, only_long=True)
         return path
 
-    movable = [s for s in placed if s.plan.kind != "loop"]
+    movable = [s for s in placed if s.plan.chorded]
     base = [s.path for s in movable]
     at: dict = {}
     for i, s in enumerate(movable):

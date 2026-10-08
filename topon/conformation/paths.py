@@ -10,11 +10,31 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
-__all__ = ["Clearance", "bridging_walk", "closed_meander", "free_walk",
+__all__ = ["Clearance", "bridging_walk", "closed_meander", "closed_walk",
+           "free_walk",
            "straight", "walk_via", "walk_through", "loop_around", "zigzag",
            "taut_leg", "route_through",
-           "straight_chain", "meander_chain", "unfold",
-           "bond_lengths", "self_contact", "fold_into_box"]
+           "straight_chain", "meander_chain", "coil_chain", "shared_chords",
+           "chord_side", "unfold",
+           "bond_lengths", "self_contact", "fold_into_box",
+           "STRAIGHT_AT", "SIDE_ANGLE", "SIDE_BOW_MIN"]
+
+#: A chord within this fraction of a strand's contour has no slack to wave,
+#: and :func:`meander_chain` draws it as the chord with a little jitter.
+STRAIGHT_AT = 0.97
+
+#: The angle (degrees) at which a strand drawn on one side of its chord
+#: (:func:`meander_chain` with ``side``) leaves each of its junctions. Two
+#: strands leaving one junction at +-20 degrees put their third beads
+#: ``2 * 2 * 0.97 * sin(20)`` = 1.33 sigma apart, which is where the settle
+#: starts holding their bonds apart (it leaves the two bonds at a shared
+#: junction alone).
+SIDE_ANGLE = 20.0
+
+#: The least height (sigma) of that strand's bow, which binds on chords under
+#: 8.6 sigma: at the angle alone a bow on a chord under 4.3 sigma would put
+#: the middles of two strands on opposite sides less than a sigma apart.
+SIDE_BOW_MIN = 1.0
 
 
 class Clearance:
@@ -322,18 +342,68 @@ def loop_around(target, i: int, radius: float, n_pts: int = 6,
     return np.array(out)
 
 
-def free_walk(start, n_bonds: int, bond: float = 0.97, rng=None) -> np.ndarray:
+def free_walk(start, n_bonds: int, bond: float = 0.97, rng=None,
+              min_sep: "float | None" = None, tries: int = 64,
+              restarts: int = 16) -> np.ndarray:
     """A freely jointed walk of ``n_bonds`` bonds from ``start``.
 
     Nothing to close on: this is the shape of a sol chain, which is bonded
     to no junction and so has one fixed end at most. Returns
     ``n_bonds + 1`` points, every bond exactly ``bond``.
+
+    ``min_sep`` grows the walk self-avoiding instead: every bead lands at
+    least ``min_sep`` from each bead two or more places before it, so the
+    path meets a self-contact floor by construction. Each step draws
+    ``tries`` directions uniformly and keeps the first that clears, so where
+    there is room the step is uniform over the directions that clear. A
+    dead end starts the chain again from ``start``, up to ``restarts`` times;
+    after that the stuck step takes the roomiest of its draws, and the floor
+    is missed there rather than the walk refused.
+
+    Opening up a free walk afterwards does not reach the floor. With
+    :func:`unfold`, as a bridging walk is finished, DP-30 and DP-100 walks
+    come out at 0.96-0.98 sigma against a floor of 1.0 on 40 of 40 chains
+    and with bonds above the design length. Grown, 0 of 100 miss at DP 30,
+    100 and 300 at either floor (0.05 or 1.0 sigma), with two restarts over
+    the hundred DP-300 chains at 1.0.
+
+    Without ``min_sep`` it draws exactly what it always drew.
     """
     rng = np.random.default_rng() if rng is None else rng
-    steps = rng.normal(size=(int(n_bonds), 3))
-    steps /= np.linalg.norm(steps, axis=1, keepdims=True) + 1e-12
-    return np.vstack([np.asarray(start, float),
-                      np.asarray(start, float) + np.cumsum(steps * bond, axis=0)])
+    start = np.asarray(start, float)
+    n_bonds = int(n_bonds)
+    if min_sep is None:
+        steps = rng.normal(size=(n_bonds, 3))
+        steps /= np.linalg.norm(steps, axis=1, keepdims=True) + 1e-12
+        return np.vstack([start, start + np.cumsum(steps * bond, axis=0)])
+
+    floor = float(min_sep)
+    n_try = max(1, int(tries))
+    pts = np.empty((n_bonds + 1, 3))
+    for attempt in range(int(restarts) + 1):
+        pts[0] = start
+        stuck = False
+        for k in range(n_bonds):
+            d = rng.normal(size=(n_try, 3))
+            d /= np.linalg.norm(d, axis=1, keepdims=True) + 1e-12
+            cand = pts[k] + bond * d
+            if k == 0:
+                pts[1] = cand[0]
+                continue
+            # Every bead but the one this step is bonded to.
+            gap = np.linalg.norm(cand[:, None, :] - pts[None, :k, :],
+                                 axis=2).min(axis=1)
+            clear = np.flatnonzero(gap >= floor)
+            if len(clear):
+                pts[k + 1] = cand[clear[0]]
+            elif attempt < restarts:
+                stuck = True
+                break
+            else:
+                pts[k + 1] = cand[int(gap.argmax())]
+        if not stuck:
+            break
+    return pts.copy()
 
 
 def closed_meander(anchor, n_bonds: int, bond: float = 0.97, rng=None,
@@ -390,9 +460,205 @@ def closed_meander(anchor, n_bonds: int, bond: float = 0.97, rng=None,
     return pts
 
 
+def closed_walk(anchor, n_bonds: int, bond: float = 0.97, rng=None,
+                away_from=None, min_sep: float = 1.0, first=None,
+                avoid=None, tries: int = 64,
+                restarts: int = 32) -> np.ndarray:
+    """A primary loop drawn as a compact ring: a closed self-avoiding walk.
+
+    :func:`closed_meander` spends the loop's whole contour on a circle, so a
+    loop's radius grows with its DP: 15.6 sigma at DP 100, where a relaxed
+    DP-100 loop in the N100 bond/create reference has a radius of gyration
+    of 4.5. Strands drawn through that open ring stay through it (Z 5.65
+    per loop against the reference's 1.04, after the push-off). This draws the loop the size a
+    ring of its DP is in a melt instead.
+
+    The walk leaves ``anchor`` and comes back to it in ``n_bonds`` bonds of
+    exactly ``bond``. Each step is drawn from the cone of directions that can
+    still close in the bonds left (as :func:`bridging_walk` draws), ``tries``
+    candidates at a time; a candidate within ``min_sep`` of a bead of the
+    ring that is not its bonded neighbour is dropped (the anchor counts, so
+    the ring stays clear of its own junction), and of the ones left the step
+    takes one with probability proportional to the Gaussian chance of
+    returning to the anchor in the bonds remaining. With a floor near zero
+    that is an ideal ring (radius of gyration ``bond * sqrt(n_bonds / 12)``);
+    the floor is what swells it. The second-to-last bead is within two bonds
+    of the anchor by the cone, and the last is put on the circle of points
+    one bond from both, so every bond is exact. A dead end starts the walk
+    again, up to ``restarts`` times; after that the stuck step takes the
+    roomiest of its draws, and the floor is missed there rather than the
+    loop refused, as :func:`free_walk` does.
+
+    Measured over 200 walks a case at bond 0.97, the radius of gyration of
+    the loop's own beads at a floor of 1.0 sigma is 1.85 at DP 20, 2.96 at
+    DP 50 and 4.29 at DP 100, against 1.96 and 4.52 in the bond/create
+    references (N20 and N100 at their densities); at a floor of 0 it is
+    1.29 and 2.78, an ideal ring's 1.28 and 2.81.
+
+    The first bond points along ``first``, or, when it is not given, along
+    the emptiest direction away from ``away_from`` (the other strands at the
+    junction) as :func:`closed_meander` finds it, with the same two draws
+    from ``rng`` (the second, which the ring spends on its plane, is not
+    used). A caller that draws that direction from one stream and grows the
+    walk on another (:func:`topon.conformation.place`) therefore takes from
+    the first exactly what a ring would have.
+
+    ``avoid`` (a :class:`Clearance`, or anything with its ``near`` and
+    ``radius``) keeps the walk off the beads already in the box. The first
+    bond goes along ``first`` if that clears ``avoid.radius``, else along
+    the direction of a fixed spread nearest it that does; at every later
+    step, of the draws that clear the ring's own floor, those that also
+    clear ``avoid.radius`` are preferred, and where none does the step takes
+    the roomiest; a ring whose last bead cannot close clear is grown again,
+    within ``restarts``. A loop grown without it can curl round a strand
+    that leaves its own junction, and the settle then cannot part the two
+    without passing one through the other.
+
+    Returns the ``n_bonds - 1`` interior beads, in order, as
+    :func:`closed_meander` does: the strand is ``anchor -> beads -> anchor``.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    anchor = np.asarray(anchor, float)
+    n = int(n_bonds)
+    if n < 3:
+        raise ValueError(
+            f"A closed loop needs at least 3 bonds to have any area; got "
+            f"{n}. A DP-{max(n - 1, 0)} primary loop cannot be drawn; raise "
+            f"the strand's DP."
+        )
+    if first is None:
+        first, _plane = _loop_frame(rng, away_from)
+    first = np.asarray(first, float)
+    first = first / (np.linalg.norm(first) + 1e-12)
+    pts = _grow_closed(anchor, n, float(bond), float(min_sep), rng,
+                       max(1, int(tries)), int(restarts), first, avoid)
+    return pts[1:-1].copy()
+
+
+def _loop_frame(rng, away_from):
+    """The two draws :func:`closed_meander` makes: the direction of a loop's
+    centre, away from the strands at its junction, and one across it."""
+    out = _loop_direction(rng, away_from)
+    return out, _lateral(out, rng.normal(size=3))
+
+
+def _grow_closed(anchor, n: int, bond: float, floor: float, rng, n_try: int,
+                 restarts: int, first, avoid) -> np.ndarray:
+    """The walk of :func:`closed_walk`, from ``anchor`` and back to it."""
+
+    def pick(cand, own_gap, log_weight):
+        """The draw a step takes, or None at a dead end of the ring's own."""
+        clear = own_gap >= floor
+        if not clear.any():
+            return None
+        if avoid is not None:
+            room = avoid.near(cand)
+            free = clear & (room >= avoid.radius)
+            clear = free if free.any() else clear & (room == room[clear].max())
+        if log_weight is None:
+            return int(np.flatnonzero(clear)[0])
+        w = np.where(clear, np.exp(log_weight - log_weight[clear].max()), 0.0)
+        return int(rng.choice(len(cand), p=w / w.sum()))
+
+    pts = np.empty((n + 1, 3))
+    pts[0] = anchor
+    first = np.asarray(first, float)
+    if avoid is not None:
+        # The first bond as asked where it clears, else the direction of a
+        # fixed spread that clears and is nearest it, else the roomiest.
+        dirs = np.vstack([first, _DIRS])
+        room = avoid.near(anchor + bond * dirs)
+        clear = room >= avoid.radius
+        if not clear[0]:
+            first = dirs[int(np.argmax(np.where(clear, dirs @ first, -2.0)))
+                         if clear.any() else int(np.argmax(room))]
+    pts[1] = anchor + bond * first
+    # The best ring that met its own floor but closed short of `avoid`.
+    best, best_room = None, -np.inf
+    for attempt in range(restarts + 1):
+        last_try = attempt == restarts
+        stuck = False
+        for k in range(1, n - 2):           # bead k + 1, from 2 to n - 2
+            d = anchor - pts[k]
+            r = float(np.linalg.norm(d))
+            left = n - k - 1                # bonds after this step
+            cos_min = ((r * r + bond * bond - (left * bond) ** 2)
+                       / (2.0 * r * bond) if r > 1e-12 else -1.0)
+            cos_min = min(1.0, max(-1.0, cos_min))
+            c = rng.uniform(cos_min, 1.0, n_try)
+            s = np.sqrt(np.maximum(0.0, 1.0 - c * c))
+            head = d / r if r > 1e-12 else np.array([0.0, 0.0, 1.0])
+            t = _lateral(head, [0.0, 0.0, 1.0] if abs(head[2]) < 0.9
+                         else [1.0, 0.0, 0.0])
+            u = np.cross(head, t)
+            phi = rng.uniform(0.0, 2.0 * np.pi, n_try)
+            cand = pts[k] + bond * (c[:, None] * head
+                                    + s[:, None] * (np.cos(phi)[:, None] * t
+                                                    + np.sin(phi)[:, None] * u))
+            # Every bead but the one this step is bonded to; the anchor is
+            # pts[0], and no bead before n - 1 is bonded to it.
+            gap = np.linalg.norm(cand[:, None, :] - pts[None, :k, :],
+                                 axis=2).min(axis=1)
+            # The chance of closing in `left` bonds from each candidate, for
+            # a Gaussian chain: what makes the ring a ring rather than a
+            # free walk with a straight leg home.
+            q = cand - anchor
+            j = pick(cand, gap, -1.5 * np.einsum("ij,ij->i", q, q)
+                     / (left * bond * bond))
+            if j is None:
+                if not last_try:
+                    stuck = True
+                    break
+                if best is not None:
+                    return best
+                j = int(gap.argmax())
+            pts[k + 1] = cand[j]
+        if stuck:
+            continue
+        # The last bead: one bond from bead n - 2 and from the anchor.
+        a = pts[n - 2] - anchor
+        r = float(np.linalg.norm(a))
+        h = np.sqrt(max(0.0, bond * bond - 0.25 * r * r))
+        axis = -a / r if r > 1e-12 else np.array([0.0, 0.0, 1.0])
+        t = _lateral(axis, rng.normal(size=3))
+        u = np.cross(axis, t)
+        phi = rng.uniform(0.0, 2.0 * np.pi, n_try)
+        cand = anchor + 0.5 * a + h * (np.cos(phi)[:, None] * t
+                                       + np.sin(phi)[:, None] * u)
+        if n > 3:
+            gap = np.linalg.norm(cand[:, None, :] - pts[None, 1:n - 2, :],
+                                 axis=2).min(axis=1)
+        else:
+            gap = np.full(n_try, np.inf)
+        j = pick(cand, gap, None)
+        if j is None:
+            if not last_try:
+                continue
+            if best is not None:
+                return best
+            j = int(gap.argmax())
+        pts[n - 1] = cand[j]
+        pts[n] = anchor
+        if avoid is None:
+            return pts
+        # A ring that closes short of what it avoids is grown again, and the
+        # roomiest closure that met the ring's own floor kept meanwhile.
+        room = float(avoid.near(cand[j:j + 1])[0])
+        if room >= avoid.radius:
+            return pts
+        if gap[j] >= floor and room > best_room:
+            best, best_room = pts.copy(), room
+    return best if best is not None else pts
+
+
 def _loop_direction(rng, away_from) -> np.ndarray:
     """A unit vector pointing away from the strands already at a junction."""
-    hint = rng.normal(size=3)
+    return _emptiest(rng.normal(size=3), away_from)
+
+
+def _emptiest(hint, away_from) -> np.ndarray:
+    """:func:`_loop_direction` for a hint already drawn."""
+    hint = np.asarray(hint, float)
     if away_from is None or len(away_from) == 0:
         return hint / (np.linalg.norm(hint) + 1e-12)
     dirs = np.asarray(away_from, float).reshape(-1, 3)
@@ -939,8 +1205,9 @@ def straight_chain(start, end, n_bonds: int, jitter: float = 0.02,
 def meander_chain(start, end, n_bonds: int, bond: float = 0.97, rng=None,
                   waves: float = 6.0, min_waves: float = 0.5,
                   min_sep: float = 1.0, min_bond: float = 0.85,
-                  straight_at: float = 0.97, jitter: float = 0.02,
-                  samples: int = 600, unfold_iters: int = 200):
+                  straight_at: float = STRAIGHT_AT, jitter: float = 0.02,
+                  samples: int = 600, unfold_iters: int = 200,
+                  side=None, side_angle: float = SIDE_ANGLE):
     """A smooth meander carrying the contour the beads need.
 
     A chain's contour is ``n_bonds * bond`` whatever its chord is, so the path
@@ -955,7 +1222,10 @@ def meander_chain(start, end, n_bonds: int, bond: float = 0.97, rng=None,
     on the N20 reference graph, random-walk placement floors at Z = 0.23 per
     DP-20 strand however dilute the build, while the meander at the same state
     reproduces the reference's per-strand distribution exactly (Z 0.189 against
-    0.178, KS p = 1.0). ``REPORT.md`` section 4.
+    0.178, KS p = 1.0). ``REPORT.md`` section 4. That is the build state of the
+    validation scripts' placement; at the final state of ``place()`` builds
+    with the pinch fix the DP-20 floors of the two shapes coincide near
+    0.236, the meander still the lower at one build density.
 
     ``waves`` is how many full waves the slack is spent in, and it is tried and
     then halved down to ``min_waves`` while the path still has a bond below
@@ -968,8 +1238,30 @@ def meander_chain(start, end, n_bonds: int, bond: float = 0.97, rng=None,
     A chord within ``straight_at`` of the contour has no slack to spend and
     nothing to wave, so it is drawn as the chord with a little jitter.
 
+    ``side``, a direction across the chord, draws the strand on that side of
+    it, for strands that share both junctions with another (a secondary
+    loop). Two strands on one chord drawn the usual way have the same shape,
+    each turned about the chord at random, so they meet at every point where
+    the wave crosses the chord and lie within a fraction of a sigma along
+    most of it. With ``side`` the chord is first bowed towards it, a half
+    sine that leaves each junction at ``side_angle`` degrees and is at least
+    :data:`SIDE_BOW_MIN` high (lower if the contour cannot carry that bow,
+    and then the bow takes all the slack), the wave is laid across the bow
+    (along the chord times ``side``), and the path is not turned. Before the
+    path is unfolded every point of it stands off the plane through the
+    chord across ``side`` by the bow's height there, so two strands drawn on
+    opposite sides start apart. The unfold can carry a bead across that
+    plane on a chord under about a sigma, and two strands of different DP
+    on a chord of a few sigma can come within a sigma near their junctions;
+    on the N20 fit (strands of one DP) no pair of their bonds past the two
+    at each junction is under a sigma. It draws nothing from ``rng`` on the
+    meander route, where the turn would have taken one number: the caller
+    takes that number to choose the side. The straight route is as without
+    it, and so is the walk the meander falls back to when it cannot draw.
+
     Returns ``(path, info)``; ``info`` names the routine that drew it, the
-    waves kept, how many draws it took and the two gate readings.
+    waves kept, how many draws it took and the two gate readings, and with
+    ``side`` the height of the bow (``bow``, 0 when the strand went straight).
     """
     from topon.conformation.entanglement.waypoints import meander_to_length
 
@@ -982,12 +1274,34 @@ def meander_chain(start, end, n_bonds: int, bond: float = 0.97, rng=None,
 
     if chord >= straight_at * contour:
         p = straight_chain(a, b, n_bonds, jitter=jitter, rng=rng, bond=bond)
-        return p, {"routine": "straight", "waves": 0.0, "draws": 0,
-                   "reason": f"chord is within {straight_at:g} of the contour",
-                   "bond_min": float(bond_lengths(p).min()),
-                   "self_contact": self_contact(p)}
+        info = {"routine": "straight", "waves": 0.0, "draws": 0,
+                "reason": f"chord is within {straight_at:g} of the contour",
+                "bond_min": float(bond_lengths(p).min()),
+                "self_contact": self_contact(p)}
+        if side is not None:
+            info["bow"] = 0.0
+        return p, info
 
-    dense = _equal_arc(np.stack([a, b]), int(samples))
+    if side is None:
+        dense = _equal_arc(np.stack([a, b]), int(samples))
+    else:
+        # Drawn in the chord's own frame, chord along x and the bow along y,
+        # and turned into place afterwards. The meander's wave direction is a
+        # fixed axis carried along the path (``waypoints._frames``), which
+        # for a curve in the xy plane is z at every point: the wave lies
+        # across the bow and never towards the other side.
+        e = (b - a) / chord
+        n = np.asarray(side, float) - float(np.asarray(side, float) @ e) * e
+        if float(np.linalg.norm(n)) < 1e-9:
+            raise ValueError("side must point across the chord; "
+                             f"got {side!r} along it")
+        n = n / np.linalg.norm(n)
+        frame = np.stack([e, n, np.cross(e, n)])
+        bow = _bow_height(chord, contour, side_angle, int(samples))
+        x = np.linspace(0.0, chord, int(samples))
+        dense = _equal_arc(np.column_stack(
+            [x, bow * np.sin(np.pi * x / chord), np.zeros_like(x)]),
+            int(samples))
     w = float(waves)
     draws = 0
     best = None
@@ -1013,9 +1327,181 @@ def meander_chain(start, end, n_bonds: int, bond: float = 0.97, rng=None,
         w = max(min_waves, 0.5 * w)
 
     _score, p, w, b_min, gap = best
-    p = _spin_about_chord(p, rng)
+    if side is None:
+        p = _spin_about_chord(p, rng)
+        return p, {"routine": "meander", "waves": float(w), "draws": draws,
+                   "bond_min": b_min, "self_contact": float(gap)}
+    p = a + p @ frame
+    p[0], p[-1] = a, b
     return p, {"routine": "meander", "waves": float(w), "draws": draws,
-               "bond_min": b_min, "self_contact": float(gap)}
+               "bond_min": b_min, "self_contact": float(gap),
+               "bow": float(bow)}
+
+
+def _bow_height(chord: float, contour: float, angle: float,
+                samples: int, least: float = SIDE_BOW_MIN) -> float:
+    """The height of a half-sine bow on ``chord`` that leaves its ends at
+    ``angle`` degrees and is at least ``least`` high, or the highest one no
+    longer than ``contour``.
+
+    A bow of height ``h`` leaves its ends at ``atan(pi h / chord)``, so the
+    angle fixes ``h = chord tan(angle) / pi``; at 20 degrees that adds 3.3 %
+    to the chord's length. A chord with less slack than that gets the bow its
+    contour can carry, and the meander then has nothing left to wave.
+    """
+    want = max(chord * np.tan(np.radians(float(angle))) / np.pi, float(least))
+    x = np.linspace(0.0, chord, int(samples))
+    s = np.sin(np.pi * x / chord)
+
+    def length(h):
+        return float(np.hypot(np.diff(x), np.diff(h * s)).sum())
+
+    if length(want) <= contour:
+        return float(want)
+    lo, hi = 0.0, float(want)
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if length(mid) <= contour:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def shared_chords(ends) -> dict:
+    """Strands that share both junctions with another, by index.
+
+    ``ends`` has one entry per strand: its two junctions (any labels), or
+    None for a strand with no chord to share (a loop, a dangling or a free
+    chain). Returns ``{index: (chord, rank, count)}``: ``chord`` the pair of
+    junctions, ``rank`` the strand's place among the ``count`` strands on it
+    in index order. A secondary loop is a chord with two; a graph's own
+    defects never put more on one, a loaded graph can. Both placement routes
+    take the side of each such strand from :func:`chord_side` and draw it
+    with :func:`meander_chain` (``side``): the bead-spring ``place()`` and
+    the atomistic placement.
+    """
+    on: dict = {}
+    for k, e in enumerate(ends):
+        if e is not None:
+            on.setdefault(frozenset(e), []).append(k)
+    return {k: (chord, rank, len(ks))
+            for chord, ks in on.items() if len(ks) > 1
+            for rank, k in enumerate(ks)}
+
+
+def chord_side(chord_d, rank: int, count: int, frames: dict, chord, rng):
+    """The direction a strand sharing its chord is drawn on.
+
+    It takes the one number a meander takes from the stream (the turn about
+    its chord, :func:`meander_chain`), at the strand's own place in the
+    strand order, so every other strand is drawn as before. The first strand
+    of a chord to be drawn fixes the chord's frame and its turn in
+    ``frames`` (one dict per build), and the ``count`` strands on it are
+    spread evenly about it from there: on opposite sides for a secondary
+    loop. ``chord_d`` is the chord's direction (any length), ``rank``,
+    ``count`` and ``chord`` as :func:`shared_chords` gives them.
+    """
+    turn = float(rng.uniform(0.0, 2.0 * np.pi))
+    if chord not in frames:
+        e = np.asarray(chord_d, float) / float(np.linalg.norm(chord_d))
+        ref = (np.array([0.0, 0.0, 1.0]) if abs(float(e[2])) < 0.9
+               else np.array([1.0, 0.0, 0.0]))
+        u = ref - float(ref @ e) * e
+        u /= np.linalg.norm(u)
+        frames[chord] = (u, np.cross(e, u), turn)
+    u, w, phase = frames[chord]
+    angle = phase + 2.0 * np.pi * rank / count
+    return np.cos(angle) * u + np.sin(angle) * w
+
+
+def coil_chain(start, end, n_bonds: int, radius: float, bond: float = 0.97,
+               rng=None, ease: float = 0.15, min_sep: float = 1.0,
+               samples: int = 2000, unfold_iters: int = 200):
+    """A helix about the chord, as wide as ``radius``, carrying the contour.
+
+    The strand winds round the line between its two junctions at ``radius``
+    and makes as many turns as it takes for the path to measure the contour
+    (``n_bonds * bond``). The radius is eased in over the first and last
+    ``ease`` of the path, so the strand leaves each junction along its chord.
+    Handedness and the phase of the first turn are drawn from ``rng``, and so
+    is the plane the turns start in.
+
+    Why a coil. A strand can only hold another if that one threads the loop
+    the strand makes with its own chord, which is what Z1+ reads as a kink,
+    so what sets Z at the build is how far each strand strays from its chord.
+    The meander strays by an amount that its wave count sets only
+    indirectly (and that its fold gate halves strand by strand); the coil
+    strays by exactly ``radius``, whatever the contour, and spends the rest of
+    its slack in turns that stay inside that radius. Measured on the DP-30
+    PDMS network, Z1+ per bridge at the build rises with the radius without
+    a step: 0.23 at 2 A, 0.77 at 4, 1.49 at 6, 2.43 at 8, 3.15 at 10.
+
+    A radius too wide for the strand's slack (the eased arc alone longer than
+    the contour) is narrowed to the widest that fits, drawn with no turns;
+    ``info["radius"]`` is the one used. Returns ``(path, info)``, the path
+    ``n_bonds + 1`` points from ``start`` to ``end``.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    a = np.asarray(start, float)
+    b = np.asarray(end, float)
+    n_bonds = int(n_bonds)
+    contour = n_bonds * float(bond)
+    d = b - a
+    chord = float(np.linalg.norm(d))
+    if chord >= contour or chord < 1e-9:
+        p = straight_chain(a, b, n_bonds, jitter=0.0)
+        return p, {"routine": "straight", "radius": 0.0, "turns": 0.0,
+                   "reason": "chord at or beyond the contour" if chord >= contour
+                   else "no chord to coil about",
+                   "bond_min": float(bond_lengths(p).min()),
+                   "self_contact": self_contact(p)}
+
+    u = d / chord
+    e1 = rng.normal(size=3)
+    e1 -= (e1 @ u) * u
+    if np.linalg.norm(e1) < 1e-9:
+        e1 = np.cross(u, [1.0, 0.0, 0.0] if abs(u[0]) < 0.9 else [0.0, 1.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(u, e1)
+    hand = float(rng.choice([-1.0, 1.0]))
+    phase = float(rng.uniform(0.0, 2.0 * np.pi))
+
+    t = np.linspace(0.0, 1.0, int(samples))
+    x = np.minimum(1.0, np.minimum(t, 1.0 - t) / max(float(ease), 1e-9))
+    env = 0.5 - 0.5 * np.cos(np.pi * x)
+
+    def path(r, turns):
+        ang = phase + hand * 2.0 * np.pi * turns * t
+        return (a + t[:, None] * d + r * env[:, None]
+                * (np.cos(ang)[:, None] * e1 + np.sin(ang)[:, None] * e2))
+
+    def length(r, turns):
+        return float(np.linalg.norm(np.diff(path(r, turns), axis=0), axis=1).sum())
+
+    def solve(f, lo, hi):
+        """Largest x in [lo, hi] with f(x) <= contour, f increasing."""
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if f(mid) <= contour else (lo, mid)
+        return lo
+
+    r = float(radius)
+    if length(r, 0.0) > contour:
+        # Too wide for this strand's slack: the widest arc that fits, flat.
+        r = solve(lambda q: length(q, 0.0), 0.0, r)
+        turns = 0.0
+    else:
+        hi = 1.0
+        while length(r, hi) < contour:
+            hi *= 2.0
+        turns = solve(lambda n: length(r, n), 0.0, hi)
+    p = _equal_arc(path(r, turns), n_bonds + 1)
+    p = unfold(p, float(bond), min_sep=min_sep, iters=unfold_iters)
+    return p, {"routine": "coil", "radius": float(r), "turns": float(turns),
+               "hand": "right" if hand > 0 else "left",
+               "bond_min": float(bond_lengths(p).min()),
+               "self_contact": float(self_contact(p))}
 
 
 def _spin_about_chord(p, rng) -> np.ndarray:

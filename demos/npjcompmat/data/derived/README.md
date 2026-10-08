@@ -81,7 +81,8 @@ these files.
 | File | Content | Provenance |
 |---|---|---|
 | `generator_benchmark/tables.md` | benchmark tables G1 (degree-distribution control) and G2 (infeasible requests) | runs of the topon generator (`make_tables.py`) |
-| `generator_benchmark/t8_final_summary.csv`, `t8_exact_v2w10_summary.csv`, `t8_exact_v2_327.csv` | generation times behind Table 1 (Appendix B) and the exact search on every target of the ensemble (columns in `generator_benchmark/README.md`) | timing runs of the topon generators in C and Python |
+| `generator_benchmark/t8_final_summary.csv`, `t8_exact_v2w10_summary.csv`, `t8_exact_v2_327.csv` | generation times behind the earlier version of Table 1 (Appendix B) and the exact search on every target of the ensemble (columns in `generator_benchmark/README.md`) | timing runs of the topon generators in C and Python (topon 0.2.1) |
+| `generator_benchmark/T10_README.md` and the `t10_*` files | the current benchmark, rerun on 6 Oct 2026 with the code of topon 0.4.5, behind Table 1 (Appendix B), Table 2 (Appendix C) and the supplementary benchmark table (files and columns in `generator_benchmark/README.md`) | runs of the topon generators in C and Python (`scripts/t10/`) |
 | `software/software_seeds.csv` | rows of the software table (`section`, `item`, `value`, `source`; LaTeX cell text) | static record |
 
 The analysis scripts that produced the files above from raw simulation output are in `scripts/raw_data_analyses/` (see

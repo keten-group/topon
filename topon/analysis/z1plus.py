@@ -140,8 +140,9 @@ def export_placement(placement, seed: int = 0,
                      amp: float = JITTER) -> tuple[list, np.ndarray]:
     """Every strand of a :class:`~topon.conformation.placement.Placement`.
 
-    The placed paths are already unwrapped and end on their junctions, so
-    they go out as drawn, in placement order (the chain order of
+    The placed paths are already unwrapped and end on their junctions (a
+    sol chain, class ``"free"``, has none and is its own beads), so they go
+    out as drawn, in placement order (the chain order of
     :func:`topon.writers.write_endlinked`). Returns ``(chains, classes)``.
     """
     chains = [np.asarray(s.path, float) for s in placement.strands]

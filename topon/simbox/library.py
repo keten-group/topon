@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from topon.simbox.molecule import Molecule
+from topon.simbox.molecule import Molecule, embed_conformer
 
 
 class MoleculeLibrary:
@@ -21,8 +21,8 @@ class MoleculeLibrary:
     Usage::
 
         lib = MoleculeLibrary()
-        epoxy = lib.epoxy_pdms(n_dms=2)      # ~500 g/mol
-        amino = lib.amino_pdms(n_dms=8)      # ~850 g/mol
+        epoxy = lib.epoxy_pdms(n_dms=2)      # average MW 510.9 g/mol
+        amino = lib.amino_pdms(n_dms=8)      # average MW 841.8 g/mol
         poss  = lib.am0270_poss()             # ~1267 g/mol
     """
 
@@ -34,13 +34,14 @@ class MoleculeLibrary:
 
         Structure::
 
-            Epoxide-CH2-O-CH2CH2CH2-Si(Me)-[O-Si(Me)2]_n-O-Si(Me)-CH2CH2CH2-O-CH2-Epoxide
+            Epoxide-CH2-O-CH2CH2CH2-Si(Me)2-[O-Si(Me)2]_n-O-Si(Me)2-CH2CH2CH2-O-CH2-Epoxide
 
         Parameters
         ----------
         n_dms : int
             Number of internal dimethylsiloxane repeat units (default 2
-            gives MW ~500 g/mol).
+            gives C20H46O7Si4, 77 atoms, average MW 510.9 g/mol; the
+            collaborators' epoxy-PDMS is about 500).
         """
         mol = self._build_functional_pdms(
             n_dms=n_dms,
@@ -53,13 +54,14 @@ class MoleculeLibrary:
 
         Structure::
 
-            H2N-CH2CH2CH2-Si(Me)-[O-Si(Me)2]_n-O-Si(Me)-CH2CH2CH2-NH2
+            H2N-CH2CH2CH2-Si(Me)2-[O-Si(Me)2]_n-O-Si(Me)2-CH2CH2CH2-NH2
 
         Parameters
         ----------
         n_dms : int
             Number of internal dimethylsiloxane repeat units (default 8
-            gives MW ~850 g/mol).
+            gives C26H76N2O9Si10, 123 atoms, average MW 841.8 g/mol; the
+            collaborators' amino-PDMS is about 850).
         """
         mol = self._build_functional_pdms(
             n_dms=n_dms,
@@ -96,10 +98,16 @@ class MoleculeLibrary:
     def _build_functional_pdms(n_dms: int, end_group_builder) -> "Chem.Mol":
         """Build a PDMS backbone and attach end groups.
 
-        The backbone has ``n_dms + 2`` silicon atoms:
-        two terminal Si (each carrying one methyl + one functional group)
-        and ``n_dms`` internal Si (each carrying two methyls).
-        Adjacent Si atoms are bridged by oxygen.
+        The backbone has ``n_dms + 2`` silicon atoms: two terminal Si, each
+        carrying two methyls and the functional group, and ``n_dms`` internal
+        Si, each carrying two methyls. Adjacent Si atoms are bridged by
+        oxygen, so every Si has four heavy-atom neighbours and no H.
+
+        Before 0.4.5 a terminal Si carried one methyl, and RDKit's ``AddHs``
+        filled its fourth valence with an H: every chain end was
+        -SiH(Me)- where aminopropyl- and glycidoxypropyl-terminated PDMS
+        end in -Si(Me)2-: each molecule had an H in place of a methyl at
+        both ends, 6 atoms and 28.05 g/mol (two CH2) short.
 
         Parameters
         ----------
@@ -109,7 +117,6 @@ class MoleculeLibrary:
             ``f(rwmol, si_atom_idx)`` – attaches the functional group.
         """
         from rdkit import Chem
-        from rdkit.Chem import AllChem
 
         rwmol = Chem.RWMol()
         n_si = n_dms + 2
@@ -126,14 +133,10 @@ class MoleculeLibrary:
                 rwmol.AddBond(o_idx, si_idx, Chem.BondType.SINGLE)
 
         # --- Methyl substituents ---
-        for i, si_idx in enumerate(si_indices):
-            if 0 < i < n_si - 1:
-                # Internal Si: two methyls
-                for _ in range(2):
-                    c = rwmol.AddAtom(Chem.Atom(6))
-                    rwmol.AddBond(si_idx, c, Chem.BondType.SINGLE)
-            else:
-                # Terminal Si: one methyl (second substituent is the end group)
+        # Two on every Si: an internal Si's other two neighbours are bridging
+        # O, a terminal Si's are one bridging O and the end group.
+        for si_idx in si_indices:
+            for _ in range(2):
                 c = rwmol.AddAtom(Chem.Atom(6))
                 rwmol.AddBond(si_idx, c, Chem.BondType.SINGLE)
 
@@ -148,20 +151,7 @@ class MoleculeLibrary:
         Chem.SanitizeMol(mol)
 
         mol = Chem.AddHs(mol)
-
-        params = AllChem.ETKDGv3()
-        params.randomSeed = 42
-        result = AllChem.EmbedMolecule(mol, params)
-        if result == -1:
-            params.useRandomCoords = True
-            result = AllChem.EmbedMolecule(mol, params)
-            if result == -1:
-                raise RuntimeError("Failed to embed functional PDMS conformer")
-
-        try:
-            AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
-        except Exception:
-            AllChem.UFFOptimizeMolecule(mol, maxIters=500)
+        embed_conformer(mol, f"functional PDMS (n_dms={n_dms})", max_iters=500)
 
         return mol
 
@@ -238,7 +228,6 @@ class MoleculeLibrary:
         - Corners 1-7: isooctyl   (2,4,4-trimethylpentyl  CC(C)CC(C)(C)C)
         """
         from rdkit import Chem
-        from rdkit.Chem import AllChem
 
         rwmol = Chem.RWMol()
 
@@ -296,17 +285,10 @@ class MoleculeLibrary:
         Chem.SanitizeMol(mol)
 
         mol = Chem.AddHs(mol)
-
-        params = AllChem.ETKDGv3()
-        params.randomSeed = 42
-        params.useRandomCoords = True          # POSS cages benefit from random init
-        result = AllChem.EmbedMolecule(mol, params)
-        if result == -1:
-            raise RuntimeError("Failed to embed AM0270 POSS conformer")
-
-        try:
-            AllChem.MMFFOptimizeMolecule(mol, maxIters=1000)
-        except Exception:
-            AllChem.UFFOptimizeMolecule(mol, maxIters=1000)
+        # Not from random starting coordinates: those tangle the cage in 18
+        # of seeds 0-29, and seed 42 put corner 1 into the cage with its Si-C
+        # bond out through face 0-2-6-4 at 2.43 A, in every POSS simbox built
+        # before 0.4.5. MMFF cannot undo it.
+        embed_conformer(mol, "AM0270 POSS", max_iters=1000)
 
         return mol

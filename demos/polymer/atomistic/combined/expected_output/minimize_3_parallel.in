@@ -7,7 +7,7 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 pair_style      lj/cut/coul/long 10.0 10.0
 
 # --- 1. Load Ramped State ---
@@ -29,7 +29,7 @@ special_bonds   lj/coul 0.0 0.0 1.0
 
 # --- 4. Minimization, capped (hard-backbone deck) ---
 min_style       cg
-minimize        1.0e-6 1.0e-8 2000 20000
+minimize        1.0e-6 1.0e-8 1000 10000
 
 write_data      system_minimized_final.data
 

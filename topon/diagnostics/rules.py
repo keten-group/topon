@@ -107,38 +107,71 @@ def check_unknown_node_type(cfg, raw) -> List[Issue]:
 
 
 def check_atomistic_graft_non_pdms(cfg, raw) -> List[Issue]:
-    """Atomistic graft is hard-coded to PDMS structure; a
-    non-PDMS monomer SMILES with graft_density > 0 silently skips grafts.
+    """Grafts asked for on a monomer that cannot carry one.
+
+    An atomistic graft replaces a methyl on a repeat's head atom (the Si of
+    a siloxane) with the O its PDMS side chain hangs from. A repeat whose
+    monomer has no such methyl is built ungrafted, with a RuntimeWarning.
+    Before 0.4.5 every monomer but PDMS itself was; the rule keeps its name.
+    The monomers read are the edge type's own and, with copolymers on, those
+    of its composition. The side chain itself is always PDMS on this route,
+    so a ``side_chain_monomer`` that is not PDMS is warned about as well.
     """
     if cfg.chemistry.model_type != "atomistic":
         return []
     grafts_cfg = cfg.assignment.grafts.per_edge_type or {}
     if not grafts_cfg:
         return []
+    from topon.chemistry.builder import _PDMS_SMILES, takes_a_graft
+
+    def no_head_methyl(name) -> bool:
+        try:
+            return not takes_a_graft(monomers[name].smiles)
+        except ValueError:          # a SMILES that does not parse: not this rule's call
+            return False
+
     monomers = cfg.chemistry.monomers or {}
     edge_types = cfg.chemistry.edge_type_map or {}
+    copolymer = cfg.assignment.copolymer
     out: List[Issue] = []
     for etype, gcfg in grafts_cfg.items():
         if gcfg.graft_density <= 0:
             continue
-        edge_chem = edge_types.get(etype)
-        if edge_chem is None:
-            continue
-        mon_cfg = monomers.get(edge_chem.monomer)
-        if mon_cfg is None or mon_cfg.smiles == "[Si](C)(C)O":
+        side = monomers.get(gcfg.side_chain_monomer)
+        if side is not None and side.smiles != _PDMS_SMILES:
+            out.append(Issue(
+                rule="atomistic_graft_non_pdms",
+                level="warn",
+                message=(
+                    f"Edge type '{etype}' asks for side chains of "
+                    f"'{gcfg.side_chain_monomer}' ({side.smiles}), but atomistic side "
+                    f"chains are built of PDMS {_PDMS_SMILES} whatever "
+                    f"side_chain_monomer names."
+                ),
+                fix="Use side_chain_monomer 'PDMS' to say what is built, or the CG model_type.",
+            ))
+        names = []
+        if copolymer.enabled and etype in (copolymer.per_edge_type or {}):
+            names = [c.monomer for c in copolymer.per_edge_type[etype].composition]
+        if not names and etype in edge_types:
+            names = [edge_types[etype].monomer]
+        bare = [n for n in dict.fromkeys(names) if n in monomers and no_head_methyl(n)]
+        if not bare:
             continue
         out.append(Issue(
             rule="atomistic_graft_non_pdms",
             level="warn",
             message=(
-                f"Edge type '{etype}' has graft_density={gcfg.graft_density} "
-                f"but its monomer '{edge_chem.monomer}' has SMILES "
-                f"{mon_cfg.smiles!r} (not PDMS '[Si](C)(C)O'). Atomistic "
-                f"graft is hard-coded to PDMS structure; non-PDMS monomers "
-                f"emit a RuntimeWarning at build time and skip grafts."
+                f"Edge type '{etype}' has graft_density={gcfg.graft_density}, "
+                f"but its monomer(s) "
+                + ", ".join(f"'{n}' ({monomers[n].smiles})" for n in bare)
+                + " have no methyl on the head atom for an atomistic graft to "
+                f"replace. Their repeats are built ungrafted, with a "
+                f"RuntimeWarning at build time."
             ),
-            fix="Use the CG model_type, or change the monomer to PDMS, or "
-                "set graft_density=0 for this edge type.",
+            fix="Use a monomer with a methyl on its head atom (PDMS, a "
+                "methylphenylsiloxane), the CG model_type, or set "
+                "graft_density=0 for this edge type.",
         ))
     return out
 
@@ -588,6 +621,38 @@ def check_unknown_config_keys(cfg, raw: dict) -> list:
 
 RuleFn = Callable[[object, dict], Iterable[Issue]]
 
+def _atomistic(cfg) -> bool:
+    chem = getattr(cfg, "chemistry", None)
+    return getattr(chem, "model_type", None) == "atomistic"
+
+
+def check_atomistic_target_placement(cfg, raw) -> List[Issue]:
+    """An atomistic `target_Z` with a placement named that it cannot turn.
+
+    On the atomistic route a target is met by the coil radius, searched on
+    the build (the coarse-grained calibration table and its coil ratio do
+    not apply there), so naming the meander, the walk, straight or the
+    historic placement beside it leaves nothing to turn.
+    """
+    conf = getattr(cfg, "conformation", None)
+    if conf is None or not _atomistic(cfg) or conf.entanglement.target_Z is None:
+        return []
+    if "atomistic_placement" not in conf.model_fields_set:
+        return []
+    if conf.atomistic_placement == "coil":
+        return []
+    return [Issue(
+        rule="atomistic_target_placement",
+        level="error",
+        message=(
+            f"conformation.entanglement.target_Z is set on the atomistic route, "
+            f"where it is met by the coil radius, but atomistic_placement is "
+            f"{conf.atomistic_placement!r}."
+        ),
+        fix="Set conformation.atomistic_placement to 'coil' or leave it out.",
+    )]
+
+
 def check_entanglement_target_below_floor(cfg, raw) -> List[Issue]:
     """A `target_Z` under the lowest value its route has ever reached.
 
@@ -596,7 +661,7 @@ def check_entanglement_target_below_floor(cfg, raw) -> List[Issue]:
     95 000-bead build -- and this costs nothing.
     """
     conf = getattr(cfg, "conformation", None)
-    if conf is None:
+    if conf is None or _atomistic(cfg):
         return []
     target = conf.entanglement.target_Z
     if target is None:
@@ -608,8 +673,8 @@ def check_entanglement_target_below_floor(cfg, raw) -> List[Issue]:
     msg = floor_warning(dp, conf.placement, float(target))
     if not msg:
         return []
-    fix = ("Pick a target the route has reached, or switch "
-           "conformation.placement to 'meander'." if conf.placement == "walk"
+    fix = ("Pick a target the route has reached; the warning says whether "
+           "the meander's floor at this DP is any lower." if conf.placement == "walk"
            else "Lower conformation.meander_waves, which is the lever "
                 "REPORT.md 4.5 identified behind the DP-20 excess, and "
                 "expect to calibrate it.")
@@ -630,7 +695,7 @@ def check_conformation_build_knob(cfg, raw) -> List[Issue]:
     DPs that have actually been measured.
     """
     conf = getattr(cfg, "conformation", None)
-    if conf is None:
+    if conf is None or _atomistic(cfg):
         return []
     if conf.coil_ratio is not None or conf.build_density is not None:
         return []
@@ -672,6 +737,7 @@ RULE_REGISTRY: list[RuleFn] = [
     check_defects_without_endcap_safety,
     check_entanglement_target_below_floor,
     check_conformation_build_knob,
+    check_atomistic_target_placement,
     check_schema_gap_extras,
     check_unknown_config_keys,
 ]

@@ -6,6 +6,9 @@ import math
 # Bundled parameter file shipped with the package.
 _BUNDLED_PARAM_FILE = Path(__file__).parent / "DreidingX6parameters.txt"
 
+#: DREIDING's R0 is the van der Waals minimum; LJ 12-6 has it at 2^(1/6) sigma.
+SIGMA_FROM_R0 = 2.0 ** (-1.0 / 6.0)
+
 
 def create_lammps_data_file(mol, filename="polymer_network.lammps", dreiding_param_file=None):
     """
@@ -293,60 +296,258 @@ def add_wildcard_parameters(params):
     if ('X', 'X', 'X', 'X') not in params['improper_params']:
         params['improper_params'][('X', 'X', 'X', 'X')] = {'type': 'HARMONIC', 'k': 40.0, 'additional': {'chi0': 0.0}}
 
+# RDKit hybridisation -> the suffix DREIDING appends to the element.
+_HYBRIDISATION_SUFFIX = {'SP3': '3', 'SP2': '2', 'SP': '1', 'S': '_'}
+
+#: An aromatic atom of these elements takes DREIDING's resonant type (since
+#: 0.4.5). Typed by hybridisation a benzene ring was C_2: the
+#: C=C bond (r0 1.33, k 1400) on every ring bond and the double bond's
+#: torsion. The parameter file has no S_R, so an aromatic S is left to the
+#: hybridisation rule.
+RESONANT_TYPES = {'C': 'C_R', 'N': 'N_R', 'O': 'O_R'}
+
+
+def _aryl_oxygen(atom) -> bool:
+    """An O on an aromatic ring by single bonds: an aryl ether or a phenol O.
+
+    RDKit gives such an O SP2 (its lone pair is conjugated with the ring),
+    and the hybridisation rule then typed it O_2, the double-bonded O: C_R-O
+    r0 1.25 with a C=O bond's force constant, and Si-O 1.487. DREIDING's own
+    rules make it O_R (since 0.4.5). The rule is kept
+    narrow: an O with a double bond, or bonded to an acyl carbon (a
+    carboxylic ester, carboxyl or amide group, C=O, C=S or C=N), keeps the
+    hybridisation rule's type, as do an amide or carboxyl N. The linking O
+    of an aryl sulfonate or phosphate ester (bonded to S or P, not to an acyl
+    carbon) and a pyridine N-oxide's O are O_R by it too.
+    """
+    bonds = list(atom.GetBonds())
+    if not bonds or any(b.GetBondType() != Chem.BondType.SINGLE for b in bonds):
+        return False
+    others = [b.GetOtherAtom(atom) for b in bonds]
+    if not any(o.GetIsAromatic() for o in others):
+        return False
+    for o in others:
+        if o.GetSymbol() == "C" and any(
+                b.GetBondType() == Chem.BondType.DOUBLE
+                and b.GetOtherAtom(o).GetSymbol() in ("O", "S", "N")
+                for b in o.GetBonds()):
+            return False
+    return True
+
+
+class UntypedAtomError(ValueError):
+    """Atoms whose element and hybridisation have no DREIDING type.
+
+    ``atoms`` holds one ``(lammps_id, element, hybridisation, n_bonds)`` per
+    atom; ``note`` is appended to the message. Before 0.4.5 such an atom was
+    written as an invented type (``Si_``, ``O_``): ``DreidingWriter`` gave it
+    mass 1.0 and pair 0.001/3.5, ``create_lammps_data_file`` and simbox a
+    mass guessed from the name's capitals (``Si_`` read as S), and its bonds,
+    angles and dihedrals took the generic X entries.
+    """
+
+    def __init__(self, atoms, note=None):
+        self.atoms = list(atoms)
+        self.note = note
+        message = _untyped_message(self.atoms)
+        if note:
+            message += "\n" + note
+        super().__init__(message)
+
+    def __reduce__(self):
+        return type(self), (self.atoms, self.note)
+
+
+def _untyped_message(atoms, shown=5):
+    groups = {}
+    for lammps_id, element, hyb, n_bonds in atoms:
+        groups.setdefault((element, hyb, n_bonds), []).append(lammps_id)
+    lines = [f"{len(atoms)} atom(s) have no DREIDING type:"]
+    for (element, hyb, n_bonds), ids in groups.items():
+        listed = ", ".join(str(i) for i in ids[:shown])
+        more = f" and {len(ids) - shown} more" if len(ids) > shown else ""
+        lines.append(f"  {element}, hybridisation {hyb}, {n_bonds} bond(s): "
+                     f"atom {listed}{more}")
+    if any(hyb == "UNSPECIFIED" for _, _, hyb, _ in atoms):
+        lines.append("Hybridisation UNSPECIFIED means RDKit never perceived "
+                     "it: the molecule was not sanitized (Chem.SanitizeMol).")
+    lines.append("Atom ids are LAMMPS ids (RDKit index + 1). DREIDING types "
+                 "an atom by element and hybridisation (Si3, O_3, C_3, H_); "
+                 "fix the structure, or add the type to DreidingX6parameters"
+                 ".txt (topon/utils/ for the pipeline's writer, "
+                 "topon/forcefield/ for simbox).")
+    return "\n".join(lines)
+
+
+def dreiding_type_of(atom, atom_types):
+    """The DREIDING type of one RDKit atom, or None when DREIDING has none.
+
+    Tried in order: the element with its hybridisation suffix (``Si3``,
+    ``Al3``), the same with an underscore (``C_3``, ``O_2``), the element
+    alone (``Cl``, ``Ca``), the element and an underscore (``F_``, ``I_``).
+    The first one ``atom_types`` (the parsed ATOMTYPES block) holds is the
+    type. Hydrogen is always ``H_``, an aromatic C, N or O is resonant
+    (``C_R``, ``N_R``, ``O_R``; :data:`RESONANT_TYPES`), and so is an O on an
+    aromatic ring by single bonds (an aryl ether or a phenol O,
+    :func:`_aryl_oxygen`).
+    """
+    element = atom.GetSymbol()
+    if element == "H":
+        return "H_" if "H_" in atom_types else None
+    resonant = RESONANT_TYPES.get(element) if atom.GetIsAromatic() else None
+    if resonant is None and element == "O" and _aryl_oxygen(atom):
+        resonant = "O_R"
+    if resonant in atom_types:
+        return resonant
+    suffix = _HYBRIDISATION_SUFFIX.get(str(atom.GetHybridization()))
+    candidates = [element, f"{element}_"]
+    if suffix is not None:
+        candidates = [f"{element}{suffix}", f"{element}_{suffix}"] + candidates
+    return next((t for t in candidates if t in atom_types), None)
+
+
+def dreiding_types(mol, atom_types):
+    """Every atom's DREIDING type, in atom order.
+
+    Raises :class:`UntypedAtomError` naming each atom DREIDING has no type
+    for, rather than typing it with an invented name.
+    """
+    types, untyped = [], []
+    for atom in mol.GetAtoms():
+        t = dreiding_type_of(atom, atom_types)
+        if t is None:
+            untyped.append((atom.GetIdx() + 1, atom.GetSymbol(),
+                            str(atom.GetHybridization()), atom.GetDegree()))
+        types.append(t)
+    if untyped:
+        raise UntypedAtomError(untyped)
+    return types
+
+
+class ChargeError(ValueError):
+    """A DREIDING build whose Sanitize, AddHs or Gasteiger step failed.
+
+    ``step`` names the step. ``cause`` is the exception it raised, as text,
+    or None when Gasteiger returned NaN instead: ``atoms`` then holds one
+    ``(lammps_id, element, hybridisation, n_bonds)`` per atom Gasteiger has
+    no parameters for, and ``n_nan`` counts the atoms whose charge came back
+    NaN. Before 0.4.5 the pipeline's chemistry stage wrote the heavy-atom
+    molecule uncharged and without hydrogens when a step raised, and set NaN
+    charges to 0, each with only a ``[WARN]``.
+    """
+
+    def __init__(self, step, cause=None, atoms=(), n_nan=0):
+        self.step = step
+        self.cause = cause
+        self.atoms = list(atoms)
+        self.n_nan = int(n_nan)
+        super().__init__(_charge_message(step, cause, self.atoms, self.n_nan))
+
+    def __reduce__(self):
+        return type(self), (self.step, self.cause, self.atoms, self.n_nan)
+
+
+def _charge_message(step, cause, atoms, n_nan, shown=5):
+    if cause is not None:
+        return (f"The chemistry stage could not finish the molecule: {step} "
+                f"failed with {cause}. No file is written: an uncharged "
+                f"build without hydrogens is not the network asked for, and "
+                f"the stage scripts' PPPM refuses an uncharged system.")
+    lines = [f"Gasteiger charges came back NaN on {n_nan} atom(s)."]
+    if atoms:
+        groups = {}
+        for lammps_id, element, hyb, n_bonds in atoms:
+            groups.setdefault((element, hyb, n_bonds), []).append(lammps_id)
+        lines.append(f"RDKit has no Gasteiger parameters for {len(atoms)} "
+                     f"of them:")
+        for (element, hyb, n_bonds), ids in groups.items():
+            listed = ", ".join(str(i) for i in ids[:shown])
+            more = f" and {len(ids) - shown} more" if len(ids) > shown else ""
+            lines.append(f"  {element}, hybridisation {hyb}, {n_bonds} "
+                         f"bond(s): atom {listed}{more}")
+        lines.append("Their NaN spreads to the atoms bonded near them, one "
+                     "bond per Gasteiger iteration.")
+    lines.append("Atom ids are LAMMPS ids (RDKit index + 1). The pipeline "
+                 "charges a DREIDING build with Gasteiger charges only, so it "
+                 "stops here rather than write those charges as 0: a structure "
+                 "with these atoms cannot be built through it.")
+    return "\n".join(lines)
+
+
+def _gasteiger_parameterised(element, hybridisation):
+    """Whether RDKit's Gasteiger table has this element and hybridisation.
+
+    RDKit looks its parameters up by element and a mode read off the
+    hybridisation, and gives an atom with no entry NaN unless asked to raise;
+    a lone probe atom asked to raise answers for the pair.
+    """
+    from rdkit.Chem import AllChem
+
+    probe = Chem.RWMol()
+    atom = Chem.Atom(element)
+    atom.SetNoImplicit(True)
+    atom.SetHybridization(hybridisation)
+    probe.AddAtom(atom)
+    probe.UpdatePropertyCache(strict=False)
+    try:
+        AllChem.ComputeGasteigerCharges(probe, throwOnParamFailure=True)
+    except ValueError:
+        return False
+    return True
+
+
+def gasteiger_charges(mol):
+    """Gasteiger charges on every atom of ``mol`` (``_GasteigerCharge``).
+
+    Raises :class:`ChargeError` when RDKit raises, and when any charge comes
+    back NaN or infinite, naming each atom Gasteiger has no parameters for:
+    RDKit gives such an atom NaN rather than an error, and the NaN reaches
+    every atom within the iterations' reach of it. Of the elements DREIDING
+    types, RDKit 2025.09 has no Gasteiger parameters for Na, Ca, Ti, Fe, Zn,
+    Ga, Ge, As, Se, In, Sn, Sb, Te, Tc and Ru (a lone ion of one keeps a
+    finite charge, having no bond for Gasteiger to work on).
+    """
+    from rdkit.Chem import AllChem
+
+    try:
+        AllChem.ComputeGasteigerCharges(mol)
+    except Exception as exc:
+        raise ChargeError("Gasteiger", f"{type(exc).__name__}: {exc}") from exc
+    nan = [a for a in mol.GetAtoms()
+           if not math.isfinite(a.GetDoubleProp("_GasteigerCharge"))]
+    if nan:
+        known = {}
+        missing = []
+        for a in nan:
+            if a.GetAtomicNum() == 1:
+                # RDKit charges every hydrogen; a NaN on one comes from the
+                # atom it is bonded to (a lone probe H typed sp3 has none)
+                continue
+            key = (a.GetSymbol(), a.GetHybridization())
+            if key not in known:
+                known[key] = _gasteiger_parameterised(*key)
+            if not known[key]:
+                missing.append((a.GetIdx() + 1, a.GetSymbol(),
+                                str(a.GetHybridization()), a.GetDegree()))
+        raise ChargeError("Gasteiger", atoms=missing, n_nan=len(nan))
+
+
 def assign_atom_types(mol, dreiding_params):
-    """Map RDKit atoms to DREIDING atom types based on element and hybridization"""
+    """Map RDKit atoms to DREIDING atom types based on element and hybridization.
+
+    Raises :class:`UntypedAtomError` when an atom has no DREIDING type.
+    """
     atom_types_dict = {}
     atom_data = []
     atom_dreiding_types = {}
-    
-    # Hybridization mapping to DREIDING types
-    hybridization_map = {
-        'SP3': '3',
-        'SP2': '2',
-        'SP': '1',
-        'S': '_'
-    }
-    
-    for atom in mol.GetAtoms():
+
+    types = dreiding_types(mol, dreiding_params['atom_types'])
+    for atom, dreiding_type in zip(mol.GetAtoms(), types):
         idx = atom.GetIdx() + 1  # LAMMPS uses 1-based indexing
         element = atom.GetSymbol()
         if element == "H":
             element = element + "_"
-        #if element == "F":
-        #    element = element + "_"
         hyb = str(atom.GetHybridization())
-        
-        # Map to DREIDING type
-        if hyb in hybridization_map:
-            hyb_suffix = hybridization_map[hyb]
-            possible_type = f"{element}{hyb_suffix}" if element != "H" else "H_"
-        else:
-            possible_type = f"{element}_UNSPECIFIED"
-            if element == "H_":
-                possible_type = "H_"
-        
-        # Check if this type exists in parameters
-        dreiding_type = None
-        if possible_type in dreiding_params['atom_types']:
-            dreiding_type = possible_type
-        else:
-            # Create version with underscore before first digit
-            underscore_type = None
-            for i, char in enumerate(possible_type):
-                if char.isdigit():
-                    underscore_type = possible_type[:i] + '_' + possible_type[i:]
-                    break
-            
-            # Check if underscore version exists
-            if underscore_type and underscore_type in dreiding_params['atom_types']:
-                dreiding_type = underscore_type
-        
-            elif element in dreiding_params['atom_types']:
-                dreiding_type = element
-        
-            else:
-                underscore_type = element + '_'
-                dreiding_type = underscore_type
 
         # Get position from RDKit
         x, y, z = 0.0, 0.0, 0.0
@@ -391,6 +592,55 @@ def find_parameter(key_tuple, param_dict, wildcard='X'):
         return (700.0, 1.5)
     elif n == 3:  # Angle
         return (100.0, 109.5)
+
+#: Bonds a fully substituted (sp3, or terminal) atom of each element makes.
+_SATURATED_VALENCE = {"C": 4, "Si": 4, "Ge": 4, "Sn": 4, "N": 3, "P": 3, "As": 3,
+                      "O": 2, "S": 2, "Se": 2, "H": 1, "F": 1, "Cl": 1, "Br": 1, "I": 1}
+
+
+def element_of(type_name):
+    """The element of a DREIDING type name: ``Si3`` Si, ``C_3`` C, ``H_`` H."""
+    out = ""
+    for ch in type_name:
+        if ch.isalpha() and (not out or ch.islower()):
+            out += ch
+        else:
+            break
+    return out
+
+
+def type_coefficients(kind, key, dreiding_params):
+    """LAMMPS coefficients of an interaction type known only by its atom types.
+
+    For a type that no molecule of the system holds but a reaction will
+    create (the bond/react products of an epoxy-amine cure), scaled exactly
+    as :func:`extract_bonds`, :func:`extract_angles` and
+    :func:`extract_dihedrals` scale the types they find: a bond ``(k/2,
+    r0)``, an angle ``(k/2, theta0)``, a dihedral a list of ``(K, n, d)``
+    with ``K = V / 2`` over the torsions about the central bond and ``d``
+    LAMMPS's sign. A molecule is not at hand to count those torsions, so
+    both central atoms are taken as fully substituted (an sp3 C 4 bonds,
+    N 3, O 2): ``(v_j - 1)(v_k - 1)`` torsions, which is the count of every
+    product of that cure (V itself, with the file's sign, would be 9 to 18 times
+    too stiff).
+    """
+    if kind == "bond":
+        p = find_parameter(tuple(key), dreiding_params['bond_params'])
+        return (0.5 * p['k'], p['r0']) if isinstance(p, dict) else tuple(p)
+    if kind == "angle":
+        p = find_parameter(tuple(key), dreiding_params['angle_params'])
+        if isinstance(p, dict):
+            return (0.5 * p['k'], p['theta0'])
+        return (0.5 * p[0], p[1])
+    if kind == "dihedral":
+        terms = find_parameter(tuple(key), dreiding_params['dihedral_params'])
+        vj = _SATURATED_VALENCE.get(element_of(key[1]), 4)
+        vk = _SATURATED_VALENCE.get(element_of(key[2]), 4)
+        n_torsions = max(1, (vj - 1) * (vk - 1))
+        return [(0.5 * t.get('v_n', 0.0) / n_torsions, int(t.get('n', 0)), -int(t.get('d', 0)))
+                for t in (terms or [])]
+    raise ValueError(f"unknown interaction kind {kind!r}")
+
 
 def extract_bonds(mol, atom_dreiding_types, dreiding_params):
     """Extract bonds with parameters from DreidingX6parameters.txt"""
@@ -533,7 +783,11 @@ def extract_dihedrals(mol, atom_dreiding_types, dreiding_params):
             for params in param_list:
                 v_n = params.get('v_n', 0.0)
                 n_value = int(params.get('n', 0))
-                d_value = int(params.get('d', 0))
+                # The file gives DREIDING's d, E = (V/2)[1 - d cos(n phi)] (Mayo et al.
+                # 1990); LAMMPS dihedral_style harmonic is E = K[1 + d cos(n phi)], so
+                # d_LAMMPS = -d_file. Passed through, every torsional minimum sat at a
+                # maximum (sp3-sp3 eclipsed). Fixed in 0.4.5.
+                d_value = -int(params.get('d', 0))
                 
                 num_possibilities = central_bond_count[central_bond_key]
                 k_value = (0.5 * v_n) / num_possibilities if num_possibilities > 0 else 0.5 * v_n
@@ -553,8 +807,29 @@ def extract_dihedrals(mol, atom_dreiding_types, dreiding_params):
 
     return dihedral_types, dihedral_data
 
+#: DREIDING adds all three inversion terms of a planar centre, each weighted
+#: by a third (Mayo, Olafson and Goddard 1990; the parameter file's
+#: ``SINGLE_INVERSION F``). Since 0.4.5.
+INVERSIONS_PER_CENTRE = 3
+
+
+def inversion_quadruplets(centre, neighbours):
+    """The three ``improper_style umbrella`` quadruplets of a planar centre.
+
+    LAMMPS's umbrella takes the centre first and measures omega, the angle
+    between the I-L axis and the I-J-K plane, so each of the three
+    neighbours is L in one of them.
+    """
+    a, b, c = neighbours
+    return [(centre, a, b, c), (centre, b, c, a), (centre, c, a, b)]
+
+
 def extract_impropers(mol, atom_dreiding_types, dreiding_params):
-    """Extract impropers with parameters from DreidingX6parameters.txt"""
+    """Extract impropers with parameters from DreidingX6parameters.txt.
+
+    A planar centre (sp2, three neighbours) gets DREIDING's three inversion
+    terms, each with K/3 of the file's K (one term of full K before 0.4.5).
+    """
     improper_types = {}
     improper_data = []
     
@@ -569,7 +844,7 @@ def extract_impropers(mol, atom_dreiding_types, dreiding_params):
         # Get neighbors
         neighbors = [n.GetIdx() + 1 for n in atom.GetNeighbors()]
         
-        # SP2 centers (trigonal) - one improper for planarity
+        # SP2 centers (trigonal) - three inversion terms for planarity
         if atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2 and len(neighbors) == 3:
             # For SP2 centers, the key is typically just the central atom type with wildcards
             key = (central_type, 'X', 'X', 'X')
@@ -585,16 +860,48 @@ def extract_impropers(mol, atom_dreiding_types, dreiding_params):
                 k, chi0 = params
                 improper_type = 'UMBRELLA'  # Default type
             
-            # Add to improper types
-            type_key = (central_type, 'X', 'X', 'X', improper_type, k, chi0)
+            # Add to improper types, each term with a third of K
+            k_term = k / INVERSIONS_PER_CENTRE
+            type_key = (central_type, 'X', 'X', 'X', improper_type, k_term, chi0)
             if type_key not in improper_types:
                 improper_types[type_key] = len(improper_types) + 1
-            
-            # Store improper data
-            improper_data.append((len(improper_data) + 1, improper_types[type_key],
-                                central_idx, neighbors[0], neighbors[1], neighbors[2]))
+
+            # Store improper data, one row per term
+            for quad in inversion_quadruplets(central_idx, neighbors):
+                improper_data.append((len(improper_data) + 1, improper_types[type_key], *quad))
 
     return improper_types, improper_data
+
+
+def x6_parameters(type_name, dreiding_params):
+    """DREIDING's exponential-6 ``(R0, D0, zeta)`` for one atom type.
+
+    R0 is the position of the minimum, D0 its depth and zeta the
+    stiffness, from the DIAGONAL_VDW block. A type with no EXPO_6 entry is
+    an error (every type of the bundled file has one).
+    """
+    p = dreiding_params['vdw_params'].get(type_name)
+    if not isinstance(p, dict) or p.get('type') != 'EXPO_6' or not p.get('additional'):
+        raise ValueError(f"no exponential-6 parameters for DREIDING type {type_name!r}")
+    return p['radius'], p['epsilon'], float(p['additional'][0])
+
+
+def x6_buck_coefficients(type_i, type_j, dreiding_params):
+    """LAMMPS ``pair_style buck`` coefficients ``(A, rho, C)`` for one pair.
+
+    DREIDING's exponential-6, E = D0/(zeta - 6) [6 exp(zeta (1 - r/R0)) -
+    zeta (R0/r)^6], is buck's A exp(-r/rho) - C/r^6 with A = 6 D0
+    exp(zeta)/(zeta - 6), rho = R0/zeta and C = zeta D0 R0^6/(zeta - 6):
+    minimum at R0, depth D0. An unlike pair takes R0 and D0 as geometric
+    means and zeta as the arithmetic mean (Mayo et al. 1990). Since 0.4.5.
+    """
+    ri, di, zi = x6_parameters(type_i, dreiding_params)
+    rj, dj, zj = x6_parameters(type_j, dreiding_params)
+    r0, d0, zeta = math.sqrt(ri * rj), math.sqrt(di * dj), 0.5 * (zi + zj)
+    a = d0 * 6.0 / (zeta - 6.0) * math.exp(zeta)
+    rho = r0 / zeta
+    c = d0 * zeta / (zeta - 6.0) * r0 ** 6
+    return a, rho, c
 
 
 def calc_simulation_box(f, atom_data):
@@ -647,9 +954,11 @@ def write_pair_coeffs_section(f, atom_types_dict, dreiding_params):
                 epsilon = 0.001  # Typical small default
                 print(f"Warning: epsilon not found for {type_name}, using default value")
             
-            # Get sigma with fallback to default
+            # The file's radius is DREIDING's R0, the position of the minimum;
+            # LAMMPS lj/cut puts the minimum at 2^(1/6) sigma, so sigma = R0 / 2^(1/6)
+            # (since 0.4.5; R0 itself made every atom 12 % too large)
             if isinstance(atom_params, dict) and 'radius' in atom_params:
-                sigma = atom_params['radius']
+                sigma = atom_params['radius'] * SIGMA_FROM_R0
             else:
                 # Default value for sigma
                 sigma = 3.5  # Typical carbon-like default
@@ -693,18 +1002,17 @@ def write_dihedral_coeffs_section(f, dihedral_types, dreiding_params):
         f.write(f"{type_idx} {k:.6f} {di} {n} # {type1} {type2} {type3} {type4}\n")
 
 def write_improper_coeffs_section(f, improper_types, dreiding_params):
-    """Write improper coefficients section for LAMMPS data file"""
+    """Write improper coefficients section for LAMMPS data file.
+
+    For ``improper_style umbrella``, DREIDING's inversion: K (kcal/mol, the
+    K/3 of each of a centre's three terms) and omega0 (degrees; 0 for a
+    planar centre, where E = K[1 - cos omega]). Before 0.4.5 this wrote cvff
+    ``K -1 1``, one torsion-like term of full K per centre.
+    """
     f.write("\nImproper Coeffs\n\n")
-    
-    # Write header line specifying improper style
-    #f.write("# cvff improper style: K(1 + d*cos(n*phi))\n")
-    
+
     for (type1, type2, type3, type4, improper_type, k, chi0), type_idx in improper_types.items():
-        # For UMBRELLA type in DREIDING, use cvff style in LAMMPS
-        # Convert parameters if needed
-        # LAMMPS cvff format: K d n  →  E = K[1 + d*cos(n*chi)]
-        # DREIDING inversion: E = K(1 - cos(chi))  →  d=-1, n=1
-        f.write(f"{type_idx} {k:.6f} -1 1  # {type1} {type2} {type3} {type4} ({improper_type})\n")
+        f.write(f"{type_idx} {k:.6f} {chi0:.6f}  # {type1} {type2} {type3} {type4} ({improper_type})\n")
 
 def write_atoms_section(f, atom_data):
     """Write the Atoms section to LAMMPS data file"""

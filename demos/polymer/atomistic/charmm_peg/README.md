@@ -38,7 +38,10 @@ each residue kind.
 
 `expected_output/` has the three coefficient includes and the groups file of the chemistry stage, the three stage
 scripts, the LAMMPS logs of the three stages, the run manifest and the `topon track` page of the run, with a README of
-the numbers. It was made on 29 Sep 2026 with the atomistic defaults of topon 0.4.0. The backbones are placed as settled
-meanders and relaxed on the CHARMM hard-backbone stages (LAMMPS 2 Apr 2025, 4 OpenMP threads, 2.6 minutes in all), and
-no backbone bond passes through another at any stage. Stage 3 minimizes the energy from 6,420 to 2,395 kcal/mol and
-ends near 303 K after NPT. The build is seeded, but the dynamics make these numbers change a little from run to run.
+the numbers. It was made on 5 Oct 2026 with the atomistic defaults of topon 0.4.5. The backbones are placed as settled
+meanders and relaxed on the CHARMM hard-backbone stages (LAMMPS 2 Apr 2025, 8 OpenMP threads, 3.6 minutes in all), and
+no backbone bond passes through another at any stage. Stage 3 minimizes the energy from 6,610 to 2,524 kcal/mol and
+ends near 302 K after NPT. The recipe in `expected_output/README.md` builds the same files on every run (both global
+random streams seeded with 20260929 for the topology, and the placement and the conformation noise drawn from streams
+keyed on the study name, `run` there). `topon generate config.json` as above names the study `charmm_peg` and seeds
+neither global stream, so it builds another network. The dynamics make these numbers change a little from run to run.

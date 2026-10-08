@@ -56,6 +56,7 @@ from topon.topology.network import load as load_network
 # Stage 2 — chemistry (writers + displacement utilities)
 from topon.writers import DreidingWriter, LammpsInputGenerator
 from topon.utils import write_lammps_displacement_file, generate_approximate_side_chain_coords
+from topon.utils.network_helpers import global_stream_generator
 from topon.assignment.attributor import EntanglementsConfig
 from topon.assignment.entanglements import select_entanglements
 from topon.conformation.entanglement.realize import entangled_backbone_paths
@@ -343,9 +344,12 @@ def run(
         str(chem_dir / "system_grafts.displace"), "grafts"
     )
 
-    # Pendant (O, C) and hydrogen displacement files
+    # Pendant (O, C) and hydrogen displacement files. The offsets come from
+    # NumPy's global stream, which `seed` seeds, so a seeded run writes what
+    # it wrote before 0.4.5.
     known = {**node_coords, **backbone_coords, **graft_coords}
-    side_coords = generate_approximate_side_chain_coords(mol_h, known)
+    side_coords = generate_approximate_side_chain_coords(
+        mol_h, known, global_stream_generator())
 
     h_coords = {k: v for k, v in side_coords.items()
                 if mol_h.GetAtomWithIdx(k).GetSymbol() == "H"}

@@ -1,10 +1,10 @@
 {
   "manifest_version": 1,
-  "created": "2026-09-29T16:57:33+00:00",
+  "created": "2026-10-06T11:06:37+00:00",
   "stages": {
     "topology": {
       "source": "load",
-      "seconds": 0.007,
+      "seconds": 0.009,
       "nodes": 121,
       "edges": 210,
       "box": [
@@ -14291,32 +14291,46 @@
         "max": 0.4893748949201453
       },
       "backbone_bond_ratio": {
-        "min": 0.9616140120825147,
-        "max": 0.9917081222243669
+        "min": 0.9616140120825141,
+        "max": 0.9917081222243653
+      },
+      "waves_drawn": {
+        "1.5": 215
+      },
+      "parallel": {
+        "chords": 5,
+        "strands": 10,
+        "drawn_apart": 10,
+        "left_on_chord": 0,
+        "bow_mean": 1.6361,
+        "bow_min": 1.6361,
+        "bow_max": 1.6361
       },
       "settle": {
         "clearance": 1.5,
-        "pairs_below_before": 731,
-        "closest_before": 0.0,
+        "pairs_below_before": 663,
+        "closest_before": 0.038835823122722934,
         "pairs_below_after": 0,
         "closest_after": null,
         "angle_error_before": {
-          "mean": 58.506,
+          "mean": 58.493,
           "max": 75.324
         },
         "angle_error_after": {
-          "mean": 0.135,
-          "max": 3.037
+          "mean": 0.108,
+          "max": 3.3
         },
         "bond_ratio": {
-          "min": 0.9826798082007221,
-          "max": 1.0067822206905372
+          "min": 0.9811885916485837,
+          "max": 1.0077352987867167
         },
         "converged": true,
-        "rounds": 151,
-        "largest_shift": 2.032169219045573,
-        "moves_put_back": 0,
-        "touching_parted": 10,
+        "rounds": 143,
+        "largest_shift": 2.477164072370667,
+        "moves_put_back": 32,
+        "touching_parted": 0,
+        "touching_moves_put_back": 0,
+        "sideless_parted": 0,
         "passages": 0
       },
       "unplaced_atoms": 0,
@@ -14425,9 +14439,9 @@
   },
   "study": "run",
   "run": {
-    "pid": 36336,
+    "pid": 47220,
     "host": "<host>",
-    "started": "2026-09-29T16:57:33+00:00"
+    "started": "2026-10-06T11:06:37+00:00"
   },
-  "updated": "2026-09-29T16:57:53+00:00"
+  "updated": "2026-10-06T11:06:59+00:00"
 }

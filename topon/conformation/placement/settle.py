@@ -296,8 +296,10 @@ def settle_strands(placed, box, clearance: float, rng=None, *,
     ids = np.empty(n_rows, np.int64)
     next_bead = 0
     for k, (s, s0, m) in enumerate(zip(placed, starts, sizes)):
-        ends = [(0, s.plan.u)]
-        if s.plan.kind != "dangling":
+        # Held: the junctions a strand ends on. A dangling strand's far end
+        # is its own bead, and a sol chain has no junction at all.
+        ends = [] if s.plan.kind == "free" else [(0, s.plan.u)]
+        if s.plan.kind in ("bridge", "loop"):
             ends.append((m - 1, s.plan.v))
         for r in range(m):
             ids[s0 + r] = next_bead

@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.4.5
+
+### Atomistic networks
+
+- The atomistic placement draws from a stream keyed on the study name, so a config with every seed pinned writes the
+  same files on every run, and the backbone settle runs up to 1,500 rounds instead of stopping at 400. The two strands
+  of a secondary loop are drawn on opposite sides of their chord (`conformation.parallel_strands`).
+- Copolymer sequences reach the atomistic route. Each repeat is built of its own monomer, grafts follow the sequence
+  (any repeat with a methyl on its head atom can carry one), and CHARMM types each repeat by its own residue. The last
+  repeat of a strand bonds to the next junction through its backbone atom, not through the last atom of its SMILES.
+- Rings are placed whole. A ring that hangs from one atom (a phenyl) is a flat polygon turned so that the fewest bonds
+  pass through it, and a ring the backbone runs through (a para-phenylene) is settled whole and flat. The DREIDING
+  hard-backbone deck holds the aromatic ring atoms hard with the backbone.
+- POSS cages are placed whole at their junctions, at the force field's bond lengths, and the strands are settled clear
+  of them. A network with POSS nodes now takes the settled placement (`atomistic_placement: null` still gives the
+  historic one). The cage shapes are stored with topon (`topon/data/poss_templates.json`), so a POSS build writes the
+  same files whatever RDKit is installed.
+- A designed strand that bonds to a cage is led out of it round the cage instead of starting at its center, the
+  settle keeps the methyl positions along each backbone out of the cage cores, and a strand drawn between the arms
+  of a cap on a neighboring site is turned off them.
+- A backbone settle that stops at its round cap now always warns, with its bonds against r0 and its angle error
+  (before 0.4.5 only a build with rings in its backbones did).
+- `atomistic_placement: "coil"` winds each strand round its chord at `atomistic_coil_radius`, and an
+  `entanglement.target_Z` on the atomistic route is met by searching that radius with Z1+ on the drawn network.
+  `topon.simulation.protocols.z_target.relax_to_target` builds and relaxes again until the relaxed network reads the
+  target.
+- The atomistic gates read every designed pair's winding as the linking number of two network cycles
+  (`topon.analysis.windings`), which changes only when a bond passes through another.
+- The hard-backbone deck is shorter. The ramp runs 2,500 steps and stage 3's minimization stops at 1,000 iterations,
+  with the same entanglement, density and passages on the test networks.
+
+### DREIDING
+
+- Every dihedral carries LAMMPS's sign of d (before 0.4.5 every torsional minimum sat where DREIDING puts a maximum),
+  and unlike pairs mix geometrically with the tail correction. Simbox and `create_lammps_data_file` put LJ sigma at
+  R0 / 2^(1/6), as the pipeline's writer did already (the parameter file's R0 is the position of the minimum, and
+  sigma = R0 made every atom 12 % too large).
+- A planar center carries DREIDING's three inversion terms at K/3 each under `improper_style umbrella`, and an
+  aromatic C, N or O (and an aryl ether O) takes the resonant type (`C_R`, `N_R`, `O_R`).
+- An atom with no DREIDING type stops the chemistry stage with `UntypedAtomError`, and a molecule that cannot be
+  charged stops it with `ChargeError`. Both used to be written with invented types or zero charges. The `Na` row of
+  the parameter files carried the mass of scandium and now carries that of sodium.
+- `topon simbox` and `topon chain` also write `settings_x6.in`, DREIDING's exponential-6 as `pair_style buck`.
+
+### simbox
+
+- Every type id is the one DREIDING typing gives the box (the universal type map is gone), and an epoxy-amine box gets
+  the types its cure creates and its `fix bond/react` templates written beside it.
+- The PDMS chain ends carry two methyls (they carried one and an H), and every conformer is checked for a bond through
+  a ring before it is used (the AM0270 cage used to be embedded tangled).
+
+### Measuring and matching networks
+
+- `topon fit` reads a network crosslinked along its chains (a data file, a strand graph with its chains or a crosslink
+  build's `crosslinked_melt.npz`) and writes a config for the crosslink generator, or with `--route lattice` for the
+  lattice route. `topon generate --verify` checks it, and with `--verify-replicate` it holds the builds against
+  replicates of the reference.
+- `topon generate --verify --relaxed` takes a run directory, checks that the relaxed file is a build of the config in
+  the reference's state, and gives Z1+ per bridge, loop and dangling strand with an acceptance.
+- `topon fit` writes into its configs the build options its knob was measured with and `loop_shape: "compact"`.
+
+### Coarse-grained builds
+
+- `conformation.loop_shape: "compact"` draws a primary loop as a compact closed walk about the size of a relaxed loop,
+  where the default ring is an open polygon that strands pass through.
+- `topon.conformation.place` draws the two strands of a secondary loop on opposite sides of their chord (`"together"`
+  gives the drawing of 0.4.0), builds dangling chains at the DP the pipeline builds, and places the sol chains.
+- Designed pairs whose chords cross are wound apart instead of through one point, and other strands are kept out of
+  each braid, on both routes.
+
+### Topology
+
+- The strict Python search checks connectivity locally, so a trial on a large lattice takes a fraction of the time it
+  took. Every seed builds the same graph as before.
+- `crosslink_chains` takes three site rules from Python (end beads as sites, pendant side beads and crosslinked
+  neighbors).
+
+### Demos and documentation
+
+- The atomistic demos were rebuilt on the new placement and relaxed again on the new deck and DREIDING parameters, and
+  the copolymer demo now has its phenyl blocks.
+- The POSS demo ships the settings, groups, stage scripts and manifest of its build. LAMMPS has not been run on it.
+- The paper companion holds the rerun generator benchmark behind the paper's Tables 1 and 2.
+
+### Known limits
+
+- Backbones with two rings in one repeat unit (a biphenylene, a diphenyl ether) do not settle.
+- The CHARMM hard-backbone deck does not hold ring atoms hard.
+- Fitted DP-20 networks come out more entangled than the `fix bond/create` references (Z1+ per bridge about 0.22
+  against 0.18).
+
+Because of these changes, an atomistic build of a given config, a simbox box and a `place()` build of a graph with
+secondary loops give different files than in 0.4.0.
+
 ## 0.4.0
 
 ### Measuring and matching networks

@@ -1,0 +1,2 @@
+216 sites T: random 100 (accept 0.98) lambda_2 0.2423 +- 0.0381; fallback 100 lambda_2 0.2580 +- 0.0301; fallback/random +6.5%; KS p 0.036; identical graphs 0
+1728 sites T: random 99 (accept 0.79) lambda_2 0.0873 +- 0.0092; fallback 100 lambda_2 0.0989 +- 0.0035; fallback/random +13.4%; KS p 9.8e-37; identical graphs 0

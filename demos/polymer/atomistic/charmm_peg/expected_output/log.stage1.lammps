@@ -1,7 +1,7 @@
 LAMMPS (2 Apr 2025)
-  using 4 OpenMP thread(s) per MPI task
+  using 8 OpenMP thread(s) per MPI task
 Loaded 1 plugins from <LAMMPS install>/plugins
-package omp 4
+package omp 8
 using multi-threaded neighbor list subroutines
 # LAMMPS Stage 1: hard-backbone push-off (ATOMISTIC, CHARMM, protocol "hard_backbone")
 #
@@ -49,7 +49,7 @@ Finding 1-2 1-3 1-4 neighbors ...
     16 = max # of 1-4 neighbors
     20 = max # of special neighbors
   special bonds CPU = 0.002 seconds
-  read_data CPU = 0.091 seconds
+  read_data CPU = 0.152 seconds
 include         ../02_Chemistry/system.in.settings.soft
 # CHARMM force-field coefficients (topon). Soft-stage variant: no pair coeffs, 1-4 weights 0.
 
@@ -133,41 +133,41 @@ Neighbor list info ...
       bin: standard
 WARNING: Inconsistent image flags
 For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
-Per MPI rank memory allocation (min/avg/max) = 53.1 | 53.1 | 53.1 Mbytes
+Per MPI rank memory allocation (min/avg/max) = 58.62 | 58.62 | 58.62 Mbytes
    Step          Temp          E_pair         E_mol          TotEng         Press     
-         0   300            35020.211      7931.2872      46212.803      109824.47    
-      1000   280.08773      145.1383       5638.2569      8828.2329      3147.0454    
-      2000   276.12511      113.35503      5378.6347      8493.7497      4385.3047    
-      3000   271.43644      84.346096      5308.6751      8343.8106      1978.6939    
-      4000   283.72194      75.129614      5219.4704      8378.9453      937.5318     
-      5000   273.68139      62.149316      5204.6071      8241.9507      2320.0613    
-Loop time of 6.29301 on 4 procs for 5000 steps with 3648 atoms
+         0   300            35048.029      7764.0548      46073.388      111280.05    
+      1000   278.06255      136.43943      5595.9522      8755.2136      2360.9185    
+      2000   278.11076      109.76914      5448.8329      8581.9481      498.14388    
+      3000   268.16723      102.97642      5348.6421      8366.8683      1559.8622    
+      4000   276.98935      81.671908      5306.4954      8399.3225      1686.3983    
+      5000   271.86799      67.597221      5132.4092      8155.4873      934.11799    
+Loop time of 12.1362 on 8 procs for 5000 steps with 3648 atoms
 
-Performance: 68.648 ns/day, 0.350 hours/ns, 794.532 timesteps/s, 2.898 Matom-step/s
-122.2% CPU use with 1 MPI tasks x 4 OpenMP threads
+Performance: 35.596 ns/day, 0.674 hours/ns, 411.991 timesteps/s, 1.503 Matom-step/s
+173.8% CPU use with 1 MPI tasks x 8 OpenMP threads
 
 MPI task timing breakdown:
 Section |  min time  |  avg time  |  max time  |%varavg| %total
 ---------------------------------------------------------------
-Pair    | 0.72153    | 0.72153    | 0.72153    |   0.0 | 11.47
-Bond    | 2.9589     | 2.9589     | 2.9589     |   0.0 | 47.02
-Neigh   | 0.25043    | 0.25043    | 0.25043    |   0.0 |  3.98
-Comm    | 0.25236    | 0.25236    | 0.25236    |   0.0 |  4.01
-Output  | 0.94468    | 0.94468    | 0.94468    |   0.0 | 15.01
-Modify  | 1.1232     | 1.1232     | 1.1232     |   0.0 | 17.85
-Other   |            | 0.04194    |            |       |  0.67
+Pair    | 1.3418     | 1.3418     | 1.3418     |   0.0 | 11.06
+Bond    | 6.4206     | 6.4206     | 6.4206     |   0.0 | 52.90
+Neigh   | 0.27878    | 0.27878    | 0.27878    |   0.0 |  2.30
+Comm    | 0.46658    | 0.46658    | 0.46658    |   0.0 |  3.84
+Output  | 1.4649     | 1.4649     | 1.4649     |   0.0 | 12.07
+Modify  | 2.0889     | 2.0889     | 2.0889     |   0.0 | 17.21
+Other   |            | 0.07455    |            |       |  0.61
 
 Nlocal:           3648 ave        3648 max        3648 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Nghost:          14644 ave       14644 max       14644 min
+Nghost:          14502 ave       14502 max       14502 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Neighs:          19993 ave       19993 max       19993 min
+Neighs:          20072 ave       20072 max       20072 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
 
-Total # of neighbors = 19993
-Ave neighs/atom = 5.4805373
+Total # of neighbors = 20072
+Ave neighs/atom = 5.502193
 Ave special neighs/atom = 10.736842
-Neighbor list builds = 114
+Neighbor list builds = 113
 Dangerous builds = 0
 unfix           cap
 unfix           lang
@@ -181,4 +181,4 @@ write_restart   1.restart
 System init for write_restart ...
 Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
 Last active /omp style is improper_style harmonic/omp
-Total wall time: 0:00:06
+Total wall time: 0:00:12

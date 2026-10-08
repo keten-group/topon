@@ -154,12 +154,28 @@ def with_cutoff(config: dict, cutoff: float) -> dict:
 
 
 def with_seed(config: dict, seed: int) -> dict:
-    """A copy of ``config`` pinned to ``seed``: the graph and its defects."""
+    """A copy of ``config`` pinned to ``seed``: the graph and its defects.
+
+    A crosslinked melt (``topology.source: "crosslink"``) is pinned through
+    ``topology.crosslinking.seed``. A chain cover (``assignment.chains``)
+    moves with the graph's seed and keeps its offset from it, so a config
+    whose cover seed differs from its graph seed regenerates its own build
+    at its own seed.
+    """
     cfg = copy.deepcopy(config)
-    cfg.setdefault("topology", {}).setdefault("generator", {})["seed"] = int(seed)
-    defects = cfg.get("assignment", {}).get("defects")
+    topo = cfg.setdefault("topology", {})
+    block = "crosslinking" if topo.get("source") == "crosslink" else "generator"
+    old = (topo.get(block) or {}).get("seed")
+    topo.setdefault(block, {})["seed"] = int(seed)
+    assignment = cfg.get("assignment", {})
+    defects = assignment.get("defects")
     if defects is not None:
         defects["seed"] = int(seed)
+    chains = assignment.get("chains")
+    if chains is not None:
+        own = chains.get("seed")
+        chains["seed"] = (int(seed) if own is None or old is None
+                          else (int(seed) + int(own) - int(old)) % 2 ** 32)
     return cfg
 
 

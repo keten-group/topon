@@ -1,10 +1,10 @@
 {
   "manifest_version": 1,
-  "created": "2026-09-29T16:57:54+00:00",
+  "created": "2026-10-06T11:16:01+00:00",
   "stages": {
     "topology": {
       "source": "load",
-      "seconds": 0.008,
+      "seconds": 0.007,
       "nodes": 121,
       "edges": 210,
       "box": [
@@ -14062,13 +14062,22 @@
         "max": 0.4857975870963372
       },
       "backbone_bond_ratio": {
-        "min": 0.9577166009677299,
+        "min": 0.9577166009677286,
         "max": 41.61596859118777
+      },
+      "waves_drawn": {
+        "1.5": 200
+      },
+      "braids": {
+        "braids": 5,
+        "inside": 11,
+        "turned_clear": 11,
+        "left_inside": []
       },
       "settle": {
         "clearance": 1.5,
-        "pairs_below_before": 672,
-        "closest_before": 0.017557515746044926,
+        "pairs_below_before": 566,
+        "closest_before": 0.017056397064551015,
         "pairs_below_after": 0,
         "closest_after": null,
         "angle_error_before": {
@@ -14076,18 +14085,20 @@
           "max": 75.33
         },
         "angle_error_after": {
-          "mean": 0.102,
-          "max": 3.025
+          "mean": 0.136,
+          "max": 3.132
         },
         "bond_ratio": {
-          "min": 0.9829262174291261,
-          "max": 1.0065496541073355
+          "min": 0.9815731195207462,
+          "max": 1.0072133649071457
         },
         "converged": true,
-        "rounds": 148,
-        "largest_shift": 3.7315992204958297,
-        "moves_put_back": 12,
+        "rounds": 141,
+        "largest_shift": 3.898701950623468,
+        "moves_put_back": 24,
         "touching_parted": 0,
+        "touching_moves_put_back": 0,
+        "sideless_parted": 0,
         "passages": 0
       },
       "unplaced_atoms": 0,
@@ -14157,9 +14168,9 @@
   },
   "study": "run",
   "run": {
-    "pid": 36336,
+    "pid": 47220,
     "host": "<host>",
-    "started": "2026-09-29T16:57:54+00:00"
+    "started": "2026-10-06T11:16:01+00:00"
   },
-  "updated": "2026-09-29T16:58:14+00:00"
+  "updated": "2026-10-06T11:16:20+00:00"
 }

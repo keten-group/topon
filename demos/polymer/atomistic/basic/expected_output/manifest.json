@@ -1,10 +1,10 @@
 {
   "manifest_version": 1,
-  "created": "2026-09-29T16:56:18+00:00",
+  "created": "2026-10-06T11:03:35+00:00",
   "stages": {
     "topology": {
       "source": "load",
-      "seconds": 0.008,
+      "seconds": 0.011,
       "nodes": 121,
       "edges": 210,
       "box": [
@@ -10891,8 +10891,11 @@
         "max": 0.7178519689910212
       },
       "backbone_bond_ratio": {
-        "min": 0.9776518107119662,
-        "max": 0.9884128370828924
+        "min": 0.9776518107119667,
+        "max": 0.9884128370828917
+      },
+      "waves_drawn": {
+        "3": 210
       },
       "settle": {
         "clearance": 1.5,
@@ -10905,18 +10908,20 @@
           "max": 70.529
         },
         "angle_error_after": {
-          "mean": 0.108,
-          "max": 4.464
+          "mean": 0.077,
+          "max": 4.501
         },
         "bond_ratio": {
-          "min": 0.9906235027224136,
-          "max": 1.0180682635482623
+          "min": 0.9925527103215992,
+          "max": 1.0180562999533327
         },
         "converged": true,
-        "rounds": 147,
-        "largest_shift": 1.498949047152172,
+        "rounds": 154,
+        "largest_shift": 1.526806032436567,
         "moves_put_back": 0,
         "touching_parted": 0,
+        "touching_moves_put_back": 0,
+        "sideless_parted": 0,
         "passages": 0
       },
       "unplaced_atoms": 0,
@@ -10986,9 +10991,9 @@
   },
   "study": "run",
   "run": {
-    "pid": 36336,
+    "pid": 47220,
     "host": "<host>",
-    "started": "2026-09-29T16:56:18+00:00"
+    "started": "2026-10-06T11:03:35+00:00"
   },
-  "updated": "2026-09-29T16:56:28+00:00"
+  "updated": "2026-10-06T11:03:50+00:00"
 }

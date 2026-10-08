@@ -94,14 +94,81 @@ def bond_ends(x, rows, box):
     return a, a + d - box * np.round(d / box)
 
 
-def passing_pairs(before, after, rows, atom_ids, box):
+def segments_through_ring(p0, p1, ring) -> np.ndarray:
+    """Which of the segments ``p0[k]``-``p1[k]`` pass through ``ring``, vectorised.
+
+    ``ring`` is ``(r, 3)``, its atoms in ring order, read as the fan of
+    triangles from its centroid, the surface it spans (as
+    :func:`topon.simbox.molecule.segment_through_ring` reads it, here
+    for many segments at once). ``p0`` and ``p1`` are ``(m, 3)``.
+    """
+    p0 = np.asarray(p0, float).reshape(-1, 3)
+    p1 = np.asarray(p1, float).reshape(-1, 3)
+    ring = np.asarray(ring, float)
+    out = np.zeros(len(p0), bool)
+    if not len(p0):
+        return out
+    centre = ring.mean(axis=0)
+    d = p1 - p0
+    for k in range(len(ring)):
+        a, b = centre, ring[k]
+        c = ring[(k + 1) % len(ring)]
+        e1, e2 = b - a, c - a
+        h = np.cross(d, e2)
+        det = h @ e1
+        ok = np.abs(det) >= 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        s = p0 - a
+        u = np.einsum("ij,ij->i", s, h) * inv
+        q = np.cross(s, e1)
+        v = np.einsum("ij,ij->i", d, q) * inv
+        t = (q @ e2) * inv
+        out |= ok & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (u + v <= 1.0) & (t >= 0.0) & (t <= 1.0)
+    return out
+
+
+def segments_through_rings(p0, p1, rings) -> np.ndarray:
+    """Whether each segment ``p0[k]``-``p1[k]`` passes through ``rings[k]``.
+
+    Pairwise, many rings at once: ``rings`` is ``(m, r, 3)``, each ring's
+    atoms in ring order, read as :func:`segments_through_ring` reads one (the
+    fan of triangles from its centroid). ``p0`` and ``p1`` are ``(m, 3)``
+    (for the rings an atomistic backbone runs through).
+    """
+    p0 = np.asarray(p0, float).reshape(-1, 3)
+    p1 = np.asarray(p1, float).reshape(-1, 3)
+    rings = np.asarray(rings, float).reshape(len(p0), -1, 3)
+    out = np.zeros(len(p0), bool)
+    if not len(p0):
+        return out
+    centre = rings.mean(axis=1)
+    d = p1 - p0
+    for k in range(rings.shape[1]):
+        e1 = rings[:, k] - centre
+        e2 = rings[:, (k + 1) % rings.shape[1]] - centre
+        h = np.cross(d, e2)
+        det = np.einsum("ij,ij->i", h, e1)
+        ok = np.abs(det) >= 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        s = p0 - centre
+        u = np.einsum("ij,ij->i", s, h) * inv
+        q = np.cross(s, e1)
+        v = np.einsum("ij,ij->i", d, q) * inv
+        t = np.einsum("ij,ij->i", q, e2) * inv
+        out |= ok & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (u + v <= 1.0) & (t >= 0.0) & (t <= 1.0)
+    return out
+
+
+def passing_pairs(before, after, rows, atom_ids, box, fixed=None):
     """Pairs of bonds that pass through each other between two configurations.
 
     ``before`` and ``after`` are ``(n, 3)`` positions, ``rows`` the bonds as
     ``(m, 2)`` row indices and ``atom_ids`` what tells two bonds sharing an
-    atom (``(m, 2)``, any labels). Bonds that share an atom are never a pair.
-    Returns ``(i, j, tau)``: bond indices and where between the two the
-    passage is, plus the largest displacement.
+    atom (``(m, 2)``, any labels). Bonds that share an atom are never a pair,
+    and neither are two of the bonds ``fixed`` marks (``(m,)`` bool: bonds
+    that do not move, such as a cage's). Returns ``(i, j, tau)``: bond
+    indices and where between the two the passage is, plus the largest
+    displacement.
     """
     box = np.asarray(box, float).reshape(3)
     pa, pb = bond_ends(before, rows, box)
@@ -121,6 +188,8 @@ def passing_pairs(before, after, rows, atom_ids, box):
     ids = np.asarray(atom_ids)
     share = ((ids[i, 0] == ids[j, 0]) | (ids[i, 0] == ids[j, 1])
              | (ids[i, 1] == ids[j, 0]) | (ids[i, 1] == ids[j, 1]))
+    if fixed is not None:
+        share = share | (fixed[i] & fixed[j])
     i, j = i[~share], j[~share]
     # the second bond in the image nearest the first, the same shift at both ends
     shift = -box * np.round((mid[j] - mid[i]) / box)

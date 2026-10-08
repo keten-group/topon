@@ -9,7 +9,10 @@ chord-triple count and the bead-spring settle.
 
 from topon.conformation.placement.chains import (
     BOND,
+    LOOP_SEPARATION,
+    LOOP_SHAPES,
     PLACEMENTS,
+    PARALLEL_STRANDS,
     SELF_SEPARATION,
     GuardLimits,
     PlacedStrand,
@@ -25,13 +28,17 @@ from topon.conformation.placement.chains import (
     separate_coincident,
     settle_placement,
     site_spacing,
+    sol_lengths,
     strand_plans,
 )
 from topon.conformation.placement.settle import chord_triples, settle_strands
 
 __all__ = [
     "BOND",
+    "LOOP_SEPARATION",
+    "LOOP_SHAPES",
     "PLACEMENTS",
+    "PARALLEL_STRANDS",
     "SELF_SEPARATION",
     "GuardLimits",
     "PlacedStrand",
@@ -49,5 +56,6 @@ __all__ = [
     "settle_placement",
     "settle_strands",
     "site_spacing",
+    "sol_lengths",
     "strand_plans",
 ]

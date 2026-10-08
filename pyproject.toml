@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "topon"
-version = "0.4.0"
+version = "0.4.5"
 description = "A modular Python package for polymer network generation and LAMMPS input file creation"
 readme = "README.md"
 license = {text = "MIT"}
@@ -74,7 +74,7 @@ include = ["topon*"]
 # here keeps them in a regular (non-editable) install. The force-field files
 # of the CHARMM and Martini routes are data too (C35r ethers, CHARMM36m,
 # Martini 3), each folder with its licence. analysis/ holds the page
-# template of `topon track`.
+# template of `topon track`, and data/ the stored shapes of the POSS cages.
 topon = [
     "presets/*.json",
     "forcefield/*.txt",
@@ -85,6 +85,7 @@ topon = [
     "protein_network/data/*",
     "protein_network/charmm/data/*",
     "analysis/*.html",
+    "data/*.json",
 ]
 
 [tool.black]

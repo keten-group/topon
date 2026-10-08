@@ -160,9 +160,12 @@ class GeneratorConfig(BaseModel):
             "that random.seed(n) and np.random.seed(n) just before "
             "generating gave, without touching the global streams; the C "
             "route gets a TOPON_SEED drawn the same way. Only stage 1 is "
-            "pinned: the later stages still draw from the global streams "
-            "(assignment.defects.seed pins the defects). null keeps the old "
-            "behaviour, the generator drawing from the global streams."
+            "pinned by it. Random types, a PDI above 1, copolymers, "
+            "entanglements and grafts still draw from the global streams, "
+            "and assignment.defects.seed pins the defects. The atomistic "
+            "placement and the conformation noise come from streams keyed on "
+            "the study name. null keeps the old behaviour, the generator "
+            "drawing from the global streams."
         ),
     )
 
@@ -1013,7 +1016,16 @@ class EntanglementTargetConfig(BaseModel):
         description=(
             "Mean Z1+ per strand at the final state, or null for no target. "
             "The controller turns coil_ratio (meander) or build_density (walk) "
-            "until the measured value lands inside the tolerance."
+            "until the measured value lands inside the tolerance. On the "
+            "atomistic route it is Z1+ per bridge, met on the settled build "
+            "by the coil radius (atomistic_placement 'coil'), searched with "
+            "no MD; the relaxation keeps every entanglement but not every "
+            "kink of a coil (74-87 % after NVT on DP-30 PDMS), and "
+            "topon.simulation.protocols.z_target.relax_to_target meets it in "
+            "the relaxed network (a second build aimed at what the network "
+            "kept, then the radius the relaxed readings point at; 5 % unless "
+            "controller.tolerance is set). controller.tolerance is the band "
+            "accepted."
         ),
     )
     close_on: Literal["final", "build"] = Field(
@@ -1141,7 +1153,12 @@ class ConformationConfig(BaseModel):
     placement floors at Z = 0.23 per DP-20 strand at every build density tried
     (0.145 / 0.095 / 0.035 give 0.30 / 0.25 / 0.23), while the meander at
     rho 0.05 lands on the reference distribution exactly. Density moves Z over
-    the range shape leaves it, not the other way round.
+    the range shape leaves it, not the other way round. Those are the
+    validation scripts' builds; on ``place()`` builds with the junction jitter,
+    relaxed through the full push-off, the two shapes' final-state
+    floors coincide at DP 20 (walk 0.2365 at rho 0.035, meander 0.2356 at
+    coil 1.402), both above the reference's 0.178, though at one build
+    density the meander is still the lower (``CALIBRATION``).
     """
 
     # ---- the data-file route (ConformationManager) ----
@@ -1264,12 +1281,50 @@ class ConformationConfig(BaseModel):
             "the build as it has always been drawn."
         ),
     )
+    parallel_strands: Literal["opposite", "together"] = Field(
+        default="opposite",
+        description=(
+            "How the meander route draws bridges that share both junctions "
+            "(a secondary loop). 'opposite' draws them on opposite "
+            "sides of their chord, each on a half-sine bow leaving its "
+            "junctions at 20 degrees and at least 1 sigma high, with the wave "
+            "laid across it (guard_report()['parallel']). 'together' draws "
+            "each as any other strand, which is the drawing before 0.4.5: the "
+            "same meander turned about the chord twice, so the two cross "
+            "wherever the wave crosses the chord, and on the N20 fit the "
+            "settle cannot part them and puts the build back as drawn. A "
+            "graph with no shared chord, and the walk and straight routes, "
+            "build the same either way. The atomistic placement "
+            "(atomistic_placement 'meander') reads it too: its "
+            "secondary loops are drawn the same way, the bow and wave in "
+            "units of the strand's mean r0 over 0.97 (1.64 A for PDMS), and "
+            "taut strands go straight either way."
+        ),
+    )
+    loop_shape: Literal["ring", "compact"] = Field(
+        default="ring",
+        description=(
+            "How a primary loop is drawn; placement does not apply to a "
+            "strand with no chord. 'ring' is a regular polygon through its "
+            "junction, whose radius grows with the DP (15.6 sigma at DP 100, "
+            "where a relaxed loop of the N100 reference has a radius of "
+            "gyration of 4.5): strands drawn through it stay through it, and "
+            "on the N100 fit the loops ended at Z 5.65 against 1.04. "
+            "'compact' is a closed self-avoiding walk from the junction, "
+            "every bond at the design length and no bead within 1 sigma (or "
+            "the route's floor, if higher) of another but its neighbours, "
+            "radius of gyration 1.85 at DP 20 and 4.29 at DP 100 "
+            "(guard_report()['loops']). A graph with no primary loop builds "
+            "the same either way, and every other strand of a graph with "
+            "loops is drawn as beside a ring."
+        ),
+    )
     entanglement: EntanglementTargetConfig = Field(
         default_factory=EntanglementTargetConfig
     )
 
     # ---- the atomistic route (Pipeline, chemistry.model_type "atomistic") ----
-    atomistic_placement: Optional[Literal["straight", "meander", "walk"]] = Field(
+    atomistic_placement: Optional[Literal["straight", "meander", "walk", "coil"]] = Field(
         default="meander",
         description=(
             "Draw each strand's backbone as a chain at the force field's bond "
@@ -1277,13 +1332,30 @@ class ConformationConfig(BaseModel):
             "route (meander_waves, min_bond, min_self_separation and "
             "path_jitter keep their meaning, read in units of the backbone bond "
             "over 0.97), settle it (atomistic_clearance), and place every other "
-            "atom at its bond length off the backbone. A strand whose chord "
+            "atom at its bond length off the backbone, all drawn from a stream "
+            "keyed on the study name, so a pinned config places its atoms the "
+            "same way on every run. A strand whose chord "
             "reaches 0.97 of its extended length (0.79 of the contour for PDMS) "
-            "is drawn straight. The default; a network with POSS nodes falls "
-            "back to the historic placement unless this is set. null keeps the "
+            "is drawn straight. The default, for a network with POSS nodes "
+            "too since 0.4.5: each cage is placed whole at its junction, turned "
+            "towards its strands, and the strands are settled clear of it and "
+            "through none of its faces. null keeps the "
             "historic placement: every heavy atom evenly on the chord, relaxed "
             "into a molecule by the soft first stage (and the relaxation "
-            "defaults to the historic soft_push deck)."
+            "defaults to the historic soft_push deck). 'coil' (this route "
+            "only) winds each strand round its chord at atomistic_coil_radius, "
+            "the knob a target_Z turns; a target_Z uses it unless another "
+            "placement is named."
+        ),
+    )
+    atomistic_coil_radius: Optional[float] = Field(
+        default=None, gt=0,
+        description=(
+            "With atomistic_placement 'coil': how far each strand winds from "
+            "its chord, in A. Z at the build rises with it without a step "
+            "(DP-30 PDMS at 0.97 g/cm3: Z1+ per bridge 0.23 at 2 A, 1.49 at 6, "
+            "3.15 at 10). A radius too wide for a strand's slack is narrowed "
+            "for that strand. Set by the search when target_Z is given."
         ),
     )
     atomistic_clearance: float = Field(
@@ -1294,11 +1366,23 @@ class ConformationConfig(BaseModel):
             "each other along one strand, excepted). Pairs drawn closer are "
             "opened along the line between them before anything else is "
             "placed, so the first stage never has to decide which side of each "
-            "other two bonds are on. 0 turns it off."
+            "other two bonds are on. Two bonds of different strands joined "
+            "through a junction bond shorter than this are read against that "
+            "bond's length instead. 0 turns it off; a ring a backbone "
+            "runs through is then closed on its stretch as drawn."
         ),
     )
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _coil_has_a_radius(self):
+        if (self.atomistic_placement == "coil" and self.atomistic_coil_radius is None
+                and self.entanglement.target_Z is None):
+            raise ValueError(
+                "atomistic_placement 'coil' needs atomistic_coil_radius (A) or "
+                "entanglement.target_Z, which searches the radius")
+        return self
 
     @model_validator(mode="after")
     def _one_build_knob(self):

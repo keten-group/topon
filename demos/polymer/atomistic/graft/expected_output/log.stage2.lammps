@@ -1,7 +1,7 @@
 LAMMPS (2 Apr 2025)
-  using 4 OpenMP thread(s) per MPI task
+  using 8 OpenMP thread(s) per MPI task
 Loaded 1 plugins from <LAMMPS install>/plugins
-package omp 4
+package omp 8
 using multi-threaded neighbor list subroutines
 # LAMMPS Stage 2: epsilon ramp with the backbone at full depth (protocol "hard_backbone")
 #
@@ -16,7 +16,7 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 pair_style      soft 3.0
 
 read_data       system_after_soft.data
@@ -48,8 +48,8 @@ Finding 1-2 1-3 1-4 neighbors ...
     10 = max # of 1-3 neighbors
     22 = max # of 1-4 neighbors
     24 = max # of special neighbors
-  special bonds CPU = 0.020 seconds
-  read_data CPU = 1.149 seconds
+  special bonds CPU = 0.021 seconds
+  read_data CPU = 1.178 seconds
 
 neigh_modify    one 10000
 comm_modify     mode single cutoff 12.0
@@ -69,6 +69,7 @@ pair_coeff 1 1 0.3100 3.8041 # Si3
 pair_coeff 2 2 0.0951 3.4730 # C_3
 pair_coeff 3 3 0.0957 3.0332 # O_3
 pair_coeff 4 4 0.0152 2.8464 # H_
+pair_modify mix geometric tail yes
 
 # Bond Coeffs
 bond_coeff 1 350.0000 1.6970 # C_3-Si3
@@ -87,12 +88,12 @@ angle_coeff 7 50.0000 109.4710 # H_-Si3-O_3
 angle_coeff 8 50.0000 109.4710 # C_3-Si3-H_
 
 # Dihedral Coeffs
-dihedral_coeff 1 0.111111 -1 3 # C_3-Si3-C_3-H_
-dihedral_coeff 2 0.111111 -1 3 # H_-C_3-Si3-O_3
-dihedral_coeff 3 0.333333 -1 3 # C_3-Si3-O_3-Si3
-dihedral_coeff 4 0.333333 -1 3 # O_3-Si3-O_3-Si3
-dihedral_coeff 5 0.333333 -1 3 # H_-Si3-O_3-Si3
-dihedral_coeff 6 0.111111 -1 3 # H_-C_3-Si3-H_
+dihedral_coeff 1 0.111111 1 3 # C_3-Si3-C_3-H_
+dihedral_coeff 2 0.111111 1 3 # H_-C_3-Si3-O_3
+dihedral_coeff 3 0.333333 1 3 # C_3-Si3-O_3-Si3
+dihedral_coeff 4 0.333333 1 3 # O_3-Si3-O_3-Si3
+dihedral_coeff 5 0.333333 1 3 # H_-Si3-O_3-Si3
+dihedral_coeff 6 0.111111 1 3 # H_-C_3-Si3-H_
 
 special_bonds   lj/coul 0.0 0.0 1.0
 Finding 1-2 1-3 1-4 neighbors ...
@@ -101,7 +102,7 @@ Finding 1-2 1-3 1-4 neighbors ...
      4 = max # of 1-2 neighbors
     10 = max # of 1-3 neighbors
     24 = max # of special neighbors
-  special bonds CPU = 0.011 seconds
+  special bonds CPU = 0.012 seconds
 
 variable        scale equal ramp(0.001,1.0)
 fix             ramp all adapt 1 pair lj/cut/coul/long epsilon 1*2 2 v_scale pair lj/cut/coul/long epsilon 2 3*4 v_scale pair lj/cut/coul/long epsilon 1*4 4 v_scale scale yes reset no
@@ -109,8 +110,8 @@ fix             lang all langevin 300.0 300.0 100.0 7811
 fix             cap all nve/limit 0.1
 timestep        1.0
 thermo          1000
-# RUNTIME: 5000 steps
-run             5000
+# RUNTIME: 2500 steps
+run             2500
 PPPM initialization ...
   using 12-bit tables for long-range coulomb (src/kspace.cpp:342)
   G vector (1/distance) = 0.21078818
@@ -136,42 +137,40 @@ Neighbor list info ...
       bin: standard
 WARNING: Inconsistent image flags
 For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
-Per MPI rank memory allocation (min/avg/max) = 179 | 179 | 179 Mbytes
+Per MPI rank memory allocation (min/avg/max) = 192.5 | 192.5 | 192.5 Mbytes
    Step          Temp          E_pair         E_mol          TotEng         Press     
-         0   274.65433      3898141.9      40798.888      3972658.6      1912068.9    
-      1000   305.41889     -100524.91      71706.976      8676.7098      3650.6242    
-      2000   302.29107     -103649.21      73794.554      7256.0013      3079.3486    
-      3000   301.4174      -106907.74      75991.101      6086.7701      2634.0244    
-      4000   299.099       -109809.6       77214.406      4123.5953      1547.0641    
-      5000   301.57329     -112848.17      78814.435      2988.8063      1689.2722    
-Loop time of 261.65 on 4 procs for 5000 steps with 41186 atoms
+         0   272.69829      5805469.1      38560.707      5877507.6      2821491.5    
+      1000   305.72899     -104572.86      69489.239      2449.092       4984.7829    
+      2000   303.02298     -111817.5       71369.979     -3247.0068      3345.1613    
+      2500   300.97948     -115060.5       71915.618     -6195.2407      3121.0359    
+Loop time of 142.087 on 8 procs for 2500 steps with 41186 atoms
 
-Performance: 1.651 ns/day, 14.536 hours/ns, 19.110 timesteps/s, 787.045 katom-step/s
-312.9% CPU use with 1 MPI tasks x 4 OpenMP threads
+Performance: 1.520 ns/day, 15.787 hours/ns, 17.595 timesteps/s, 724.663 katom-step/s
+524.5% CPU use with 1 MPI tasks x 8 OpenMP threads
 
 MPI task timing breakdown:
 Section |  min time  |  avg time  |  max time  |%varavg| %total
 ---------------------------------------------------------------
-Pair    | 191.3      | 191.3      | 191.3      |   0.0 | 73.11
-Bond    | 12.161     | 12.161     | 12.161     |   0.0 |  4.65
-Kspace  | 27.281     | 27.281     | 27.281     |   0.0 | 10.43
-Neigh   | 14.135     | 14.135     | 14.135     |   0.0 |  5.40
-Comm    | 1.2472     | 1.2472     | 1.2472     |   0.0 |  0.48
-Output  | 5.2905     | 5.2905     | 5.2905     |   0.0 |  2.02
-Modify  | 9.6589     | 9.6589     | 9.6589     |   0.0 |  3.69
-Other   |            | 0.5744     |            |       |  0.22
+Pair    | 93.684     | 93.684     | 93.684     |   0.0 | 65.93
+Bond    | 7.4373     | 7.4373     | 7.4373     |   0.0 |  5.23
+Kspace  | 18.314     | 18.314     | 18.314     |   0.0 | 12.89
+Neigh   | 6.7785     | 6.7785     | 6.7785     |   0.0 |  4.77
+Comm    | 1.0095     | 1.0095     | 1.0095     |   0.0 |  0.71
+Output  | 3.7561     | 3.7561     | 3.7561     |   0.0 |  2.64
+Modify  | 10.681     | 10.681     | 10.681     |   0.0 |  7.52
+Other   |            | 0.4263     |            |       |  0.30
 
 Nlocal:          41186 ave       41186 max       41186 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Nghost:          44161 ave       44161 max       44161 min
+Nghost:          44662 ave       44662 max       44662 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Neighs:    1.09612e+07 ave 1.09612e+07 max 1.09612e+07 min
+Neighs:    1.09323e+07 ave 1.09323e+07 max 1.09323e+07 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
 
-Total # of neighbors = 10961155
-Ave neighs/atom = 266.13789
+Total # of neighbors = 10932338
+Ave neighs/atom = 265.43821
 Ave special neighs/atom = 5.8081872
-Neighbor list builds = 211
+Neighbor list builds = 114
 Dangerous builds = 0
 unfix           cap
 unfix           lang
@@ -190,4 +189,4 @@ PPPM initialization ...
   3d grid and FFT values/proc = 24389 13824
 Generated 6 of 6 mixed pair_coeff terms from geometric mixing rule
 Last active /omp style is kspace_style pppm/omp
-Total wall time: 0:04:23
+Total wall time: 0:02:23

@@ -1,3 +1,9 @@
+Tables G1 and G2 below come from benchmark runs made with an earlier version of the code, before the t10 rerun, and
+their numbers are unchanged. Table 1 (Appendix B) and Table 2 (Appendix C) of the paper and its supplementary
+benchmark table come from the t10 files of this folder (see `README.md` and `T10_README.md`). The degeneracy
+rows and the sampler comparison of G1 were rechecked with the code of topon 0.4.5 in `t10_degeneracy_summary.json` and
+`t10_bias_summary.json`.
+
 **Table G1. Degree-distribution control: success, runtime and error.** SC 6x6x6 periodic (216 sites, z = 6), max f 6, unless stated. Error = L1 distance between achieved and requested site counts over f = 0..6; every returned graph was checked independently. Times are wall clock per graph (median / p90 / max) on one core of an i9-14900 (Windows 11); the paper-era binary ran in WSL2.
 
 | Method | Targets | Success | Time per graph | P(f) error | Notes |

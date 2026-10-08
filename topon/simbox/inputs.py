@@ -106,11 +106,11 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 special_bonds   dreiding
 
 pair_style      lj/cut 12.0
-pair_modify     mix arithmetic
+pair_modify     mix geometric tail yes
 
 read_data       {data_file}
 include         {groups_file}
@@ -180,11 +180,11 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 special_bonds   dreiding
 
 pair_style      lj/cut 12.0
-pair_modify     mix arithmetic
+pair_modify     mix geometric tail yes
 
 read_restart    restart.minimize
 include         settings.in
@@ -234,11 +234,11 @@ boundary        p p p
 bond_style      harmonic
 angle_style     harmonic
 dihedral_style  harmonic
-improper_style  cvff
+improper_style  umbrella
 special_bonds   dreiding
 
 pair_style      lj/cut 12.0
-pair_modify     mix arithmetic
+pair_modify     mix geometric tail yes
 
 read_restart    restart.nvt
 include         settings.in
@@ -295,7 +295,7 @@ boundary        p p p
 read_restart    restart.npt
 
 pair_style      lj/cut 12.0
-pair_modify     mix arithmetic
+pair_modify     mix geometric tail yes
 
 neighbor        2.0 bin
 neigh_modify    every 1 delay 0 check yes
@@ -312,15 +312,28 @@ timestep        1.0
 # ==============================================================
 # OPTION A: fix bond/react  (template-based, most flexible)
 # ==============================================================
-# You need pre-reaction and post-reaction molecule templates.
+# `topon simbox` (run_workflow) writes the templates beside system.data
+# for a box with epoxide and amine sites, in this box's own type ids,
+# and system.data then lists the types the reactions create (since 0.4.5;
+# a box from SimBox.write alone needs prepare_bond_react for both):
+#   NH2 + epoxide: pre_react_primary.mol, post_react_primary.mol,
+#                  rxn_map_primary.txt
+#   NH  + epoxide: pre_react_secondary.mol, post_react_secondary.mol,
+#                  rxn_map_secondary.txt
+# Every reaction adds bonds, angles and dihedrals to its atoms, which
+# needs room per atom that 1_minimize.in's read_data does not set
+# (extra/bond/per/atom and the rest), which this deck leaves to you.
+# Untested from this deck.
+# With stabilization, thermostat statted_grp_REACT instead of rxn_nvt.
 # See: https://docs.lammps.org/fix_bond_react.html
 #
-# fix  rxn all bond/react stabilization yes nvt_grp &
-#      react epoxy_amine all 100 3.5 &
-#          pre_react_template.data post_react_template.data &
-#          map_file.txt
-#
-# -- Replace the file names with your actual templates --
+# molecule  pre_mol1  pre_react_primary.mol
+# molecule  post_mol1 post_react_primary.mol
+# molecule  pre_mol2  pre_react_secondary.mol
+# molecule  post_mol2 post_react_secondary.mol
+# fix  rxn all bond/react stabilization yes statted_grp 0.02 &
+#      react crosslink1 all 25 2.0 5.0 pre_mol1 post_mol1 rxn_map_primary.txt &
+#      react crosslink2 all 25 2.0 5.0 pre_mol2 post_mol2 rxn_map_secondary.txt
 
 # ==============================================================
 # OPTION B: fix bond/create  (simpler, distance-based)

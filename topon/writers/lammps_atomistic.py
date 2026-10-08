@@ -1,6 +1,8 @@
 import os
 import itertools
 from rdkit import Chem
+from ..forcefield.dreiding import (INVERSIONS_PER_CENTRE, dreiding_types,
+                                   inversion_quadruplets)
 from ..utils import network_config
 
 class DreidingWriter:
@@ -168,45 +170,14 @@ class DreidingWriter:
     # =========================================================================
 
     def _assign_atom_types(self):
-        hybridization_map = {'SP3': '3', 'SP2': '2', 'SP': '1', 'S': '_'}
-        
-        for atom in self.mol.GetAtoms():
+        # Element and hybridisation to a type in the parameter file; an atom
+        # with none raises UntypedAtomError, naming it.
+        types = dreiding_types(self.mol, self.params['atom_types'])
+
+        for atom, dreiding_type in zip(self.mol.GetAtoms(), types):
             idx = atom.GetIdx() + 1
-            element = atom.GetSymbol()
-            if element == "H": element = "H_"
-            
-            hyb = str(atom.GetHybridization())
-            
-            # 1. Construct possible type string
-            possible_type = f"{element}_UNSPECIFIED"
-            if hyb in hybridization_map:
-                suffix = hybridization_map[hyb]
-                possible_type = f"{element}{suffix}" if element != "H_" else "H_"
 
-            # 2. Matching Logic
-            dreiding_type = None
-            
-            # A. Direct Match
-            if possible_type in self.params['atom_types']:
-                dreiding_type = possible_type
-            else:
-                # B. Try Underscore insertion (C3 -> C_3)
-                underscore_type = None
-                for i, char in enumerate(possible_type):
-                    if char.isdigit():
-                        underscore_type = possible_type[:i] + '_' + possible_type[i:]
-                        break
-                
-                if underscore_type and underscore_type in self.params['atom_types']:
-                    dreiding_type = underscore_type
-                # C. Try Element Symbol
-                elif element in self.params['atom_types']:
-                    dreiding_type = element
-                # D. Try Element_
-                else:
-                    dreiding_type = f"{element}_"
-
-            # 3. Store
+            # Store
             if dreiding_type not in self.atom_types_dict:
                 self.atom_types_dict[dreiding_type] = len(self.atom_types_dict) + 1
             
@@ -351,11 +322,14 @@ class DreidingWriter:
                 p = self._find_param(key, self.params['improper_params'])
                 if not p: p = self.params['improper_params'][('X', 'X', 'X', 'X')]
                 
-                type_sig = (c_type, p['type'], p['k'], p['chi0'])
+                # DREIDING's three inversion terms, each with K/3, for
+                # improper_style umbrella (one term of full K before 0.4.5)
+                type_sig = (c_type, p['type'], p['k'] / INVERSIONS_PER_CENTRE, p['chi0'])
                 if type_sig not in self.improper_types:
                     self.improper_types[type_sig] = len(self.improper_types) + 1
-                    
-                self.improper_data.append((len(self.improper_data)+1, self.improper_types[type_sig], c_idx, neighbors[0], neighbors[1], neighbors[2]))
+
+                for quad in inversion_quadruplets(c_idx, neighbors):
+                    self.improper_data.append((len(self.improper_data)+1, self.improper_types[type_sig], *quad))
 
     # =========================================================================
     # --- 4. FILE WRITING ---
@@ -427,6 +401,9 @@ class DreidingWriter:
                 else:
                     eps, sig = 0.001, 3.5
                 f.write(f"pair_coeff {tid} {tid} {eps:.4f} {sig:.4f} # {name}\n")
+            # DREIDING combines R0 and D0 geometrically, and the LJ cutoff takes
+            # the long-range tail correction
+            f.write("pair_modify mix geometric tail yes\n")
             f.write("\n")
             
             if self.bond_data:
@@ -451,12 +428,18 @@ class DreidingWriter:
                     # type_sig = (canon_t, k_val, n, d)
                     types, k, n, d = type_sig
                     label = f"{types[0]}-{types[1]}-{types[2]}-{types[3]}"
-                    f.write(f"dihedral_coeff {tid} {k:.6f} {int(d)} {int(n)} # {label}\n")
+                    # The parameter file gives DREIDING's d for E = (V/2)[1 - d cos(n phi)]
+                    # (Mayo et al. 1990); dihedral_style harmonic is E = K[1 + d cos(n phi)],
+                    # so LAMMPS's d is minus the file's. Written as read, every torsional
+                    # minimum sat at a maximum (sp3-sp3 eclipsed), as before 0.4.5.
+                    f.write(f"dihedral_coeff {tid} {k:.6f} {-int(d)} {int(n)} # {label}\n")
                 f.write("\n")
                 
             if self.improper_data:
                 f.write("# Improper Coeffs\n")
                 for type_sig, tid in sorted(self.improper_types.items(), key=lambda x: x[1]):
-                    c_type, _, k, _ = type_sig
-                    f.write(f"improper_coeff {tid} {k:.4f} -1 0 # {c_type}\n")
+                    # umbrella: K and omega0, E = K[1 - cos omega] at omega0 = 0.
+                    # Before 0.4.5, cvff "K -1 0": E = K[1 - cos 0], no force.
+                    c_type, _, k, chi0 = type_sig
+                    f.write(f"improper_coeff {tid} {k:.6f} {chi0:.4f} # {c_type}\n")
                 f.write("\n")

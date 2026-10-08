@@ -318,16 +318,33 @@ def write_group_definitions_to_file(mol, node_ids, scale, periodicity, sys_type,
 # --- ATOM PLACEMENT HELPERS ---
 # =======================================================================
 
-def generate_approximate_side_chain_coords(mol, known_coords, seed_offset=0):
+def global_stream_generator():
+    """An ``np.random.Generator`` on NumPy's global stream.
+
+    It shares the bit generator ``np.random.seed`` seeds, so ``.random(n)``
+    returns what ``np.random.rand(n)`` would and advances the stream as far.
+    ``np.random.get_bit_generator`` is NumPy 1.25 and later; before that the
+    same object is the global RandomState's ``_bit_generator``.
+    """
+    get = getattr(np.random, "get_bit_generator", None)
+    bit_generator = get() if get is not None else np.random.mtrand._rand._bit_generator
+    return np.random.Generator(bit_generator)
+
+
+def generate_approximate_side_chain_coords(mol, known_coords, rng):
     """
     Generates approximate coordinates for side chain atoms (non-backbone)
     by placing them near their already-placed neighbors with a small random offset.
-    
+
     Args:
         mol: RDKit molecule (with Hydrogens).
         known_coords: Dict {atom_idx: (x, y, z)} of known positions (graph units).
-        seed_offset: Integer offset for random seed to ensure reproducibility.
-        
+        rng: ``np.random.Generator`` every offset is drawn from, three
+            uniforms per atom placed. Nothing else is drawn from and no
+            stream is reseeded. The pipeline passes one keyed on the study
+            name; :func:`global_stream_generator` draws from NumPy's global
+            stream, the draws ``np.random.rand`` made before 0.4.5.
+
     Returns:
         Dict {atom_idx: (x, y, z)} of new coordinates for side chain atoms.
     """
@@ -364,8 +381,7 @@ def generate_approximate_side_chain_coords(mol, known_coords, seed_offset=0):
             if parent_pos is not None:
                 # Place with small random offset
                 # 0.05 lattice units is roughly 0.5-1.0 Angstroms depending on scale
-                random.seed(idx + seed_offset)
-                offset = (np.random.rand(3) - 0.5) * 0.05
+                offset = (rng.random(3) - 0.5) * 0.05
                 pos = tuple(parent_pos + offset)
                 
                 new_coords[idx] = pos
