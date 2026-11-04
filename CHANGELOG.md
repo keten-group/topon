@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.6
+
+### Documentation
+
+- `docs/ENTANGLEMENT_TARGETS.md` explains how to reach a target entanglement. It says what a Z target means (per
+  bridge or over the whole system, and at which state), why the build sets the count and a relaxation in which no
+  strand crosses another keeps it, which range can be reached at each DP, how to run the controller with a runner
+  (`topon generate` draws strands on their chords and does not meet a bead-spring target), how the atomistic route
+  differs, and the usual reasons a target is missed. `docs/USAGE.md` points to it from *The controller*.
+
+### Paper companion
+
+- The end-to-end-distance histograms of the companion's Figure 2 are drawn as filled bars beside the normal fits
+  (on `main` since 0.4.5).
+
 ## 0.4.5
 
 ### Atomistic networks

@@ -2580,6 +2580,8 @@ Chain ids in `pairs` index `topon.conformation.strand_plans`, which follows the 
 
 #### The controller
 
+A step-by-step guide to meeting a target, with the range that can be reached and the usual reasons a target is missed, is in `docs/ENTANGLEMENT_TARGETS.md`.
+
 ```python
 from topon.conformation.entanglement import controller
 
