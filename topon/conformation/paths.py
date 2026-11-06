@@ -79,6 +79,22 @@ class Clearance:
             return np.full(len(q), np.inf)
         return np.atleast_1d(self.tree.query(q, k=1)[0])
 
+    def apart(self, pts, others) -> np.ndarray:
+        """Distance from each point to the nearest of ``others``.
+
+        For beads that are not in the tree, such as the walk's own beads
+        while it is still drawing them (:func:`bridging_walk` with
+        ``self_avoid``). Minimum-image in this box, like :meth:`near`.
+        """
+        p = np.asarray(pts, float).reshape(-1, 3)
+        o = np.asarray(others, float).reshape(-1, 3)
+        if not len(o):
+            return np.full(len(p), np.inf)
+        d = p[:, None] - o[None]
+        if self.box is not None:
+            d -= self.box * np.round(d / self.box)
+        return np.linalg.norm(d, axis=2).min(axis=1)
+
     def worst(self, pts) -> float:
         """The tightest contact a path makes. Larger is better."""
         return float(self.near(pts).min())
@@ -96,7 +112,7 @@ def straight(start, end, n_beads: int) -> np.ndarray:
 
 def bridging_walk(start, end, n_bonds: int, bond: float = 0.97,
                   rng=None, avoid: "Clearance | None" = None,
-                  tries: int = 64) -> np.ndarray:
+                  tries: int = 64, self_avoid: bool = False) -> np.ndarray:
     """A random walk of fixed bond length that lands exactly on ``end``.
 
     Every step is drawn from the cone of directions that still leaves the far
@@ -133,10 +149,21 @@ def bridging_walk(start, end, n_bonds: int, bond: float = 0.97,
     junction the walk is pinned to, so it is the best a path between those two
     junctions can do, and the default is the smallest number of draws that
     reaches it reliably.
+
+    ``avoid`` sees only the beads that were there before the walk began, so
+    the walk can still fold onto itself. ``self_avoid`` holds each step off
+    the walk's own beads too, every one but the bead it steps from, at the
+    same ``avoid.radius``. A plain 100-bond walk nearly always comes
+    back within 0.7 sigma of itself, so redrawing whole walks until one is
+    clear does not finish, while a test at each step does.
+    ``self_avoid`` needs ``avoid``, which gives the radius and the box.
     """
     rng = np.random.default_rng() if rng is None else rng
     start = np.asarray(start, float)
     end = np.asarray(end, float)
+    if self_avoid and avoid is None:
+        raise ValueError("self_avoid needs avoid, which sets the radius and "
+                         "the box")
     n_try = 1 if avoid is None else max(1, int(tries))
 
     pts = [start]
@@ -172,6 +199,8 @@ def bridging_walk(start, end, n_bonds: int, bond: float = 0.97,
         # roomiest only matters where nothing clears, which is where the cone
         # has closed and there is no choice left to make anyway.
         gap = avoid.near(cand)
+        if self_avoid and len(pts) > 1:
+            gap = np.minimum(gap, avoid.apart(cand, pts[:-1]))
         clear = np.flatnonzero(gap >= avoid.radius)
         pts.append(cand[clear[0]] if len(clear) else cand[int(gap.argmax())])
     pts.append(end)

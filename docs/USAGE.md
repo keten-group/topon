@@ -430,6 +430,27 @@ The distributions behind the scalars (effective and core degrees, path lengths, 
 
 **Z1+.** Z1+ (Kröger's primitive-path analysis) is not part of topon, since its license does not allow redistribution. Install it yourself and name the binary with `analysis.z1plus.executable` in a config (read with `--config`), or with `--z1-exe`. The default is `~/z1/Z1+`. Z1+ ships for Linux, so on Windows it runs inside WSL (`analysis.z1plus.wsl` is `auto`, `always` or `never`, and `wsl_distro` names the distribution), and the path is a Linux path. When Z1+ cannot be reached, `--z1` reports why and the rest of the report is unchanged. Every chain is exported junction to junction (with the junction bead at each bonded end and the two end beads moved by 1e-3 sigma, so that chains sharing a junction do not share a coordinate, which Z1+ cannot take), unwrapped bead by bead, in molecule order, and Z1+ runs with `-SP+`. The report gives Z per chain over the whole system and per class (bridge, loop, dangling, free), the entanglement length from the classical Kuhn, modified Kuhn and coil estimators, and the chain-chain partner graph (pairs of chains with at least one entanglement between them, and partners per chain). Z1+ counts the kinks of the shortest paths between the current junction positions, so it changes through equilibration and compression even where nothing crosses. Compare two measurements only at the same density and temperature. From Python, `topon.analysis.z1plus.measure_checkpoint(path)` measures a checkpoint, and `run_z1(chains, box)` runs Z1+ on any set of unwrapped chains.
 
+**Which kinks a Z counts.** A Z names its count. Z1+'s own Z, the `total`, counts every kink, and it depends on the export's jitter. Each strand goes to Z1+ with its own copy of every junction it ends on, the copies are moved by the jitter, and Z1+ holds them fixed, so a strand's shortest path can bend round the end copy of a sibling (a strand on the same junction). In the network that point is the strand's own junction, not an obstacle. On a periodic 5x5x5 SC graph with 20-bead strands drawn as random walks at bead density 0.85 (375 bridges, as built), the total per bridge reads 1.66, 1.74, 2.00 and 2.11 at a jitter of 1e-4, 1e-3, 1e-2 and 0.1. Every kink is therefore also classed by the strand it is pinned on (`split_by_partner`), as `junction_end` on a sibling within 1 sigma of the junction the two share (the export artifact), `sibling` on a sibling farther out, or `nonsibling` on a strand that shares no junction. On that network `nonsibling` reads 0.448, 0.435, 0.469 and 0.435. The three add up to the total. Strands that end on one POSS cage are siblings, though each ends on its own cage atom. `topon analyze --z1` and `topon inspect` print the split on the lines after the total, for the whole system and under each class, and the total line is the one they printed before 0.4.7. On the network above, at the default jitter, the Z1+ lines of `topon analyze --z1` read as follows.
+
+```
+  Z1+       : Z per chain 1.739 over 375 chains (19 % with none), Ne 7.9 (classical Kuhn)
+  Z1+ split : junction end 0.728, sibling 0.576, non-sibling 0.435 per chain
+    bridge   :    375 chains, Z 1.739, 19 % with none
+               junction end 0.728, sibling 0.576, non-sibling 0.435 per chain
+```
+
+The report (`--json`, and every `measure_checkpoint` record) gives the three under `z1.by_partner` and `z1.by_class.<class>.by_partner`, as mean kinks per chain. A run whose Z1+ output cannot be split warns and gives its record without them, and its text says it is not split. `bridge_z(record, count=...)` takes `"total"` (the default, every number before 0.4.7), `"nonsibling"`, `"junction_end"` or `"sibling"`, and asking a record written before 0.4.7 for a partner count is an error. A target or a comparison says which count it uses. Only `junction_end` follows the jitter, so readings from another export (another jitter, another tool) compare with topon's on the other two, and `nonsibling` is the recommended one. `measure_system(system, amp=...)` sets the jitter, to test how a count depends on it. The 1 sigma cut (`JUNCTION_END_CUT`) is in the file's length unit, as the jitter is, so on an atomistic network it is 1 Å. It is not validated there. The exported points of an atomistic strand (one per repeat unit) are about 3 Å apart, so 1 Å is a third of the first segment, where on a bead-spring strand it is about one bond. The `junction_end` and `sibling` classes of an atomistic network are therefore not cut at the same place as a bead-spring network's, and only `nonsibling` and the sum of the other two compare across the two kinds. `docs/ENTANGLEMENT_TARGETS.md` section 1 has the rest.
+
+**A target in a count.** `conformation.entanglement.count` says which kinks `target_Z` and `target_hist` count, `total` (the default) or one of the three classes. Two kinks per bridge on strands that share no junction is written as follows.
+
+```json
+"conformation": {"entanglement": {"target_Z": 2.0, "count": "nonsibling"}}
+```
+
+Everything that meets or checks a target reads it in that count. The bead-spring controller hands it to its runner in every round (`RoundPlan.count`). The atomistic coil-radius search, `relax_to_target` and its deck runner read it too, and so does `topon generate --verify --relaxed`, whose target line names the count. `measure_seeds(system, count=...)` averages it over the seeds, `topon track --count` draws Z per bridge in it, and the atomistic protocol reads it beside the total (`AtomisticRun(z1_count=...)`). The relaxation gates stay on the total, since their tolerances were set against it. The calibration table and the floors count every kink as well. A target in another count is therefore seeded from the table with a warning, borrows the total's exponent for a step from one point, and is checked against no floor, neither by the controller nor by `topon doctor`. A partner count can read 0 where the total does not. The controller then stops with a warning, since a power law cannot be anchored on 0, and `relax_to_target` stops and says why. Asking a partner count of a record or run that was not split (one from before 0.4.7) is an error that names it. With the default count every manifest, deck, per-chain array and page is the one written before, and a record differs only by its `by_partner` blocks.
+
+With no MD, a DP-30 PDMS network on a 3x3x3 cell of four-way junctions, aimed at two non-sibling kinks per bridge, met the target at coil radius 12.78 Å and reads 1.958 per bridge after the settle, against a total of 2.65. The same file read back by `measure_seeds`, by the atomistic protocol's checkpoint reader and by `topon track` gives 1.958 again. The bead-spring loop, closed on placed 60-bead walks of a 4x4x4 cell in place of a relaxation, read 0.86 at build density 0.4, 2.48 at 0.9 and 1.94 at 0.763, where it stopped inside the 15 % band (a total of 4.0 there).
+
 `topon.analysis.report.analyze_graph()`, which gave the capacity counts (triangle-closing edges, parallel strands, entanglement pairs) that this command printed before 0.4.0, is still there for Python callers.
 
 ### 3.6a `topon fit` (a config that regenerates an existing network)
@@ -553,13 +574,15 @@ topon protein --config demos/protein/charmm/config.json --output runs/charmm
 ```bash
 topon track RUN_DIR... [-o PAGE] [--seeds N] [--no-energies] [--lmp LMP] [--omp N]
             [--title TITLE] [--label LABEL ...] [--z1-exe EXE] [--config CONFIG]
+            [--count COUNT]
 ```
 
-The command writes one self-contained HTML page (`relaxation_tracker.html` by default) for one or more study folders of the atomistic route. For every checkpoint it shows the network as Z1+ reads it, and through the stages it plots Z per bridge, the backbone passages, the energy under the full force field, temperature, density and the longest backbone bond. The energies need LAMMPS (`--lmp`, one zero-step run per checkpoint) and the Z columns need Z1+. Appendix A (*Watching a relaxation*) describes the page.
+The command writes one self-contained HTML page (`relaxation_tracker.html` by default) for one or more study folders of the atomistic route. For every checkpoint it shows the network as Z1+ reads it, and through the stages it plots Z per bridge (every kink, or with `--count` one partner class of §3.6), the backbone passages, the energy under the full force field, temperature, density and the longest backbone bond. The energies need LAMMPS (`--lmp`, one zero-step run per checkpoint) and the Z columns need Z1+. Appendix A (*Watching a relaxation*) describes the page.
 
 ```bash
 topon track output/pdms_dp30
 topon track runs/z1 runs/z2 --label "Z = 1" --label "Z = 2" -o z.html --omp 4
+topon track runs/z2_nonsibling --count nonsibling
 ```
 
 ### Global options
@@ -2013,8 +2036,8 @@ directly.
 
 | name | does |
 |---|---|
-| `Clearance(points, box, radius)` | the beads already present, as a minimum-image nearest-neighbor query, with methods `near`, `worst` and `ok` |
-| `bridging_walk(..., avoid=)` | the same fixed-bond random walk, keeping each step clear of `avoid` |
+| `Clearance(points, box, radius)` | the beads already present, as a minimum-image nearest-neighbor query, with methods `near`, `worst` and `ok`, and `apart(pts, others)` for beads not in the tree |
+| `bridging_walk(..., avoid=)` | the same fixed-bond random walk, keeping each step clear of `avoid`. With `self_avoid=True` each step also keeps clear of the walk's own beads but the one it steps from, at `avoid.radius` |
 | `loop_around(target, i, radius, n_pts, phase, avoid, span)` | waypoints encircling a strand. `span` is turns, so 0.5 is a hook and 2.0 is two turns |
 | `taut_leg(start, end, n_bonds, bond, avoid, placed)` | a deterministic leg with exact bonds that lands on its end and avoids `avoid`, its own earlier beads, and `placed` |
 | `route_through(start, end, waypoints, n_bonds, bond, avoid)` | visits every waypoint in order using `taut_leg` for each leg |
@@ -2272,6 +2295,8 @@ The other keys drive `topon.conformation.place`, which draws a bead-spring build
 | `settle_clearance` | float \| null | `null` | Once the strands are drawn, part the bonds of different strands to this bond-to-bond distance (in sigma), holding the junctions and never moving one bond through another. `null` is off |
 | `parallel_strands` | `"opposite"` \| `"together"` | `"opposite"` | On the meander route, how bridges that share both junctions (secondary loops) are drawn, on opposite sides of their chord or, with `"together"`, as any other strand (the drawing of 0.4.0, byte for byte). The atomistic meander placement reads it too. See *Secondary loops* below |
 | `loop_shape` | `"ring"` \| `"compact"` | `"ring"` | How a primary loop is drawn (`placement` does not apply to a strand with no chord). `"ring"` is a regular polygon through the junction, and `"compact"` a closed self-avoiding walk from the junction about the size of a relaxed loop. A graph with no primary loop builds the same either way. `topon fit` writes `"compact"`. See *Primary loops* below |
+| `walk_clearance` | float \| null | `null` | Walk route only. Once the build is drawn, redraw every bridge and dangling strand in turn between its own ends, each step kept this far (in sigma) from every junction, every bead already drawn and its own beads but the one it steps from. It is for a dense build that goes through the hard push-off, and 0.85 is the recommended value. Not with `junction_shell_spacing`. `null` draws the walk as before. See *Dense walks* below |
+| `walk_tries` | int | `64` | With `walk_clearance`, the draws per step before the roomiest is taken |
 | `entanglement` | object | see below | Target, distribution, designed pairs and the controller |
 
 The last keys are for the atomistic route (`Pipeline` with `chemistry.model_type: "atomistic"`, DREIDING or CHARMM).
@@ -2532,6 +2557,50 @@ floor, radius of gyration and closest self-contact of the loops.
 into the configs it fits. The pipeline's own loops (`topon generate`) and
 the atomistic route's are rings either way.
 
+#### Dense walks (`walk_clearance`)
+
+A walk is drawn one strand at a time and sees nothing else, so at a dense
+build density its beads land on other strands and on itself. The soft
+push-off resolves that, but strands cross while it does. The hard push-off
+(FENE and WCA from the first step, `nve/limit`, no minimizer) lets no strand
+cross, so it has to push such contacts apart through the bond between them,
+and a few end as bonds stretched past the 1.2 sigma gate. `junction_jitter`
+0.15 helps at the lower build densities but not at the densest.
+
+```python
+pl = place(graph, 100, "walk", build_density=0.3,
+           rng=np.random.default_rng(0), walk_clearance=0.85)
+pl.guard_report()["walk_clearance"]
+```
+
+With `walk_clearance` the build is drawn as before, and then every bridge
+and dangling strand is drawn again, in strand order, between the same two
+ends, with the same cone walk (`bridging_walk` with `avoid` and
+`self_avoid`). Each step keeps the first of `walk_tries` draws that is at
+least `walk_clearance` from every junction, every bead already redrawn and
+the strand's own beads but the one it steps from. Where none is, it takes
+the roomiest. Primary loops and sol chains are kept as drawn, and the
+redrawn strands keep clear of them. The junctions, the graph and the build
+density do not change, only the strand paths, and every bond stays at the
+design length.
+
+The redraw takes the random stream where the plain build leaves it, so a
+build with it is the plain build followed by the redraw, bead for bead. For
+the same reason nothing repairs a redrawn strand afterwards (the plain
+walk's overlap floor and short-last-bond lift are not applied), and the
+gate reports what a step that found no room left behind. A clearance under
+`min_bond` lets the last step close short, which the gate then reports. The
+option cannot be combined with `junction_shell_spacing`, whose shells it
+would redraw.
+
+`guard_report()["walk_clearance"]` (present only when the option is on)
+gives `clearance`, `tries`, `strands` (redrawn), `steps` (beads drawn),
+`short_steps` and `short_strands` (steps where no draw cleared, and the
+strands with one) and `gap_min` (the least room a step took). Most short
+steps are near the far end, where the cone of directions that still reach
+the end junction narrows. `docs/ENTANGLEMENT_TARGETS.md` (section 5.3) says
+when to use it.
+
 #### `conformation.entanglement`
 
 ```json
@@ -2547,6 +2616,7 @@ the atomistic route's are rings either way.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `target_Z` | float \| null | `null` | Mean Z1+ per strand **at the final state**, or null for no target. On the atomistic route, Z1+ per bridge met by the coil radius on the build, and in the relaxed network with `relax_to_target` (see *A Z target on the atomistic route*) |
+| `count` | `"total"` \| `"junction_end"` \| `"sibling"` \| `"nonsibling"` | `"total"` | Which kinks `target_Z` and `target_hist` count. `"total"` is every kink, as before 0.4.7, and depends on the export's jitter. `"nonsibling"` counts only kinks on strands that share no junction with the kinked one. The gates stay on the total (see *A target in a count* in §3.6) |
 | `close_on` | `"final"` \| `"build"` | `"final"` | Which state the controller compares against. `"build"` is cheaper to reach and is right only when the build state is itself what is being matched. It does not predict the final state, since Z jumps in stage 1 and stays flat afterwards |
 | `target_hist` | list \| null | `null` | Per-strand Z distribution to compare against, as fractions. Reported as a KS p-value, and nothing is tuned to it |
 | `shells` | object | `{}` | Neighbor-shell mix the designed pairs are drawn from, numbered from 1 |
@@ -2588,7 +2658,7 @@ from topon.conformation.entanglement import controller
 manifest = controller(graph, config.conformation, runner, dp=20)
 ```
 
-`runner` is a callable supplied by the caller. It receives a `RoundPlan` (the round number, the placement, which setting was changed and to what, the DP and the seed) and must return a `RoundResult` or a dict with at least `z_final`. The runner builds the system, runs the relaxation protocol and measures Z1+. Keeping these out of the module keeps the conformation stage free of LAMMPS and lets the loop be tested against a known response.
+`runner` is a callable supplied by the caller. It receives a `RoundPlan` (the round number, the placement, which setting was changed and to what, the DP, the seed and `count`, the config's `entanglement.count`) and must return a `RoundResult` or a dict with at least `z_final`, read in `plan.count`. The runner builds the system, runs the relaxation protocol and measures Z1+. Keeping these out of the module keeps the conformation stage free of LAMMPS and lets the loop be tested against a known response.
 
 A driver for a real protocol writes the build and the five-stage push-off with `topon.writers`, runs and gates it with `topon.simulation.protocols.StagedRun`, and measures each checkpoint with `topon.analysis.z1plus.measure_checkpoint` through an installed Z1+ (§3.6).
 
@@ -2863,9 +2933,10 @@ A single Z1+ run cannot be read pair by pair. The exporter moves each junction b
 ```bash
 topon track output/pdms_dp30
 topon track runs/z1 runs/z2 --label "Z = 1" --label "Z = 2" -o z.html --omp 4
+topon track runs/z2_nonsibling --count nonsibling
 ```
 
-The command writes one self-contained HTML page (`relaxation_tracker.html` by default) for one or more atomistic study folders. For each run and each checkpoint (the build, stage 1, the ramp, and the minimized, NVT and NPT states of stage 3) it shows the network as Z1+ reads it. Every strand is drawn as a curve from junction through one point per repeat unit to junction, with the crosslinks, the Z1+ kinks and the primitive paths, in a view that rotates and zooms and names a strand's entanglement partners when it is hovered. Beside it, through the stages, are Z per bridge over `--seeds` Z1+ seeds (8 by default, and 0 leaves Z1+ out) with its spread, how many of the build's robust pairs are still seen, the backbone passages of each stage dump, the energy density under the full force field with its bonded, van der Waals and Coulomb parts, temperature, density and the longest backbone bond. Below, Z over its build value is plotted for every run in the page, with the LAMMPS time of each. The energy is every checkpoint evaluated again with a zero-step LAMMPS run under the run's own stage-3 styles and settings (`--lmp`, `--omp`, and `--no-energies` skips it), so stages 1 and 2 are not read under their soft or ramped potentials. The build's energy is very high, since only its backbone is settled, so the charts start after it. A run that stopped early shows the checkpoints it wrote. The page loads nothing from anywhere (its fonts are local font stacks) and nothing is uploaded.
+The command writes one self-contained HTML page (`relaxation_tracker.html` by default) for one or more atomistic study folders. For each run and each checkpoint (the build, stage 1, the ramp, and the minimized, NVT and NPT states of stage 3) it shows the network as Z1+ reads it. Every strand is drawn as a curve from junction through one point per repeat unit to junction, with the crosslinks, the Z1+ kinks and the primitive paths, in a view that rotates and zooms and names a strand's entanglement partners when it is hovered. Beside it, through the stages, are Z per bridge over `--seeds` Z1+ seeds (8 by default, and 0 leaves Z1+ out) with its spread, counting every kink or, with `--count`, one partner class, which the page then names, how many of the build's robust pairs are still seen, the backbone passages of each stage dump, the energy density under the full force field with its bonded, van der Waals and Coulomb parts, temperature, density and the longest backbone bond. Below, Z over its build value is plotted for every run in the page, with the LAMMPS time of each. The energy is every checkpoint evaluated again with a zero-step LAMMPS run under the run's own stage-3 styles and settings (`--lmp`, `--omp`, and `--no-energies` skips it), so stages 1 and 2 are not read under their soft or ramped potentials. The build's energy is very high, since only its backbone is settled, so the charts start after it. A run that stopped early shows the checkpoints it wrote. The page loads nothing from anywhere (its fonts are local font stacks) and nothing is uploaded.
 
 #### Did a strand pass through another? The crossing detector
 

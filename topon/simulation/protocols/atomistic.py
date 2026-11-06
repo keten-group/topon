@@ -126,6 +126,16 @@ class AtomisticCheckpoint:
     #: linking number of each cycle pair here.
     cycles: Optional[dict] = None
     linking: Optional[dict] = None
+    #: Which kinks :meth:`reading` counts. The gates read ``z_bridge``,
+    #: the total, whatever this is. ``z_counted`` and its spread over the
+    #: seeds are Z per bridge in this count when it is not the total.
+    count: str = "total"
+    z_counted: Optional[float] = None
+    z_counted_sd: Optional[float] = None
+
+    def reading(self) -> Optional[float]:
+        """Z per bridge in :attr:`count`: the total, or a partner class."""
+        return self.z_bridge if self.count == "total" else self.z_counted
 
     def stretched_pairs(self, tolerance: float = BOND_TOLERANCE) -> set:
         return {p for p, r in zip(self.pairs, self.ratio) if r > 1.0 + tolerance}
@@ -144,7 +154,8 @@ class AtomisticCheckpoint:
 def read_checkpoint(path, strands, tag: str = "", z1: bool = False,
                     z1_config=None, z1_seeds: int = 4,
                     designed: Optional[dict] = None,
-                    cycles: Optional[dict] = None) -> AtomisticCheckpoint:
+                    cycles: Optional[dict] = None,
+                    z1_count: str = "total") -> AtomisticCheckpoint:
     """Read one atomistic checkpoint, with Z1+ on its backbone if asked.
 
     Z1+ runs at ``z1_seeds`` seeds of the export's junction jitter: Z per
@@ -155,13 +166,17 @@ def read_checkpoint(path, strands, tag: str = "", z1: bool = False,
     With ``designed`` (``{(k, l): windings}``) each pair's network cycles are
     read for their linking numbers: ``cycles`` as found on an earlier
     checkpoint, or found here when None.
+
+    ``z1_count`` other than ``total`` also reads Z per bridge in that partner
+    class off the same seeds (:attr:`AtomisticCheckpoint.z_counted`). A
+    checkpoint whose kinks could not be split raises a ValueError naming it.
     """
     system = read_atomistic(path, strands)
     pairs, ratio = system.backbone_ratios()
     cp = AtomisticCheckpoint(tag=tag, path=Path(path), n_atoms=system.n_atoms,
                              density=system.mass_density,
                              temperature=system.temperature(),
-                             pairs=pairs, ratio=ratio)
+                             pairs=pairs, ratio=ratio, count=z1_count)
     if designed:
         from topon.analysis.windings import (WHOLE, find_cycles, measure_cycles,
                                              strands_from_record)
@@ -182,6 +197,13 @@ def read_checkpoint(path, strands, tag: str = "", z1: bool = False,
             cp.z1 = z
             cp.z_bridge = m.z_bridge if m.z_bridge is not None else m.z_all
             cp.z_bridge_sd = m.z_bridge_sd
+            if z1_count != "total":
+                try:
+                    zb, sd, za = m.counted(z1_count)
+                except ValueError as exc:
+                    raise ValueError(f"{tag or path}: {exc}") from exc
+                cp.z_counted = zb if zb is not None else za
+                cp.z_counted_sd = sd
             if res.partners is not None:
                 cp.partner_pairs = m.robust
                 cp.partner_pairs_seen = m.seen
@@ -472,6 +494,9 @@ class AtomisticRun:
     z1_config: Optional[dict] = None
     #: Z1+ seeds per checkpoint (see :func:`read_checkpoint`).
     z1_seeds: int = 4
+    #: Which kinks each checkpoint's :meth:`~AtomisticCheckpoint.reading`
+    #: counts. The gates stay on the total.
+    z1_count: str = "total"
     stop_on_fail: bool = True
     gate_from: str = GATE_FROM
     z_tolerance: Optional[float] = None
@@ -527,7 +552,7 @@ class AtomisticRun:
         cp = read_checkpoint(
             path, self.strands, tag=tag, z1=self.z1, z1_config=self.z1_config,
             z1_seeds=self.z1_seeds, designed=designed_pairs(self.record()),
-            cycles=self._cycles)
+            cycles=self._cycles, z1_count=self.z1_count)
         if self._cycles is None:
             self._cycles = cp.cycles
         self.checkpoints[tag] = cp
@@ -579,11 +604,16 @@ class AtomisticRun:
                 if verbose:
                     s = self.checkpoints[tag].summary()
                     z = self.checkpoints[tag].z_bridge
+                    zc = self.checkpoints[tag].z_counted
                     print(f"  {tag:<14} {self.seconds[script]:6.0f} s  "
                           f"{s['density']:.4f} g/cm3  T {s['temperature']}  "
                           f"backbone max {s['bond_max']:.3f} r0  "
                           f"over +15 %: {s['stretched']}  Z "
-                          f"{'-' if z is None else format(z, '.3f')}", flush=True)
+                          f"{'-' if z is None else format(z, '.3f')}"
+                          + ("" if self.z1_count == "total" else
+                             f" ({self.z1_count} "
+                             f"{'-' if zc is None else format(zc, '.3f')})"),
+                          flush=True)
             if self.stop_on_fail:
                 report = self._check()
                 if not report.passed:
@@ -596,15 +626,18 @@ class AtomisticRun:
 def measure_run(run_dir, z1: bool = True, z1_config=None,
                 z_tolerance: Optional[float] = None,
                 gate_from: str = GATE_FROM, mode: str = "persistent",
-                sim: str = "04_Simulation", z1_seeds: int = 4) -> AtomisticGateReport:
+                sim: str = "04_Simulation", z1_seeds: int = 4,
+                z1_count: str = "total") -> AtomisticGateReport:
     """Gate an atomistic run that has already been run (any checkpoints present).
 
     ``sim`` names the folder the stage checkpoints are in, for a run whose
-    stages were written somewhere other than ``04_Simulation``.
+    stages were written somewhere other than ``04_Simulation``. ``z1_count``
+    is what each checkpoint's reading counts (:class:`AtomisticRun`).
     """
     run = AtomisticRun(run_dir, z1=z1, z1_config=z1_config,
                        z_tolerance=z_tolerance, gate_from=gate_from, mode=mode,
-                       sim=sim, compress_dumps=False, z1_seeds=z1_seeds)
+                       sim=sim, compress_dumps=False, z1_seeds=z1_seeds,
+                       z1_count=z1_count)
     for tag, folder, name in CHECKPOINTS:
         if (run.dirs[folder] / name).exists():
             run._read(tag)

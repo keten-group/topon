@@ -17,8 +17,8 @@ authors:
   - family-names: "Keten"
     given-names: "Sinan"
     affiliation: "Department of Mechanical Engineering and Department of Civil and Environmental Engineering, Northwestern University"
-version: "0.4.6"
-date-released: "2026-11-04"
+version: "0.4.7"
+date-released: "2026-11-06"
 doi: "10.5281/zenodo.19672939"
 license: MIT
 repository-code: "https://github.com/keten-group/topon"

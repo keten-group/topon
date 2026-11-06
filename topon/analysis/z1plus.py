@@ -26,6 +26,20 @@ With ``-SP+`` Z1+ also names the chain responsible for each kink, which gives
 the chain-chain entanglement graph. On the DP-100 reference that graph
 reproduces the collaborator's NPZ entanglement edges (764 against 748 pairs).
 
+The partner also says which kinks are real. Every strand carries its own copy
+of each junction it ends on, and Z1+ holds those copies fixed, so a strand's
+shortest path can bend round the end copy of a sibling (a strand that shares
+the junction). In the network that point is the strand's own junction, not an
+obstacle, and how many such kinks there are is set by the jitter. On a
+5x5x5 network of 20-bead walks packed at 0.85, as built, Z per bridge reads
+1.66 at a jitter of 1e-4 and 2.11 at 0.1.
+:func:`split_by_partner` counts each kink by its partner. A ``junction_end``
+kink is on a sibling within 1 sigma of the shared junction, a ``sibling`` kink
+on a sibling farther out, and a ``nonsibling`` kink on any other strand. The
+non-sibling count stays between 0.435 and 0.469 over that range. Z1+'s
+own Z, the ``total``, stays the default everywhere, so earlier numbers read
+the same.
+
 Z1+ counts the kinks of the shortest paths between the current junction
 positions, so it is a state property, not a topological invariant: it moves
 10-20 % through equilibration and compression with no crossing anywhere.
@@ -41,6 +55,7 @@ import collections
 import os
 import shlex
 import subprocess
+import warnings
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -54,6 +69,22 @@ from topon.config.schema import Z1PlusConfig
 
 #: Jitter on the first and last bead of every exported chain, sigma.
 JITTER = 1e-3
+
+#: The partner of a kink, in the column order of :func:`split_by_partner`.
+PARTNER_CLASSES = ("junction_end", "sibling", "nonsibling")
+#: What a Z can count: every kink Z1+ reports, or the kinks of one partner class.
+COUNTS = ("total",) + PARTNER_CLASSES
+#: Each count in words, for printed text.
+COUNT_WORDS = {"total": "total", "junction_end": "junction end",
+               "sibling": "sibling", "nonsibling": "non-sibling"}
+#: A kink pinned on a sibling within this distance of the junction the two
+#: share (minimum image) is a ``junction_end`` kink. It is in the file's
+#: length unit, as the jitter is: 1 sigma in a bead-spring file, the case it
+#: was checked on, and 1 A in an atomistic one, where it is not validated.
+#: The exported points of an atomistic strand are about 3 A apart, so there
+#: 1 A is a third of the first segment, where in bead-spring it is about one
+#: bond, and the two splits are not drawn at the same place.
+JUNCTION_END_CUT = 1.0
 
 
 class Z1PlusUnavailable(RuntimeError):
@@ -78,6 +109,9 @@ class Z1Result:
     #: at an entanglement point, partner 0 where there is none), with -SP+.
     paths: Optional[list] = None
     log: str = ""
+    #: Per chain, its kinks by partner class, an ``(n, 3)`` array in the
+    #: order of :data:`PARTNER_CLASSES` (:func:`split_by_partner`).
+    by_partner: Optional[np.ndarray] = None
 
     @property
     def n_chains(self) -> int:
@@ -407,13 +441,84 @@ def partner_graph(partners) -> tuple[collections.Counter, np.ndarray]:
     return pairs, np.array([deg.get(i, 0) for i in range(1, len(partners) + 1)])
 
 
+def split_by_partner(res: Z1Result, ends, junction_pos, box,
+                     cut: float = JUNCTION_END_CUT,
+                     groups: Optional[dict] = None) -> np.ndarray:
+    """Per chain, its kinks counted by the chain each is pinned on.
+
+    Returns an ``(n_chains, 3)`` integer array, columns in the order of
+    :data:`PARTNER_CLASSES`:
+
+    * ``junction_end``: the partner is a sibling (it shares a junction with
+      the kinked chain) and the kink point is within ``cut`` of that
+      junction. The exporter gives every strand its own copy of a shared
+      junction, so these kinks bend round a point that in the network is the
+      strand's own junction, and their number follows the export's jitter;
+    * ``sibling``: the partner is a sibling and the kink is farther out;
+    * ``nonsibling``: the partner shares no junction with the chain.
+
+    ``ends`` is, per chain in export order, the atoms it ends on (``None``
+    for a free end), ``junction_pos`` maps an end atom to its position, and
+    the distance is taken by the minimum image in ``box``. ``groups`` maps
+    an end atom to the junction it belongs to where a junction has several
+    (each strand on a POSS cage ends on its own atom), and an atom not in it
+    is its own junction. The distance runs to the nearer of the two chains'
+    end atoms on a junction they share, so two strands that share both
+    their junctions are measured to the nearer one. A chain with a junction
+    is its own sibling, and a free chain, which has none, is not. A kink
+    with no partner named is in no column, so the columns add up to Z
+    wherever Z1+ names every partner, which it does with ``-SP+``.
+
+    Raises:
+        ValueError: the result has no primitive paths (a run without
+            ``-SP+``), or ``ends`` does not have one entry per chain.
+    """
+    if res.paths is None:
+        raise ValueError("splitting kinks by partner needs a -SP+ run")
+    groups = groups or {}
+    atoms = [[j for j in e if j is not None] for e in ends]
+    sets = [frozenset(groups.get(j, j) for j in a) for a in atoms]
+    if len(sets) != len(res.paths):
+        raise ValueError(f"{len(sets)} chains of ends for "
+                         f"{len(res.paths)} chains of paths")
+    box = np.asarray(box, float).reshape(3)
+    out = np.zeros((len(sets), len(PARTNER_CLASSES)), int)
+    for c, path in enumerate(res.paths):
+        for row in path:
+            p = int(row[4])
+            if row[3] != 1 or p <= 0:
+                continue
+            shared = sets[c] & sets[p - 1]
+            if not shared:
+                out[c, 2] += 1
+                continue
+            d = min(np.linalg.norm(_min_image(
+                row[:3] - np.asarray(junction_pos[j], float), box))
+                for j in atoms[c] + atoms[p - 1] if groups.get(j, j) in shared)
+            out[c, 0 if d < cut else 1] += 1
+    return out
+
+
+def _min_image(d, box):
+    return d - box * np.round(d / box)
+
+
+def _by_partner(counts) -> dict:
+    return {k: float(v) for k, v in zip(PARTNER_CLASSES, counts.mean(axis=0))}
+
+
 def summarise(res: Z1Result) -> dict:
     """A result as plain numbers: whole system, per class, partner graph.
 
     The layout of ``measure_system.py``'s ``z1`` block, so earlier
-    measurements and new ones read the same.
+    measurements and new ones read the same. A result split by partner
+    (:attr:`Z1Result.by_partner`) adds ``by_partner``, the mean kinks per
+    chain of each class of :data:`PARTNER_CLASSES`, over the whole system
+    and in each chain class. ``Zmean`` stays the total.
     """
     Z = res.Z
+    split = res.by_partner if (res.by_partner is not None
+                               and len(res.by_partner) == len(Z)) else None
     out = {k: v for k, v in res.summary.items() if k != "summary_line"}
     out.update(n_chains=int(len(Z)),
                frac_zero=float((Z == 0).mean()) if len(Z) else None,
@@ -433,6 +538,8 @@ def summarise(res: Z1Result) -> dict:
                     "Zsd": float(Z[m].std()),
                     "Lpp_mean": float(res.Lpp[m].mean()),
                     "Ree_mean": float(res.Ree[m].mean())}
+                if split is not None:
+                    out["by_class"][c]["by_partner"] = _by_partner(split[m])
     if res.partners is not None:
         pairs, pdeg = partner_graph(res.partners)
         out["partner_pairs"] = len(pairs)
@@ -444,15 +551,33 @@ def summarise(res: Z1Result) -> dict:
         if res.classes is not None and len(res.classes) == len(pdeg):
             out["partner_degree_hist_bridge"] = np.bincount(
                 pdeg[res.classes == "bridge"]).tolist()
+    if split is not None and len(Z):
+        out["by_partner"] = _by_partner(split)
     return out
 
 
 def measure_system(system: EndLinkedSystem, partners: bool = True,
-                   config=None, seed: int = 0) -> tuple[dict, Z1Result]:
-    """Whole-system Z1+ of an end-linked system, split by chain class."""
-    chains, cls, _mols = export_system(system, seed=seed)
+                   config=None, seed: int = 0,
+                   amp: float = JITTER) -> tuple[dict, Z1Result]:
+    """Whole-system Z1+ of an end-linked system, split by chain class.
+
+    With ``partners`` (``-SP+``) the kinks are also split by partner
+    (:func:`split_by_partner`). A run whose output cannot be split (a
+    partner that is not a chain of the export) warns and is summarised
+    without the split, as before it existed. ``amp`` is the export's
+    jitter, kept at :data:`JITTER` except to test how a count depends on it.
+    """
+    chains, cls, mols = export_system(system, seed=seed, amp=amp)
     res = run_z1(chains, system.box, partners=partners, config=config,
                  classes=cls)
+    if res.paths is not None:
+        try:
+            res.by_partner = split_by_partner(
+                res, [system.strands[m].ends for m in mols], system.pos,
+                system.box, groups=getattr(system, "junction_of", None))
+        except (ValueError, IndexError, KeyError) as exc:
+            warnings.warn(f"Z1+ kinks not split by partner: {exc!r}",
+                          RuntimeWarning, stacklevel=2)
     return summarise(res), res
 
 
@@ -474,42 +599,95 @@ class SeedSummary:
     seen: set
     seeds: int
     first: tuple                        # (summary dict, Z1Result) of the first seed
+    #: What ``z_bridge``, ``z_bridge_sd`` and ``z_all`` count, one of
+    #: :data:`COUNTS`.
+    count: str = "total"
+    #: Every seed's :func:`summarise` dict, so another count can be read off
+    #: the same runs (:meth:`counted`).
+    summaries: list = field(default_factory=list, repr=False)
+
+    def counted(self, count: str = "total") -> tuple:
+        """``(z_bridge, z_bridge_sd, z_all)`` over the same seeds, in ``count``.
+
+        Raises:
+            ValueError: a partner class is asked and a seed's run was not
+                split by partner.
+        """
+        check_count(count)
+        zb = [counted_z(s["by_class"]["bridge"], count) for s in self.summaries
+              if (s.get("by_class") or {}).get("bridge")]
+        za = [counted_z(s, count) for s in self.summaries]
+        return (float(np.mean(zb)) if zb else None,
+                float(np.std(zb)) if zb else None, float(np.mean(za)))
+
+
+def check_count(count: str) -> str:
+    """``count`` if it is one of :data:`COUNTS`, else a ValueError naming them."""
+    if count not in COUNTS:
+        raise ValueError(f"count must be one of {', '.join(COUNTS)}, "
+                         f"not {count!r}")
+    return count
+
+
+def counted_z(summary: dict, count: str = "total") -> float:
+    """Z per chain of a :func:`summarise` dict, or of one of its classes.
+
+    Raises:
+        ValueError: a partner class is asked of a summary that was not split
+            by partner (measured before 0.4.7, without ``-SP+``, or with ends
+            that did not match Z1+'s chains).
+    """
+    if count == "total":
+        return summary["Zmean"]
+    split = summary.get("by_partner")
+    if split is None:
+        raise ValueError(f"this Z1+ result is not split by partner, so it has "
+                         f"no {count!r} count. It was measured before topon 0.4.7 or "
+                         f"without -SP+ (measure it again with -SP+), or its "
+                         f"kinks could not be split, which a warning said when "
+                         f"it was measured.")
+    return split[count]
 
 
 def measure_seeds(system: EndLinkedSystem, seeds: int = 8,
-                  config=None) -> SeedSummary:
-    """:func:`measure_system` at seeds ``0 .. seeds - 1``, summarised."""
-    zb, za, sets, first = [], [], [], None
+                  config=None, count: str = "total") -> SeedSummary:
+    """:func:`measure_system` at seeds ``0 .. seeds - 1``, summarised.
+
+    ``count`` is what ``z_bridge`` and ``z_all`` count (:data:`COUNTS`).
+    ``total``, the default, is every kink, as before 0.4.7.
+    """
+    check_count(count)
+    sums, sets, first = [], [], None
     for seed in range(max(1, int(seeds))):
         z, res = measure_system(system, config=config, seed=seed)
-        bridge = (z.get("by_class") or {}).get("bridge")
-        if bridge:
-            zb.append(bridge["Zmean"])
-        za.append(z["Zmean"])
+        sums.append(z)
         sets.append(set(partner_graph(res.partners)[0]) if res.partners is not None else set())
         if first is None:
             first = (z, res)
-    return SeedSummary(
-        z_bridge=float(np.mean(zb)) if zb else None,
-        z_bridge_sd=float(np.std(zb)) if zb else None,
-        z_all=float(np.mean(za)),
+    out = SeedSummary(
+        z_bridge=None, z_bridge_sd=None, z_all=0.0,
         robust=set.intersection(*sets) if sets else set(),
         seen=set.union(*sets) if sets else set(),
-        seeds=len(sets), first=first)
+        seeds=len(sets), first=first, count=count, summaries=sums)
+    out.z_bridge, out.z_bridge_sd, out.z_all = out.counted(count)
+    return out
 
 
 def measure_checkpoint(path, graph: bool = False, z1: bool = True,
-                       config=None, label: Optional[str] = None
-                       ) -> tuple[dict, dict]:
+                       config=None, label: Optional[str] = None,
+                       count: str = "total") -> tuple[dict, dict]:
     """Everything the validation measured on one checkpoint.
 
     Chain statistics (every bond scanned), chord statistics and orientation,
     Z1+ with partners split by class, and with ``graph`` the connectivity
     descriptors. Returns ``(record, per_chain)``: the record in the layout
     ``measure_system.py`` wrote, and the per-chain arrays (``Z``, ``cls``,
-    ``ree``, ``chord``, ``Lpp``, ``partner_degree``) for an npz. When Z1+
-    cannot run or fails, the record carries ``z1_error`` instead of ``z1``.
+    ``ree``, ``chord``, ``Lpp``, ``partner_degree``) for an npz. A ``count``
+    other than ``total`` adds that class's kinks per chain as ``Z_<count>``
+    when the run was split. When Z1+ cannot run or fails, the record carries
+    ``z1_error`` instead of ``z1``.
     """
+    check_count(count)
     from topon.analysis.descriptors import describe, spatial
 
     system = read_endlinked(path)
@@ -527,6 +705,8 @@ def measure_checkpoint(path, graph: bool = False, z1: bool = True,
             per_chain["Lpp"] = res.Lpp
             if res.partners is not None:
                 per_chain["partner_degree"] = partner_graph(res.partners)[1]
+            if count != "total" and res.by_partner is not None:
+                per_chain[f"Z_{count}"] = res.by_partner[:, PARTNER_CLASSES.index(count)]
         except (Z1PlusUnavailable, Z1PlusFailed) as exc:
             record["z1_error"] = str(exc)
     if graph:
@@ -534,8 +714,26 @@ def measure_checkpoint(path, graph: bool = False, z1: bool = True,
     return record, per_chain
 
 
-def bridge_z(record: dict) -> Optional[float]:
-    """Z per bridge from a :func:`measure_checkpoint` record, else the mean."""
+def bridge_z(record: dict, count: str = "total") -> Optional[float]:
+    """Z per bridge from a :func:`measure_checkpoint` record, else the mean.
+
+    ``count`` names what is counted, one of :data:`COUNTS`. ``"total"`` (the
+    default) is every kink Z1+ reports, as before the split existed. It
+    depends on the export's jitter (see the module doc). ``"nonsibling"``
+    counts only kinks on strands that share no junction with the kinked one,
+    and ``"junction_end"`` and ``"sibling"`` the other two classes of
+    :func:`split_by_partner`. None when the record has no Z1+ result.
+
+    Raises:
+        ValueError: ``count`` is not one of :data:`COUNTS`, or a partner
+            class is asked of a record that was not split by partner (one
+            measured before 0.4.7, or without ``-SP+``).
+    """
+    check_count(count)
     z = record.get("z1") or {}
     bridge = (z.get("by_class") or {}).get("bridge") or {}
-    return bridge.get("Zmean", z.get("Zmean"))
+    if count == "total":
+        return bridge.get("Zmean", z.get("Zmean"))
+    if not z:
+        return None
+    return counted_z(bridge or z, count)

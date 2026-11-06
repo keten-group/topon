@@ -198,17 +198,34 @@ def format_pf(hist: dict) -> str:
     return ", ".join(f"f={f}: {n}" for f, n in items)
 
 
+def _split(by_partner: dict) -> str:
+    """Z per chain by partner class, as ``junction end 0.110, ...``."""
+    return (f"junction end {_f(by_partner.get('junction_end'))}, sibling "
+            f"{_f(by_partner.get('sibling'))}, non-sibling "
+            f"{_f(by_partner.get('nonsibling'))} per chain")
+
+
 def format_z1(z: dict, indent: str = "  ") -> list:
-    """Lines for a Z1+ summary (see :func:`topon.analysis.z1plus.summarise`)."""
+    """Lines for a Z1+ summary (see :func:`topon.analysis.z1plus.summarise`).
+
+    The total comes first, as before 0.4.7. The kinks split by the strand they
+    are pinned on follow it, for the whole system and under each class.
+    """
     lines = [f"{indent}Z1+       : Z per chain {_f(z.get('Zmean'))} over "
              f"{z.get('n_chains')} chains ({_f(100 * z['frac_zero'], '.0f')} % "
              f"with none), Ne {_f(z.get('Ne_CK'), '.1f')} (classical Kuhn)"
              if z.get("frac_zero") is not None else
              f"{indent}Z1+       : Z per chain {_f(z.get('Zmean'))}"]
+    lines.append(f"{indent}Z1+ split : " + (
+        _split(z["by_partner"]) if z.get("by_partner") else
+        "not split by partner (no -SP+ paths, or the strands' ends did not "
+        "match Z1+'s chains)"))
     for cls, rec in (z.get("by_class") or {}).items():
         lines.append(f"{indent}  {cls:<9s}: {rec['n']:>6d} chains, Z "
                      f"{_f(rec['Zmean'])}, {_f(100 * rec['frac_zero'], '.0f')} "
                      f"% with none")
+        if rec.get("by_partner"):
+            lines.append(f"{indent}  {'':<9s}  {_split(rec['by_partner'])}")
     if z.get("partner_pairs") is not None:
         lines.append(f"{indent}  partners : {z['partner_pairs']} entangled "
                      f"chain pairs, {_f(z.get('partner_degree_mean'))} "

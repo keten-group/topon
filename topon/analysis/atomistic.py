@@ -282,7 +282,8 @@ def read_atomistic(path, strands=None) -> AtomisticSystem:
     return AtomisticSystem(
         path=path, box=box, lo=lo, types=types, mol=mol, pos=pos, bonds=bonds,
         adj=adj, junctions=junctions, strands=strand_map, graph=G,
-        velocities=velocities, masses=masses, bond_types=bond_types,
+        velocities=velocities, junction_of=node_of, masses=masses,
+        bond_types=bond_types,
         bond_r0=bond_r0, backbone_bonds=backbone_bonds, record=record,
         run_dir=run_dir)
 

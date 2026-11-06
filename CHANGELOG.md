@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.7
+
+### Entanglement
+
+- Z1+ kinks are counted by partner, the strand each kink is pinned on. A `junction_end` kink is on a sibling (a
+  strand on the same junction) within 1 sigma of the junction the two share, which is an artifact of the export's
+  junction jitter. A `sibling` kink is on a sibling farther out, and a `nonsibling` kink is on a strand that shares no
+  junction with the kinked one. The three add up to Z1+'s own Z, the `total`, which stays the default everywhere, so
+  earlier numbers read the same (`topon.analysis.z1plus.split_by_partner`, `COUNTS`, `bridge_z(record, count=...)`).
+- `topon analyze --z1` and `topon inspect` print the split on the line after the total and under each class, and the
+  JSON report carries it under `z1.by_partner` and `z1.by_class.<class>.by_partner`.
+- `conformation.entanglement.count` says which kinks a Z target counts. The bead-spring controller (`RoundPlan.count`),
+  the atomistic coil-radius search, `relax_to_target`, `topon generate --verify --relaxed`, `measure_seeds`, the
+  atomistic protocol (`AtomisticRun(z1_count=...)`) and `topon track --count` read it. The relaxation gates, the
+  calibration rows and the floors stay totals.
+- `conformation.walk_clearance` (walk route only, off by default) redraws every bridge and dangling strand of a walk
+  build so that each step keeps clear of every junction, every bead already drawn and the strand itself, for dense
+  builds that go through the hard push-off. `walk_tries` sets the draws per step, `bridging_walk` gains `self_avoid`,
+  and `guard_report()["walk_clearance"]` reports the redraw.
+
+### Documentation
+
+- `docs/ENTANGLEMENT_TARGETS.md` defines an entanglement level as the non-sibling count per bridge at a stated state
+  and export jitter, with the total and sibling counts beside it. It shows how the counts move with the jitter, how to
+  name the count of a target, and when to use the clear walk. The floor at a packed final state is corrected, since
+  most of the kinks that packing adds to an unentangled network are junction-end and sibling kinks.
+- `docs/USAGE.md` describes the counts (§3.6), `entanglement.count`, `walk_clearance`, `walk_tries` and
+  `topon track --count`.
+
 ## 0.4.6
 
 ### Documentation

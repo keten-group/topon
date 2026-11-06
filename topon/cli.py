@@ -917,8 +917,13 @@ def _study_dir(path: Path) -> Path:
               help="Z1+ binary (overrides analysis.z1plus.executable)")
 @click.option("--config", "config_path", type=click.Path(exists=True), default=None,
               help="topon config to read analysis.z1plus from")
+@click.option("--count", type=click.Choice(["total", "junction_end", "sibling", "nonsibling"]),
+              default="total", show_default=True,
+              help="Which kinks Z per bridge counts: every kink, or only those on "
+                   "strands of one partner class (nonsibling: strands that share "
+                   "no junction with the kinked one)")
 def track(run_dirs, output, seeds, energies, lmp, omp, title, labels, z1_exe,
-          config_path):
+          config_path, count):
     """A tracker page for atomistic relaxation runs.
 
     RUN_DIRS: one or more study folders of the atomistic route (each with
@@ -953,7 +958,7 @@ def track(run_dirs, output, seeds, energies, lmp, omp, title, labels, z1_exe,
         click.echo(f"reading {study}" + (" (with energies)" if energies else ""), err=True)
         try:
             runs.append(track_run(study, label=label, seeds=seeds, z1_config=z1_cfg,
-                                  energies=energies, lmp=lmp, omp=omp))
+                                  energies=energies, lmp=lmp, omp=omp, count=count))
         except (FileNotFoundError, KeyError, ValueError) as e:
             click.echo(f"Error in {study}: {e}", err=True)
             sys.exit(1)

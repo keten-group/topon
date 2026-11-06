@@ -524,6 +524,10 @@ class Measurement:
     descriptors: Descriptors
     z_per_strand: dict = field(default_factory=dict)   # class -> Z array
     chords: Optional[np.ndarray] = None
+    #: class -> (chains, 3) kinks by partner, in the column order of
+    #: :data:`topon.analysis.z1plus.PARTNER_CLASSES`, when Z1+ ran
+    #: with its kinks split.
+    z_split_per_strand: dict = field(default_factory=dict)
 
 
 def _hist(values) -> dict:
@@ -678,6 +682,7 @@ def measure(ref: Reference, heavy: bool = True, z1: Optional[bool] = None,
                 rec["spatial"][key] = stats[key]
 
     zmap: dict = {}
+    zsplit: dict = {}
     if not endlinked:
         if z1:
             raise RuntimeError("Z1+ is read per strand class of an end-linked "
@@ -694,6 +699,8 @@ def measure(ref: Reference, heavy: bool = True, z1: Optional[bool] = None,
                 rec["z1"] = zsum
                 for cls in set(res.classes.tolist()):
                     zmap[cls] = res.Z[res.classes == cls]
+                    if res.by_partner is not None:
+                        zsplit[cls] = res.by_partner[res.classes == cls]
             except (Z1PlusUnavailable, Z1PlusFailed) as exc:
                 if z1:
                     raise
@@ -706,7 +713,7 @@ def measure(ref: Reference, heavy: bool = True, z1: Optional[bool] = None,
         rec["z1_note"] = ("no Z1+ target: a graph file has no chain paths "
                           "to measure")
     return Measurement(record=rec, descriptors=desc, z_per_strand=zmap,
-                       chords=chords)
+                       chords=chords, z_split_per_strand=zsplit)
 
 
 def z_target(meas: Measurement, cls: str = "bridge") -> Optional[dict]:

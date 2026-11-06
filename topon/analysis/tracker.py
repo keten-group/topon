@@ -156,14 +156,21 @@ def _q(x) -> list:
 
 def track_run(run_dir, label: Optional[str] = None, seeds: int = 8, z1_config=None,
               energies: bool = True, lmp: str = "lmp", omp: int = 1,
-              sim: str = "04_Simulation") -> dict:
-    """Everything the tracker page shows for one run, as plain data."""
+              sim: str = "04_Simulation", count: str = "total") -> dict:
+    """Everything the tracker page shows for one run, as plain data.
+
+    ``count`` is which kinks Z per bridge counts
+    (:data:`topon.analysis.z1plus.COUNTS`). ``total``, the default, is every
+    kink, as before 0.4.7.
+    """
     from topon.analysis.atomistic import read_atomistic
     from topon.analysis.crossings import designed_pairs
     from topon.analysis.z1plus import (
-        Z1PlusFailed, Z1PlusUnavailable, export_system, measure_seeds, z1plus_available)
+        PARTNER_CLASSES, Z1PlusFailed, Z1PlusUnavailable, check_count, export_system,
+        measure_seeds, z1plus_available)
     from topon.simulation.protocols.atomistic import measure_run
 
+    check_count(count)
     run_dir = Path(run_dir)
     gates = measure_run(run_dir, z1=False, sim=sim)
     record = json.loads((run_dir / "manifest.json").read_text())["stages"]["strands"]
@@ -185,13 +192,15 @@ def track_run(run_dir, label: Optional[str] = None, seeds: int = 8, z1_config=No
                  "build_pairs_kept": None, "build_pairs": None}
         if use_z1:
             try:
-                m = measure_seeds(system, seeds=seeds, config=z1_config)
+                m = measure_seeds(system, seeds=seeds, config=z1_config, count=count)
                 _z, res = m.first
                 paths = align_paths(chains, res.paths or [], system.box)
+                zchain = (res.Z if count == "total" else
+                          res.by_partner[:, PARTNER_CLASSES.index(count)])
                 entry.update(
                     z_mean=None if m.z_bridge is None else round(m.z_bridge, 4),
                     z_sd=None if m.z_bridge_sd is None else round(m.z_bridge_sd, 4),
-                    zchain=res.Z.tolist(),
+                    zchain=zchain.tolist(),
                     pp=[_q(p[:, :3]) for p in paths],
                     kinks=[[c, int(row[4])] + _q(row[:3])
                            for c, p in enumerate(paths, start=1) for row in p if row[3] == 1])
@@ -220,7 +229,7 @@ def track_run(run_dir, label: Optional[str] = None, seeds: int = 8, z1_config=No
             "designed": [[k, l] for (k, l) in sorted(designed_pairs(record))],
             "passed": bool(gates.passed), "crossings": gates.crossings,
             "seconds": lammps_seconds(run_dir, sim), "seeds": int(seeds) if use_z1 else 0,
-            "stages": stages}
+            "stages": stages, **({} if count == "total" else {"count": count})}
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +242,22 @@ def render_tracker(runs: Sequence[dict], title: str = "topon Relaxation Tracker"
 
     ``fragment`` leaves out the document skeleton, for a host that adds its own.
     """
+    from topon.analysis.z1plus import COUNT_WORDS
+
     template = TEMPLATE.read_text(encoding="utf-8")
     head, body = template.split("<!-- body -->", 1)
+    counts = {r.get("count", "total") for r in runs}
+    if len(counts) > 1:
+        raise ValueError(f"the runs count Z differently ({', '.join(sorted(counts))}). "
+                         f"Put them on one page only when they count the same kinks")
+    count = counts.pop() if counts else "total"
+    if count != "total":
+        # a page of totals is the template as it was before 0.4.7
+        words = COUNT_WORDS[count]
+        body = (body.replace("Z per bridge", f"Z per bridge ({words})")
+                .replace("Z/bridge", f"Z/bridge ({words})")
+                .replace('<span id="seeds-note">',
+                         f'<span id="seeds-note">Z counts {words} kinks only. '))
     data = json.dumps(list(runs), separators=(",", ":")).replace("</", "<\\/")
     seeds = max((r.get("seeds") or 0) for r in runs) if runs else 0
     head = head.replace("__TITLE__", title)

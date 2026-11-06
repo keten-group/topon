@@ -1951,9 +1951,13 @@ class Pipeline:
         Read on the points the gates read (one atom per repeat unit, between
         the two junctions; :func:`topon.analysis.z1plus.export_system`), with
         the junctions jittered as the export does, averaged over ``seeds``.
+        It counts the kinks ``conformation.entanglement.count`` names: every
+        kink by default, or one partner class, each strand's ends
+        taken as the junctions of its edge and each end at its path's end.
         Returns ``measure(paths) -> float``.
         """
-        from topon.analysis.z1plus import (Z1PlusFailed, jitter_ends, run_z1,
+        from topon.analysis.z1plus import (PARTNER_CLASSES, Z1PlusFailed,
+                                           jitter_ends, run_z1, split_by_partner,
                                            why_unavailable)
 
         why = why_unavailable()
@@ -1975,13 +1979,29 @@ class Pipeline:
             rows.append(idx)
             cls.append(spec.cls)
         bridge = np.array([c == "bridge" for c in cls])
+        count = self.config.conformation.entanglement.count
+        # a strand runs from the node of edge[0] to that of edge[1], and an
+        # end on an end cap is a free end, as the strand record has it
+        cap = getattr(self._builder, "node_is_end_cap", None) or {}
+        ends = [tuple(None if cap.get(spec.edge[i]) else (c, i) for i in (0, 1))
+                for c, spec in enumerate(specs)]
+        groups = {(c, i): spec.edge[i] for c, spec in enumerate(specs) for i in (0, 1)}
+
+        def counted(chains, k):
+            if count == "total":
+                return run_z1(jitter_ends(chains, k), box, partners=False).Z
+            res = run_z1(jitter_ends(chains, k), box, partners=True)
+            at = {(c, i): ch[0] if i == 0 else ch[-1]
+                  for c, ch in enumerate(chains) for i in (0, 1)}
+            return split_by_partner(res, ends, at, box, groups=groups)[
+                :, PARTNER_CLASSES.index(count)]
 
         def measure(paths) -> float:
             chains = [np.asarray(p, float)[r] for p, r in zip(paths, rows)]
             zs, k, why = [], 0, None
             while len(zs) < seeds and k < 3 * seeds:
                 try:
-                    z = run_z1(jitter_ends(chains, k), box, partners=False).Z
+                    z = counted(chains, k)
                     zs.append(float(np.mean(z[bridge])) if bridge.any() else float(np.mean(z)))
                 except Z1PlusFailed as exc:
                     why = exc
@@ -2006,6 +2026,7 @@ class Pipeline:
         from topon.conformation.atomistic import coil_radius_for, draw_network
 
         ctl = self.config.conformation.entanglement.controller
+        count = self.config.conformation.entanglement.count
         search_meter = self._z_meter(specs, box, mol, seeds=2)
         check_meter = self._z_meter(specs, box, mol, seeds=4)
 
@@ -2028,7 +2049,8 @@ class Pipeline:
                            "z_settled": round(z, 4)})
             print(f"  Z target {target:g}: coil radius {found.radius:.2f} A "
                   f"({found.status}, {len(found.trace)} draws), Z1+ per bridge "
-                  f"{found.z:.3f} drawn, {z:.3f} settled")
+                  + ("" if count == "total" else f"({count}) ")
+                  + f"{found.z:.3f} drawn, {z:.3f} settled")
             if (abs(z - target) <= close * target
                     or found.status in ("floor", "ceiling")):
                 break
@@ -2039,12 +2061,15 @@ class Pipeline:
             import warnings as _warnings
             _warnings.warn(
                 f"target_Z {target:g}: the settled build reads "
-                f"{final['z_settled']:.3f} per bridge at coil radius "
+                f"{final['z_settled']:.3f} per bridge"
+                + ("" if count == "total" else f" ({count})")
+                + f" at coil radius "
                 f"{final['radius']:.2f} A ({final['status']}), outside the "
                 f"tolerance {ctl.tolerance:g}", RuntimeWarning, stacklevel=2)
         return coords, report, {"target": target, "radius": final["radius"],
                                 "z_settled": final["z_settled"], "met": bool(met),
-                                "tolerance": ctl.tolerance, "rounds": rounds}
+                                "tolerance": ctl.tolerance, "rounds": rounds,
+                                **({} if count == "total" else {"count": count})}
 
     def _record_defects(self) -> None:
         """Put the defects stage's record in the run manifest.

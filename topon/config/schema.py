@@ -1041,6 +1041,20 @@ class EntanglementTargetConfig(BaseModel):
             "itself the thing being matched."
         ),
     )
+    count: Literal["total", "junction_end", "sibling", "nonsibling"] = Field(
+        default="total",
+        description=(
+            "Which kinks target_Z and target_hist count. 'total' is "
+            "every kink Z1+ reports, as before 0.4.7, and it depends on the "
+            "export's junction jitter: a strand's path can bend round a "
+            "sibling's copy of their shared junction. 'nonsibling' counts "
+            "only kinks on strands that share no junction with the kinked "
+            "one, which the jitter barely moves. 'junction_end' and "
+            "'sibling' are the other two classes "
+            "(topon.analysis.z1plus.split_by_partner). The relaxation gates "
+            "stay on the total."
+        ),
+    )
     target_hist: Optional[list[float]] = Field(
         default=None,
         description=(
@@ -1319,6 +1333,32 @@ class ConformationConfig(BaseModel):
             "loops is drawn as beside a ring."
         ),
     )
+    walk_clearance: Optional[float] = Field(
+        default=None, gt=0,
+        description=(
+            "Walk route only. Once the build is drawn, redraw every "
+            "bridge and dangling strand in turn between its own ends as a "
+            "walk whose every step stays this far, in sigma, from every "
+            "junction, every bead already drawn and the strand's own beads "
+            "but the one it steps from. Each step takes the first of "
+            "walk_tries draws that clears and the roomiest where none does "
+            "(guard_report()['walk_clearance']). Loops and sol chains are "
+            "kept as drawn. It is the walk for a dense build that goes "
+            "through the hard push-off, where a plain walk can leave bonds "
+            "stretched past the 1.2 sigma gate. The redraw takes the "
+            "random stream where the plain build leaves it and repairs "
+            "nothing afterwards, so the gate reports what a step with no "
+            "room left. Not with junction_shell_spacing. null draws the walk "
+            "as before."
+        ),
+    )
+    walk_tries: int = Field(
+        default=64, ge=1,
+        description=(
+            "With walk_clearance: how many draws each step takes before it "
+            "settles for the roomiest."
+        ),
+    )
     entanglement: EntanglementTargetConfig = Field(
         default_factory=EntanglementTargetConfig
     )
@@ -1392,6 +1432,21 @@ class ConformationConfig(BaseModel):
                 "knob expressed two ways (coil ratio scales as rho^(1/3)), and "
                 "two values for one knob cannot both be honoured"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _clear_walk_is_a_walk(self):
+        if self.walk_clearance is None:
+            return self
+        if self.placement != "walk":
+            raise ValueError(
+                f"walk_clearance redraws the strands of the walk route, but "
+                f"placement is {self.placement!r}")
+        if self.junction_shell_spacing is not None:
+            raise ValueError(
+                "walk_clearance redraws every walked strand, which would undo "
+                "the junction shells. Set one of walk_clearance and "
+                "junction_shell_spacing")
         return self
 
 # =============================================================================

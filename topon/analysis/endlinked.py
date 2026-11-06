@@ -78,6 +78,10 @@ class EndLinkedSystem:
     strands: dict                      # molecule id -> Strand, sorted by id
     graph: nx.MultiGraph
     velocities: dict = field(default_factory=dict)
+    #: End atom -> the junction it belongs to, where one junction has several
+    #: atoms that strands end on (a POSS cage). Empty in the end-linked
+    #: convention, where every junction is one atom.
+    junction_of: dict = field(default_factory=dict)
 
     @property
     def n_atoms(self) -> int:

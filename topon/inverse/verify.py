@@ -631,12 +631,27 @@ def _relaxed(path, config, ref_meas, z1_config, say, built=None) -> dict:
     if hist:
         out["histogram"] = {**hist, "p": out["z_by_class"]["bridge"]["p"]}
     ent = (config.get("conformation") or {}).get("entanglement") or {}
-    if zb is not None and ent.get("target_hist"):
-        out["target_hist"] = hist_ks(zb, ent["target_hist"])
-    if zb is not None and ent.get("target_Z"):
+    # the config's targets are in its count, and the comparisons with
+    # the reference above stay on the total
+    count = ent.get("count") or "total"
+    zt = zb
+    if (zb is not None and count != "total"
+            and (ent.get("target_Z") or ent.get("target_hist"))):
+        from topon.analysis.z1plus import PARTNER_CLASSES
+
+        split = m.z_split_per_strand.get("bridge")
+        if split is None:
+            raise ValueError(f"{path}: the config's target counts {count} "
+                             f"kinks and Z1+'s kinks on it were not split by "
+                             f"partner")
+        zt = split[:, PARTNER_CLASSES.index(count)]
+    if zt is not None and ent.get("target_hist"):
+        out["target_hist"] = hist_ks(zt, ent["target_hist"])
+    if zt is not None and ent.get("target_Z"):
         tz = float(ent["target_Z"])
-        out["target_Z"] = {"target": tz, "measured": float(np.mean(zb)),
-                           "relative_gap": float((np.mean(zb) - tz) / tz)}
+        out["target_Z"] = {"target": tz, "measured": float(np.mean(zt)),
+                           "relative_gap": float((np.mean(zt) - tz) / tz),
+                           **({} if count == "total" else {"count": count})}
     out["partners"] = _partners(rec.get("z1") or {}, rrec.get("z1") or {})
     out["acceptance"] = _acceptance(
         out["z_by_class"].get("bridge"),
@@ -677,11 +692,14 @@ def _flags(report, rrec, config) -> list:
         flags.append({"level": "note", "what": "reference", "detail": note})
     rel = report.get("relaxed")
     if rel is None:
-        target = ((config.get("conformation") or {}).get("entanglement") or {}).get("target_Z")
+        ent = (config.get("conformation") or {}).get("entanglement") or {}
+        target = ent.get("target_Z")
+        count = ent.get("count") or "total"
         flags.append({"level": "note", "what": "entanglement not verified",
                       "detail": "Z1+ needs a relaxed system, which needs MD; "
-                                + (f"the target is {target} per bridge at the "
-                                   f"final state. " if target else "")
+                                + (f"the target is {target} per bridge"
+                                   + ("" if count == "total" else f" ({count})")
+                                   + " at the final state. " if target else "")
                                 + "Pass --relaxed <final data file> to "
                                   "measure one."})
     else:
@@ -934,8 +952,9 @@ def _format_relaxed(rel: dict, rsp: dict) -> list:
             f"{_f(pp['per_bridge']['reference'])}")
     tz = rel.get("target_Z")
     if tz:
-        lines.append(f"    target Z  : {tz['measured']:.3f} per bridge against "
-                     f"the config's target_Z {tz['target']:.3f} "
+        lines.append(f"    target Z  : {tz['measured']:.3f} per bridge"
+                     + (f" ({tz['count']})" if tz.get("count") else "")
+                     + f" against the config's target_Z {tz['target']:.3f} "
                      f"({100 * tz['relative_gap']:+.1f} %)")
     rs = rel.get("spatial") or {}
     if rs.get("chord_mean") is not None and rsp.get("chord_mean"):

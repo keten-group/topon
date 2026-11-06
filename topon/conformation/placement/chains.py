@@ -288,6 +288,7 @@ class Placement:
     settle: dict = field(default_factory=dict)
     chord_triples: dict = field(default_factory=dict)
     loop_shape: str = "ring"
+    walk_clearance: dict = field(default_factory=dict)
 
     # ---------------- reporting ----------------
 
@@ -363,6 +364,10 @@ class Placement:
         drawn = [s for s in self.strands if s.plan.kind != "free"]
         want = sum(s.plan.n_bonds * self.bond for s in drawn)
         have = sum(s.contour for s in drawn)
+        # Only a build that asked for the clear walk carries its key, so the
+        # report of every other build reads as it did before 0.4.7.
+        clear = ({"walk_clearance": dict(self.walk_clearance)}
+                 if self.walk_clearance else {})
         return {
             "strands": len(self.strands),
             "beads": self.n_beads,
@@ -384,6 +389,7 @@ class Placement:
             "settle": dict(self.settle),
             "coincidence": dict(self.coincidence),
             "loops": self.loop_report(),
+            **clear,
             "failed_examples": [
                 {"key": list(s.plan.key), "kind": s.plan.kind,
                  "why": s.failures(self.limits),
@@ -677,6 +683,92 @@ def _draw(kind_of_path, c0, c1, n_bonds, bond, rng, waves, limits, jitter,
                          jitter=jitter, side=side)
 
 
+#: How many draws each step of a clear walk takes before it settles for the
+#: roomiest (``place(walk_tries=...)``). The same 64 as
+#: :func:`~topon.conformation.paths.bridging_walk` with ``avoid``.
+WALK_TRIES = 64
+
+
+def _step_gaps(p, room) -> np.ndarray:
+    """The room each interior bead of a clear walk had when it was drawn.
+
+    The distance to the nearest bead of ``room`` and to the nearest bead of
+    the walk before the one it stepped from, which is the test the walk ran
+    on it. A bead below the clearance is a step where no draw cleared.
+    """
+    q = p[1:-1]
+    gap = room.near(q)
+    d = q[:, None] - p[None, :-1]
+    if room.box is not None:
+        d -= room.box * np.round(d / room.box)
+    own = np.linalg.norm(d, axis=2)
+    # bead i of p (row i - 1 here) was tested against beads 0 .. i - 2
+    own[np.triu_indices(len(q), 0, len(p) - 1)] = np.inf
+    return np.minimum(gap, own.min(axis=1)) if len(q) else gap
+
+
+def _redraw_clear(placed, box, bond: float, clearance: float,
+                  tries: int, rng) -> dict:
+    """Redraw every walked strand clear of the build, in place.
+
+    A walk drawn on its own lands beads on other strands and on itself. At
+    melt-like build densities a few of those contacts survive the hard
+    push-off as bonds stretched past 1.2 sigma. Here every bridge and
+    dangling strand is drawn again, in strand order, between the same two ends, with
+    :func:`~topon.conformation.paths.bridging_walk` and both ``avoid`` and
+    ``self_avoid``: each step keeps the first of ``tries`` draws that stays
+    ``clearance`` from every junction, every bead already redrawn or kept,
+    and the strand's own beads but the one it steps from, and the roomiest
+    draw where none clears. Loops and sol chains are kept as drawn and are
+    in the way from the start.
+
+    The redraw takes ``rng`` where the plain build left it, so a build with
+    it is the plain build followed by the redraw, bead for bead.
+    For that reason nothing repairs a redrawn strand afterwards: the plain
+    walk's two repairs (an overlap under the route's floor, a last bond
+    under ``min_bond``) are not applied, and the gate reports what a step
+    that found no room left behind. Returns the report
+    ``guard_report()["walk_clearance"]`` carries.
+    """
+    L = np.asarray(box, float).reshape(3)
+    # The points that do not move: each junction where the first strand to
+    # reach it put it, and the free end of each dangling strand.
+    fixed: dict = {}
+    for k, s in enumerate(placed):
+        if s.plan.kind == "free":
+            continue
+        fixed.setdefault(("node", s.plan.u), np.asarray(s.path[0], float))
+        if s.plan.kind == "bridge":
+            fixed.setdefault(("node", s.plan.v),
+                             np.asarray(s.path[-1], float))
+        elif s.plan.kind == "dangling":
+            fixed[("end", k)] = np.asarray(s.path[-1], float)
+    kept = [np.vstack(list(fixed.values()))] if fixed else []
+    kept += [s.beads() for s in placed if not s.plan.chorded]
+
+    gaps = []
+    for s in placed:
+        if not s.plan.chorded:
+            continue
+        room = Clearance(np.vstack(kept) if kept else np.zeros((0, 3)), L,
+                         radius=clearance)
+        p = bridging_walk(np.asarray(s.path[0], float),
+                          np.asarray(s.path[-1], float), len(s.path) - 1,
+                          bond, rng, avoid=room, tries=tries, self_avoid=True)
+        gaps.append(_step_gaps(p, room))
+        s.path = p
+        s.routine = "clear_walk"
+        kept.append(p[1:-1])
+
+    g = np.concatenate(gaps) if gaps else np.zeros(0)
+    return {"clearance": float(clearance), "tries": int(tries),
+            "strands": len(gaps), "steps": int(len(g)),
+            "short_steps": int((g < clearance).sum()),
+            "short_strands": int(sum(bool((x < clearance).any())
+                                     for x in gaps)),
+            "gap_min": round(float(g.min()), 6) if len(g) else None}
+
+
 def limits_from(config, placement: str) -> GuardLimits:
     """The gate a :class:`~topon.config.schema.ConformationConfig` asks for.
 
@@ -926,7 +1018,9 @@ def place(graph, dp: int, placement: str = "meander",
           junction_jitter: float = 0.0,
           settle_clearance: Optional[float] = None,
           parallel_strands: str = "opposite",
-          loop_shape: str = "ring") -> Placement:
+          loop_shape: str = "ring",
+          walk_clearance: Optional[float] = None,
+          walk_tries: int = WALK_TRIES) -> Placement:
     """Draw every strand of ``graph`` at the build state.
 
     ``placement`` is one of ``straight`` (the chord with a jitter), ``meander``
@@ -988,6 +1082,18 @@ def place(graph, dp: int, placement: str = "meander",
     drawing before 0.4.5. A graph with no shared chord draws the same either
     way.
 
+    ``walk_clearance`` (walk route only) redraws every bridge and
+    dangling strand once the build is drawn, in strand order and between
+    the same ends, as a walk that keeps each step that far from every
+    junction, every bead already drawn and its own beads but the one it
+    steps from, taking the first of ``walk_tries`` draws that clears and the
+    roomiest where none does (:func:`_redraw_clear`;
+    ``guard_report()["walk_clearance"]``). It is the walk for a dense build
+    that goes through the hard push-off, where a plain walk can leave
+    bonds past the 1.2 sigma gate. It takes the random stream where the plain build leaves it,
+    so it cannot be combined with ``junction_shell_spacing``, whose shells
+    it would redraw. ``None`` (the default) draws the build as before.
+
     Returns a :class:`Placement`. It is *not* checked for you -- read
     ``Placement.ok()`` or ``guard_report()`` and decide. The gate is advisory
     here on purpose: a caller sweeping build densities wants the failures
@@ -1005,6 +1111,22 @@ def place(graph, dp: int, placement: str = "meander",
         raise ValueError(
             f"unknown loop_shape {loop_shape!r}; expected one of "
             f"{', '.join(LOOP_SHAPES)}")
+    if walk_clearance is not None:
+        if not walk_clearance > 0:
+            raise ValueError(
+                f"walk_clearance must be above 0; got {walk_clearance!r}")
+        if placement != "walk":
+            raise ValueError(
+                f"walk_clearance redraws the strands of the walk route, but "
+                f"placement is {placement!r}")
+        if junction_shell_spacing:
+            raise ValueError(
+                "walk_clearance redraws every walked strand, which would "
+                "undo the junction shells. Give one of walk_clearance and "
+                "junction_shell_spacing")
+        if int(walk_tries) < 1:
+            raise ValueError(
+                f"walk_tries must be at least 1; got {walk_tries!r}")
     if (coil_ratio is None) == (build_density is None):
         raise ValueError(
             "give exactly one of coil_ratio and build_density: they are the "
@@ -1135,6 +1257,12 @@ def place(graph, dp: int, placement: str = "meander",
                                        min_bond=limits.min_bond)
                    if coincident else {})
 
+    # Last of all that draws, so the plain build takes the stream it always
+    # took and the redraw starts where it ends.
+    clear_report = (_redraw_clear(placed, box_sigma, bond,
+                                  float(walk_clearance), int(walk_tries), rng)
+                    if walk_clearance is not None else {})
+
     for s in placed:
         s.measure()
 
@@ -1147,7 +1275,7 @@ def place(graph, dp: int, placement: str = "meander",
                    junction_shells=junction_shells,
                    junction_jitter=jitter_report,
                    chord_triples=chord_triples(placed, box_sigma),
-                   loop_shape=loop_shape)
+                   loop_shape=loop_shape, walk_clearance=clear_report)
     if settle_clearance:
         settle_placement(pl, float(settle_clearance), rng)
     else:

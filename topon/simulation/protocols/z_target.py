@@ -34,6 +34,11 @@ four seeds of a DP-30 atomistic network scatters by 2-3 % (the bead-spring
 default of 15 % is the scatter of a 95 000-bead build). Nothing is looked
 up: every correction is measured on the network being built.
 
+``conformation.entanglement.count`` says which kinks the target counts:
+every kink by default, or one partner class, such as ``nonsibling``.
+The build search and the deck's readings are then in that count, and the
+deck's gates stay on the total.
+
 The runner is passed in, so the loop is testable without LAMMPS: it takes
 the run directory and returns the readings. The default runs the atomistic
 deck with its gates (:class:`~topon.simulation.protocols.atomistic.AtomisticRun`).
@@ -83,6 +88,8 @@ class RelaxedTarget:
     tolerance: float
     met: bool
     rounds: list = field(default_factory=list)
+    #: Which kinks the target and every reading count.
+    count: str = "total"
 
     @property
     def run_dir(self) -> Optional[str]:
@@ -95,19 +102,23 @@ class RelaxedTarget:
 
     def as_dict(self) -> dict:
         return {"target": self.target, "tolerance": self.tolerance, "met": self.met,
-                "run_dir": self.run_dir, "rounds": [asdict(r) for r in self.rounds]}
+                "run_dir": self.run_dir, "rounds": [asdict(r) for r in self.rounds],
+                **({} if self.count == "total" else {"count": self.count})}
 
 
 def deck_runner(omp: int = 4, executable: str = "lmp", z1_seeds: int = 4,
-                verbose: bool = True) -> Callable:
-    """Run the atomistic deck with its gates; returns ``{tag: Z, "passed": bool}``."""
+                verbose: bool = True, count: str = "total") -> Callable:
+    """Run the atomistic deck with its gates; returns ``{tag: Z, "passed": bool}``.
+
+    Z is per bridge in ``count``. The gates read the total.
+    """
     from topon.simulation.protocols.atomistic import AtomisticRun
 
     def run(run_dir) -> dict:
         r = AtomisticRun(run_dir, executable=executable, omp=omp, z1=True,
-                         z1_seeds=z1_seeds, stop_on_fail=False)
+                         z1_seeds=z1_seeds, stop_on_fail=False, z1_count=count)
         report = r.run(verbose=verbose)
-        out = {tag: cp.z_bridge for tag, cp in r.checkpoints.items()}
+        out = {tag: cp.reading() for tag, cp in r.checkpoints.items()}
         out["passed"] = bool(report.passed)
         return out
 
@@ -155,7 +166,8 @@ def relax_to_target(config: dict, raw_config: Optional[dict] = None, *,
     ``max_rounds``, ``tolerance`` to ``controller.tolerance`` when the config
     sets it and :data:`TOLERANCE` otherwise; ``runner(run_dir)`` returns
     ``{checkpoint tag: Z per bridge, "passed": bool}`` and defaults to
-    :func:`deck_runner`.
+    :func:`deck_runner` in the config's ``entanglement.count``. A runner
+    passed in has to read that count itself.
     """
     from topon.config.schema import ToponConfig
     from topon.core.manifest import read_manifest, record_stage
@@ -173,8 +185,10 @@ def relax_to_target(config: dict, raw_config: Optional[dict] = None, *,
         tolerance = (float(ent.controller.tolerance)
                      if "tolerance" in ent.controller.model_fields_set else TOLERANCE)
     rounds_max = int(max_rounds or ent.controller.max_rounds)
-    runner = runner or deck_runner(verbose=verbose)
-    result = RelaxedTarget(target=target, tolerance=float(tolerance), met=False)
+    count = ent.count
+    runner = runner or deck_runner(verbose=verbose, count=count)
+    result = RelaxedTarget(target=target, tolerance=float(tolerance), met=False,
+                           count=count)
 
     for k in range(1, rounds_max + 1):
         radius = next_radius(result.rounds, target) if k >= 3 else None
@@ -182,6 +196,13 @@ def relax_to_target(config: dict, raw_config: Optional[dict] = None, *,
             aim = target
         elif radius is None:
             last = result.rounds[-1]
+            if last.z_relaxed <= 0:
+                # a network that kept none of its build's kinks in this count
+                # says nothing about where to aim the next build
+                if verbose:
+                    print(f"  stopped: round {k - 1} reads 0 after the NVT stage, "
+                          f"so what it kept cannot aim round {k}", flush=True)
+                break
             aim = target / max(last.z_relaxed / last.z_build, 1e-3)
         cfg = copy.deepcopy(config)
         conf = cfg.setdefault("conformation", {})
@@ -219,6 +240,9 @@ def relax_to_target(config: dict, raw_config: Optional[dict] = None, *,
             print(f"  round {k}: {how} (radius {rnd.radius:.2f} A), build "
                   f"{rnd.z_build}, relaxed {rnd.z_relaxed} (NPT {rnd.z_npt})", flush=True)
         if rnd.z_relaxed is None or not rnd.z_build:
+            if verbose and rnd.z_relaxed is not None:
+                print(f"  stopped: the build reads {rnd.z_build} in this count, so "
+                      f"what the relaxation keeps of it cannot be read", flush=True)
             break
         if abs(rnd.z_relaxed - target) <= tolerance * target:
             result.met = True
@@ -234,7 +258,9 @@ def relax_to_target(config: dict, raw_config: Optional[dict] = None, *,
         if verbose:
             print(f"  (could not record the loop in the manifest: {exc})")
     if verbose:
-        print(f"  target_Z {target:g}: {'met' if result.met else 'not met'} within "
+        print(f"  target_Z {target:g}"
+              + ("" if count == "total" else f" ({count})")
+              + f": {'met' if result.met else 'not met'} within "
               f"{tolerance:.0%} after {len(result.rounds)} round(s), relaxed "
               f"{result.z_relaxed} in {result.run_dir}", flush=True)
     return result

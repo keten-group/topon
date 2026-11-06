@@ -619,16 +619,22 @@ def solve_actuator(measured: Sequence[tuple[float, float]], target_z: float,
     table's) anchored on that point, which is a secant step with a borrowed
     slope. ``bounds`` clamps the answer, because the arithmetic will happily
     ask for a build density of 0.002 when the measurement it is extrapolating
-    from is flat.
+    from is flat. A round that read 0, which a partner count can, is
+    on no power law, so it anchors nothing.
     """
     note: dict = {"points": [[float(x), float(z)] for x, z in measured]}
     fit = _power_law(measured)
+    above = [(x, z) for x, z in measured if z > 0]
     if fit is not None:
         A, b = fit
         note["exponent"] = round(b, 4)
         note["from"] = "measured"
+    elif measured and fallback_exponent and not above:
+        raise ValueError(
+            "cannot solve for the next actuator: no round read a Z above 0, "
+            "and a power law needs one")
     elif measured and fallback_exponent:
-        x0, z0 = measured[-1]
+        x0, z0 = above[-1]
         b = float(fallback_exponent)
         A = z0 / (x0 ** b)
         note["exponent"] = round(b, 4)
@@ -744,6 +750,10 @@ class RoundPlan:
     dp: int = 0
     seed: int = 1
     why: dict = field(default_factory=dict)
+    #: Which kinks the runner's Z counts (``conformation.entanglement.count``,
+    #: one of :data:`topon.analysis.z1plus.COUNTS`). ``z_final`` and
+    #: ``z_build`` are read in it. ``total`` is every kink.
+    count: str = "total"
 
 
 @dataclass
@@ -819,6 +829,11 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
 
     The reading the loop closes on is ``config.entanglement.close_on``, and the
     default is the final state for the reason at the top of this module.
+    ``config.entanglement.count`` says which kinks it counts and is handed to
+    the runner in each :class:`RoundPlan`. Every row of the shipped table and
+    every floor is a total, so with another count the table only seeds the
+    first round and lends its exponent, and the floor is not checked. The
+    manifest says so.
     ``bounds`` clamps the actuator, which matters more than it sounds: the
     first step is usually an extrapolation off the end of a two-point table,
     and an unclamped power law will cheerfully ask for a build density of
@@ -836,6 +851,7 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
     knob = actuator_name(placement)
     ctl = ent.controller
     state = getattr(ent, "close_on", "final")
+    count = getattr(ent, "count", "total")
     say = (lambda *_a, **_k: None) if log is None else log
 
     manifest: dict = {
@@ -845,6 +861,7 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
         "actuator": knob,
         "target_Z": ent.target_Z,
         "close_on": state,
+        **({} if count == "total" else {"count": count}),
         "tolerance": ctl.tolerance,
         "max_rounds": ctl.max_rounds,
         "seed": seed,
@@ -879,21 +896,40 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
                                     state=state)
         say(f"  seed {knob} {start:.4g} from the calibration table "
             f"(exponent {note.get('exponent')})")
+        if count != "total":
+            msg = (f"the calibration table counts every kink (total) and the "
+                   f"target counts {count} kinks, so the first {knob} is the "
+                   f"one that gives a total of {ent.target_Z:g}, and a round "
+                   f"with one point borrows the total's exponent")
+            manifest["warnings"].append(msg)
+            say(f"  [WARN] {msg}")
     else:
         raise ValueError(
             f"nothing to start from: set conformation.{knob} or "
             f"conformation.entanglement.target_Z")
     manifest["seed_note"] = note
 
-    if ent.target_Z is not None and state == "final":
+    if ent.target_Z is not None and state == "final" and count == "total":
         warn = floor_warning(dp, placement, float(ent.target_Z))
         if warn:
             manifest["warnings"].append(warn)
             say(f"  [WARN] {warn}")
+    elif ent.target_Z is not None and state == "final":
+        # a total floor bounds the other counts from above only
+        manifest["warnings"].append(
+            f"no floor checked: the measured floors count every kink, and the "
+            f"target counts {count} kinks")
 
     table_rows = steering_rows(dp, placement, state, table)
     table_fit = _table_slope(table_rows) if table_rows else None
     table_exponent = None if table_fit is None else table_fit[1]
+    if (count != "total" and ent.target_Z is not None
+            and note.get("from") == "config" and table_exponent is not None):
+        msg = (f"the calibration table counts every kink (total), so a step "
+               f"from one point borrows the total's exponent "
+               f"({table_exponent:.3g}) for a target that counts {count} kinks")
+        manifest["warnings"].append(msg)
+        say(f"  [WARN] {msg}")
 
     measured: list[tuple[float, float]] = []
     rounds = 1 if ent.target_Z is None else int(ctl.max_rounds)
@@ -905,7 +941,7 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
             round=r, placement=placement, actuator=knob, value=float(x),
             coil_ratio=float(x) if knob == "coil_ratio" else None,
             build_density=float(x) if knob == "build_density" else None,
-            dp=dp, seed=seed, why=dict(note),
+            dp=dp, seed=seed, why=dict(note), count=count,
         )
         # The runner is told which knob was turned, not both: handing it a
         # coil ratio *and* a density invites it to honour the wrong one, and
@@ -944,8 +980,8 @@ def controller(graph, config, runner: Callable[[RoundPlan], object], *,
 
         err = abs(reading - ent.target_Z) / max(ent.target_Z, 1e-12)
         entry["relative_error"] = round(float(err), 4)
-        say(f"    Z ({state}) {reading:.4f} vs target {ent.target_Z:g} "
-            f"({err * 100:.1f} %)")
+        say(f"    Z ({state}{'' if count == 'total' else ', ' + count}) "
+            f"{reading:.4f} vs target {ent.target_Z:g} ({err * 100:.1f} %)")
         if err <= ctl.tolerance:
             converged = True
             break

@@ -666,6 +666,10 @@ def check_entanglement_target_below_floor(cfg, raw) -> List[Issue]:
     target = conf.entanglement.target_Z
     if target is None:
         return []
+    if conf.entanglement.count != "total":
+        # the floors are totals, and a total floor bounds the partner
+        # counts from above only
+        return []
     dp = int(cfg.assignment.dp_distribution.default.mean)
 
     from topon.conformation.entanglement import actuator_name, floor_warning
